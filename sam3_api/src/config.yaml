@@ -1,0 +1,43 @@
+# SAM3 API 配置文件
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# 默认可视化参数
+visualization:
+  alpha: 0.2                    # mask 透明度 (0.0-1.0, 越小越透明)
+  contour_thickness: 1          # 边缘粗细 (0 表示不绘制边缘)
+  return_base64: false          # 是否默认返回 base64 编码的图片
+
+# 手术工具颜色配置 (BGR格式)
+tool_colors:
+  grasper:      [0, 255, 127]     # 春绿色
+  bipolar:      [255, 0, 255]     # 品红色
+  hook:         [0, 165, 255]     # 橙色
+  scissors:     [255, 255, 0]     # 青色
+  clipper:      [147, 20, 255]    # 粉红色
+  irrigator:    [255, 191, 0]     # 深天蓝色
+  specimenbag:  [0, 255, 255]     # 黄色
+  forceps:      [50, 205, 50]     # 酸橙绿
+  needle:       [180, 105, 255]   # 热粉色
+  suction:      [250, 206, 135]   # 天蓝色
+  default:      [128, 128, 128]   # 灰色 (未知工具)
+
+# 实例颜色（当同一工具有多个实例时使用）
+instance_colors:
+  - [0, 255, 127]
+  - [255, 0, 255]
+  - [0, 165, 255]
+  - [255, 255, 0]
+  - [147, 20, 255]
+  - [255, 191, 0]
+  - [0, 255, 255]
+  - [50, 205, 50]
+
+# 模型配置
+model:
+  checkpoint_path: null           # 模型权重路径，null 表示使用环境变量 SAM3_CHECKPOINT
+  device: "cuda"                  # 设备: cuda 或 cpu
+

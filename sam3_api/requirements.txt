@@ -1,0 +1,20 @@
+# SAM3 FastAPI 服务依赖
+
+# Web 框架
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+
+# 数据验证
+pydantic>=2.0.0
+
+# 图像处理
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# PyTorch (根据你的CUDA版本单独安装)
+# 参考: https://pytorch.org/get-started/locally/
+torch>=2.0.0
+
+# SAM3 依赖 (通常在 sam3 仓库中)
+# psutil  # SAM3 多GPU支持需要
+
