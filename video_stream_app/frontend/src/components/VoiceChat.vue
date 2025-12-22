@@ -127,36 +127,6 @@
         </span>
       </div>
       
-      <!-- Service Status -->
-      <div class="service-status">
-        <div class="service-item" :class="{ available: asrStatus.available, checking: asrStatus.checking }">
-          <span class="service-icon">🎙️</span>
-          <span class="service-name">ASR</span>
-          <span class="service-state">
-            <span v-if="asrStatus.checking" class="checking-spinner"></span>
-            <span v-else-if="asrStatus.available" class="status-dot available"></span>
-            <span v-else class="status-dot unavailable"></span>
-          </span>
-        </div>
-        <div class="service-item" :class="{ available: ttsStatus.available, checking: ttsStatus.checking }">
-          <span class="service-icon">🔊</span>
-          <span class="service-name">TTS</span>
-          <span class="service-state">
-            <span v-if="ttsStatus.checking" class="checking-spinner"></span>
-            <span v-else-if="ttsStatus.available" class="status-dot available"></span>
-            <span v-else class="status-dot unavailable"></span>
-          </span>
-        </div>
-        <button class="refresh-btn" @click="checkServiceStatus" title="刷新状态">🔄</button>
-      </div>
-      
-      <!-- Service Unavailable Warning -->
-      <div v-if="!asrStatus.checking && !asrStatus.available" class="service-warning">
-        ⚠️ 语音识别服务不可用
-      </div>
-      <div v-if="!ttsStatus.checking && !ttsStatus.available" class="service-warning tts">
-        ⚠️ 语音合成服务不可用
-      </div>
     </div>
   </div>
 </template>
@@ -186,9 +156,8 @@ const keywords = ref(['你好小助', '小助小助', '开始识别'])
 const currentPlayingIdx = ref(-1)
 const currentAudio = ref(null)
 
-// Service status
-const asrStatus = ref({ available: false, checking: true })
-const ttsStatus = ref({ available: false, checking: true })
+// Service status (only ASR needed for button state)
+const asrStatus = ref({ available: true, checking: false })
 
 // Refs
 const messagesContainer = ref(null)
@@ -563,11 +532,9 @@ const formatTime = (timestamp) => {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-// Check service status
-const checkServiceStatus = async () => {
-  // Check ASR status
+// Check ASR status for button state
+const checkAsrStatus = async () => {
   try {
-    asrStatus.value.checking = true
     const asrResponse = await axios.get('/api/voice/asr/status')
     asrStatus.value.available = asrResponse.data.available
     if (asrResponse.data.keywords) {
@@ -575,39 +542,16 @@ const checkServiceStatus = async () => {
     }
   } catch (error) {
     asrStatus.value.available = false
-    console.log('ASR service not available')
-  } finally {
-    asrStatus.value.checking = false
-  }
-  
-  // Check TTS status
-  try {
-    ttsStatus.value.checking = true
-    const ttsResponse = await axios.get('/api/voice/tts/status')
-    ttsStatus.value.available = ttsResponse.data.available
-  } catch (error) {
-    ttsStatus.value.available = false
-    console.log('TTS service not available')
-  } finally {
-    ttsStatus.value.checking = false
   }
 }
 
-// Status refresh interval
-let statusInterval = null
-
-// Load status on mount and periodically refresh
+// Load ASR status on mount
 onMounted(() => {
-  checkServiceStatus()
-  // Refresh status every 30 seconds
-  statusInterval = setInterval(checkServiceStatus, 30000)
+  checkAsrStatus()
 })
 
 onUnmounted(() => {
   stopRecording()
-  if (statusInterval) {
-    clearInterval(statusInterval)
-  }
 })
 </script>
 
@@ -941,106 +885,6 @@ onUnmounted(() => {
   background: var(--bg-elevated);
   border-radius: var(--radius-sm);
   color: var(--warning);
-}
-
-/* Service Status */
-.service-status {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 0.5rem 1rem;
-  background: var(--bg-tertiary);
-  border-top: 1px solid var(--border-subtle);
-  font-size: 0.75rem;
-}
-
-.service-item {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  transition: all 0.2s;
-}
-
-.service-item.available {
-  background: rgba(0, 212, 170, 0.1);
-}
-
-.service-item.checking {
-  opacity: 0.6;
-}
-
-.service-icon {
-  font-size: 0.85rem;
-}
-
-.service-name {
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.service-state {
-  display: flex;
-  align-items: center;
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.status-dot.available {
-  background: var(--success, #00d4aa);
-  box-shadow: 0 0 6px var(--success, #00d4aa);
-}
-
-.status-dot.unavailable {
-  background: var(--error, #ff6b6b);
-}
-
-.checking-spinner {
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--border-subtle);
-  border-top-color: var(--accent-primary);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.refresh-btn {
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  font-size: 0.85rem;
-  padding: 0.25rem;
-  border-radius: var(--radius-sm);
-  transition: all 0.2s;
-}
-
-.refresh-btn:hover {
-  background: var(--bg-elevated);
-  transform: rotate(180deg);
-}
-
-.service-warning {
-  padding: 0.5rem 1rem;
-  background: rgba(255, 107, 107, 0.1);
-  border-top: 1px solid rgba(255, 107, 107, 0.3);
-  color: var(--error, #ff6b6b);
-  font-size: 0.75rem;
-  text-align: center;
-}
-
-.service-warning.tts {
-  border-top: none;
 }
 
 @keyframes pulse {

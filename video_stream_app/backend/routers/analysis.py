@@ -1190,3 +1190,255 @@ async def sam3_status():
             "error": str(e)
         }
 
+
+@router.get("/sam3/segmented-frame/{session_id}")
+async def get_sam3_segmented_frame(
+    session_id: str,
+    timestamp: float = Query(..., ge=0, description="Frame timestamp"),
+    alpha: float = Query(0.4, ge=0.0, le=1.0, description="Mask transparency"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get a single frame with SAM3 segmentation overlay.
+    
+    Uses SurgR1 tool_localization to get bounding boxes,
+    then SAM3 to generate segmentation masks.
+    
+    Returns base64 encoded image with segmentation overlay.
+    """
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    # Check if SAM3 is available
+    try:
+        sam3_client = await ensure_sam3_available()
+        is_healthy = await sam3_client.check_health()
+        if not is_healthy:
+            raise HTTPException(503, "SAM3 service not available")
+    except Exception as e:
+        raise HTTPException(503, f"SAM3 service error: {e}")
+    
+    # Create video processor and extract frame
+    processor = VideoProcessor(
+        video_path=session.video_path,
+        window_duration=settings.WINDOW_DURATION,
+        sample_interval=settings.SAMPLE_INTERVAL
+    )
+    
+    frame = processor.extract_frame(timestamp)
+    if frame is None:
+        raise HTTPException(400, f"Could not extract frame at timestamp {timestamp}")
+    
+    # Step 1: Get SurgR1 tool_localization result
+    # First try to get from database
+    frames = get_frames_by_session(db, session.id)
+    nearest_frame = None
+    if frames:
+        nearest_frame = min(frames, key=lambda f: abs(f.timestamp - timestamp))
+        if abs(nearest_frame.timestamp - timestamp) > 1.0:
+            nearest_frame = None
+    
+    tool_localization = ""
+    if nearest_frame and nearest_frame.tool_localization:
+        tool_localization = nearest_frame.tool_localization
+    else:
+        # Analyze with SurgR1 on-the-fly
+        try:
+            surgr1_client = await ensure_surgr1_available()
+            result = await surgr1_client.analyze_frame(
+                image=frame.image,
+                analysis_type="tools",
+                session_id=session_id,
+                frame_idx=frame.frame_idx,
+                timestamp=frame.timestamp,
+                save_to_mysql=False
+            )
+            tool_localization = result.get("tools", "")
+        except Exception as e:
+            logger.warning(f"SurgR1 analysis failed: {e}")
+            # Return original frame if SurgR1 fails
+            return {
+                "success": False,
+                "timestamp": timestamp,
+                "frame_idx": frame.frame_idx,
+                "message": f"SurgR1 analysis failed: {e}",
+                "image_base64": frame.to_base64(),
+                "has_segmentation": False
+            }
+    
+    if not tool_localization:
+        # No tools detected, return original frame
+        return {
+            "success": True,
+            "timestamp": timestamp,
+            "frame_idx": frame.frame_idx,
+            "message": "No tools detected in frame",
+            "image_base64": frame.to_base64(),
+            "has_segmentation": False
+        }
+    
+    # Step 2: Parse bboxes and call SAM3
+    try:
+        result = await sam3_client.segment_from_surgr1(
+            image=frame.image,
+            surgr1_bbox_output=tool_localization,
+            alpha=alpha,
+            return_base64=True
+        )
+        
+        if result.get("success") and result.get("image_base64"):
+            return {
+                "success": True,
+                "timestamp": timestamp,
+                "frame_idx": frame.frame_idx,
+                "image_base64": result["image_base64"],
+                "has_segmentation": True,
+                "num_objects": result.get("num_objects", 0),
+                "parsed_bboxes": result.get("parsed_bboxes", [])
+            }
+        else:
+            # SAM3 failed, return original frame
+            return {
+                "success": False,
+                "timestamp": timestamp,
+                "frame_idx": frame.frame_idx,
+                "message": result.get("error", "SAM3 segmentation failed"),
+                "image_base64": frame.to_base64(),
+                "has_segmentation": False
+            }
+            
+    except Exception as e:
+        logger.error(f"SAM3 segmentation failed: {e}")
+        return {
+            "success": False,
+            "timestamp": timestamp,
+            "frame_idx": frame.frame_idx,
+            "message": f"SAM3 error: {e}",
+            "image_base64": frame.to_base64(),
+            "has_segmentation": False
+        }
+
+
+@router.get("/sam3/stream/{session_id}")
+async def stream_sam3_segmented_video(
+    session_id: str,
+    alpha: float = Query(0.4, ge=0.0, le=1.0, description="Mask transparency"),
+    fps: float = Query(5.0, ge=1.0, le=30.0, description="Stream FPS"),
+    db: Session = Depends(get_db)
+):
+    """
+    Stream video with SAM3 segmentation overlay as MJPEG.
+    
+    This endpoint provides a continuous MJPEG stream where each frame
+    has been processed with SurgR1 (bbox) + SAM3 (segmentation).
+    
+    Note: This is computationally intensive. Consider caching results.
+    """
+    import time
+    import tempfile
+    from pathlib import Path
+    
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    # Check services availability
+    try:
+        sam3_client = await ensure_sam3_available()
+        surgr1_client = await ensure_surgr1_available()
+    except Exception as e:
+        raise HTTPException(503, f"Required services not available: {e}")
+    
+    # Open video
+    import cv2
+    cap = cv2.VideoCapture(session.video_path)
+    if not cap.isOpened():
+        raise HTTPException(400, "Cannot open video file")
+    
+    video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    frame_interval = 1.0 / fps  # Target interval between frames
+    
+    async def generate_frames():
+        """Generator that yields MJPEG frames"""
+        frame_idx = 0
+        last_frame_time = 0
+        
+        try:
+            while True:
+                ret, bgr_frame = cap.read()
+                if not ret:
+                    break
+                
+                current_time = frame_idx / video_fps
+                
+                # Rate limiting: skip frames to match target FPS
+                if current_time - last_frame_time < frame_interval:
+                    frame_idx += 1
+                    continue
+                
+                last_frame_time = current_time
+                
+                # Convert to PIL Image
+                rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(rgb_frame)
+                
+                # Get SurgR1 analysis
+                try:
+                    surgr1_result = await surgr1_client.analyze_frame(
+                        image=pil_image,
+                        analysis_type="tools",
+                        save_to_mysql=False
+                    )
+                    tool_localization = surgr1_result.get("tools", "")
+                except Exception as e:
+                    logger.warning(f"SurgR1 failed for frame {frame_idx}: {e}")
+                    tool_localization = ""
+                
+                output_image = pil_image
+                
+                # Apply SAM3 segmentation if tools detected
+                if tool_localization:
+                    try:
+                        sam3_result = await sam3_client.segment_from_surgr1(
+                            image=pil_image,
+                            surgr1_bbox_output=tool_localization,
+                            alpha=alpha,
+                            return_base64=True
+                        )
+                        
+                        if sam3_result.get("success") and sam3_result.get("image_base64"):
+                            # Decode base64 to image
+                            import base64
+                            from io import BytesIO
+                            img_data = base64.b64decode(sam3_result["image_base64"])
+                            output_image = Image.open(BytesIO(img_data))
+                    except Exception as e:
+                        logger.warning(f"SAM3 failed for frame {frame_idx}: {e}")
+                
+                # Convert to JPEG bytes
+                buffer = BytesIO()
+                output_image.save(buffer, format="JPEG", quality=80)
+                jpeg_bytes = buffer.getvalue()
+                
+                # Yield as MJPEG frame
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n"
+                    b"\r\n" + jpeg_bytes + b"\r\n"
+                )
+                
+                frame_idx += 1
+                
+                # Small delay to prevent CPU overload
+                await asyncio.sleep(0.01)
+                
+        finally:
+            cap.release()
+    
+    return StreamingResponse(
+        generate_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
