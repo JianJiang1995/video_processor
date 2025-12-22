@@ -71,11 +71,14 @@ CONFIG = load_config()
 SYSTEM_PROMPT = """A conversation between User and Surgical Assistant. The user asks a question related, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>"""
 
 # Three standard questions for surgical image analysis
-# Note: Do NOT include <image> in the prompt - vLLM handles image insertion via multi_modal_data
+# IMPORTANT: ms-swift replaces <image> with <|vision_start|><|image_pad|><|vision_end|>
+# See: ms-swift/swift/llm/template/template/qwen.py line 248 (Qwen2VLTemplate.replace_tag)
+# Training format: "Given the laparoscopic surgical image <image>, ..."
+# vLLM/Qwen2.5-VL needs: <|vision_start|><|image_pad|><|vision_end|>
 QUESTIONS = {
-    "tool_localization": "Given this laparoscopic surgical image, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
-    "surgical_action": "Given this laparoscopic surgical image, describe the complete surgical action in terms of tool, action, and tissue.",
-    "surgical_phase": "Given this laparoscopic surgical image, which surgical phase does this frame belong to? Choose from: Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderPackaging, CleaningCoagulation, GallbladderRetraction."
+    "tool_localization": "Given the laparoscopic surgical image <|vision_start|><|image_pad|><|vision_end|>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
+    "surgical_action": "Given the laparoscopic surgical image <|vision_start|><|image_pad|><|vision_end|>, describe the complete surgical action in terms of tool, action, and tissue.",
+    "surgical_phase": "Given the laparoscopic surgical image <|vision_start|><|image_pad|><|vision_end|>, which surgical phase does this frame belong to? Choose from: Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderPackaging, CleaningCoagulation, GallbladderRetraction."
 }
 
 
@@ -165,9 +168,12 @@ class SurgR1Model:
         return self.llm is not None
     
     def _build_prompt(self, question: str) -> str:
-        """Build prompt with system instruction and image placeholder"""
-        # For vLLM 0.10+ with Qwen2.5-VL: use <|image_pad|> as placeholder
-        return f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n<|image_pad|>\n{question}<|im_end|>\n<|im_start|>assistant\n"
+        """Build prompt with system instruction.
+        
+        Note: The question already contains <|image_pad|> placeholder embedded in text,
+        matching the training data format: "Given the laparoscopic surgical image <|image_pad|>, ..."
+        """
+        return f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n"
     
     def analyze_batch(
         self,
@@ -224,10 +230,19 @@ class SurgR1Model:
         prompts = []
         prompt_metadata = []  # Track (image_idx, question_key, image_path)
         
+        # Target size matching training data (CholecInstanceSeg: 854×480)
+        # IMPORTANT: Qwen2-VL requires size aligned to 28 (patch_size=14, merge_size=2)
+        # fetch_image in qwen_vl_utils aligns to 28: 854->840, 480->476
+        TARGET_SIZE = (840, 476)
+        
         for img_idx, image_path in enumerate(valid_paths):
-            # Load image as PIL Image object
+            # Load image as PIL Image object and resize to training size
             try:
                 pil_image = Image.open(image_path).convert("RGB")
+                original_size = pil_image.size
+                # Resize to match training data size for accurate bbox prediction
+                pil_image = pil_image.resize(TARGET_SIZE, Image.LANCZOS)
+                logger.debug(f"Resized {image_path}: {original_size} -> {TARGET_SIZE}")
             except Exception as e:
                 logger.error(f"Failed to load image {image_path}: {e}")
                 continue

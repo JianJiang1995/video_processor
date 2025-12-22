@@ -48,6 +48,38 @@ def parse_bbox_from_response(response: str) -> List[Tuple[int, int, int, int]]:
     return bboxes
 
 
+# Model was trained on 854×480 images (CholecInstanceSeg dataset)
+MODEL_INPUT_SIZE = (854, 480)
+
+
+def scale_bbox_to_original(
+    bbox: Tuple[int, int, int, int],
+    original_size: Tuple[int, int]
+) -> Tuple[int, int, int, int]:
+    """
+    Scale bbox from model input size (854×480) to original image size.
+    
+    Args:
+        bbox: (x1, y1, x2, y2) in model input coordinates
+        original_size: (width, height) of original image
+    
+    Returns:
+        (x1, y1, x2, y2) scaled to original image coordinates
+    """
+    model_w, model_h = MODEL_INPUT_SIZE
+    orig_w, orig_h = original_size
+    
+    x1, y1, x2, y2 = bbox
+    
+    # Scale proportionally
+    x1_scaled = int(x1 * orig_w / model_w)
+    y1_scaled = int(y1 * orig_h / model_h)
+    x2_scaled = int(x2 * orig_w / model_w)
+    y2_scaled = int(y2 * orig_h / model_h)
+    
+    return (x1_scaled, y1_scaled, x2_scaled, y2_scaled)
+
+
 def draw_bboxes_on_image(
     image_path: str,
     bboxes: List[Tuple[int, int, int, int]],
@@ -56,9 +88,11 @@ def draw_bboxes_on_image(
 ) -> bool:
     """
     Draw bounding boxes on an image and save it.
+    Bboxes are in model input coordinates (854×480) and will be scaled to original image size.
     """
     try:
         img = Image.open(image_path).convert("RGB")
+        original_size = img.size  # (width, height)
         draw = ImageDraw.Draw(img)
         
         # Colors for different tools
@@ -71,7 +105,8 @@ def draw_bboxes_on_image(
             font = ImageFont.load_default()
         
         for i, bbox in enumerate(bboxes):
-            x1, y1, x2, y2 = bbox
+            # Scale bbox from model coordinates to original image coordinates
+            x1, y1, x2, y2 = scale_bbox_to_original(bbox, original_size)
             color = colors[i % len(colors)]
             
             # Draw rectangle with thick border
