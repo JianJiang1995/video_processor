@@ -1,7 +1,7 @@
 <template>
   <div class="controls-bar">
-    <!-- Progress Bar (disabled for live streams) -->
-    <div class="progress-container" :class="{ 'live-mode': isLive }">
+    <!-- Progress Bar -->
+    <div class="progress-container">
       <div 
         class="progress-bar" 
         ref="progressRef"
@@ -10,7 +10,6 @@
         @mousemove="handleDragging"
         @mouseup="stopDragging"
         @mouseleave="handleMouseLeave"
-        :class="{ 'non-interactive': isLive }"
       >
         <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
         
@@ -29,12 +28,37 @@
               left: (((i - 1) * WINDOW_DURATION) / duration * 100) + '%',
               width: (WINDOW_DURATION / duration * 100) + '%'
             }"
-            @click.stop="seekToWindow(i - 1)"
-            @mouseenter="handleWindowHover(i - 1)"
-            @mouseleave="handleWindowLeave"
+            @click.stop="handleWindowClick($event, i - 1)"
+            @mouseenter="handleWindowMouseEnter($event, i - 1)"
+            @mouseleave="handleWindowMouseLeave"
           >
             <span class="window-label" v-if="analyzedWindows.includes(i - 1)">{{ i }}</span>
           </div>
+        </div>
+        
+        <!-- Window Summary Tooltip -->
+        <div 
+          v-if="hoveredWindowSummary" 
+          class="window-summary-tooltip"
+          :class="{ locked: isTooltipLocked }"
+          :style="{ left: tooltipPosition.x + 'px' }"
+        >
+          <div class="tooltip-header">
+            <span class="tooltip-window">
+              <span class="lock-icon" v-if="isTooltipLocked">📌</span>
+              窗口 {{ hoveredWindowSummary.window_id + 1 }}
+            </span>
+            <button v-if="isTooltipLocked" class="tooltip-close" @click.stop="closeTooltip">✕</button>
+            <span v-else class="tooltip-time">{{ formatTime(hoveredWindowSummary.start_time) }} - {{ formatTime(hoveredWindowSummary.end_time) }}</span>
+          </div>
+          <div class="tooltip-time-row" v-if="isTooltipLocked">
+            ⏱️ {{ formatTime(hoveredWindowSummary.start_time) }} - {{ formatTime(hoveredWindowSummary.end_time) }}
+          </div>
+          <div class="tooltip-content">
+            {{ hoveredWindowSummary.summary }}
+          </div>
+          <div class="tooltip-hint" v-if="!isTooltipLocked">点击固定显示</div>
+          <div class="tooltip-hint" v-else>再次点击窗口或按 ✕ 关闭</div>
         </div>
         
         <!-- Playhead -->
@@ -60,8 +84,6 @@
         class="control-btn" 
         @click="skipBack" 
         title="后退5秒"
-        :disabled="isLive"
-        :class="{ disabled: isLive }"
       >
         ⏪
       </button>
@@ -74,8 +96,6 @@
         class="control-btn" 
         @click="skipForward" 
         title="前进5秒"
-        :disabled="isLive"
-        :class="{ disabled: isLive }"
       >
         ⏩
       </button>
@@ -83,7 +103,14 @@
       <!-- Time Display -->
       <div class="time-display">
         <span v-if="isLive" class="live-badge">🔴 LIVE</span>
-        <span class="time-current">{{ formatTime(currentTime) }}</span>
+        <!-- Show SAM3 frame time when in SAM3 mode with different timestamp -->
+        <template v-if="showSam3 && sam3Time !== null && Math.abs(sam3Time - currentTime) > 0.5">
+          <span class="time-current sam3-time" title="器械分割帧时间">{{ formatTime(sam3Time) }}</span>
+          <span class="time-delay">(延迟 {{ formatTimeOffset(currentTime - sam3Time) }})</span>
+        </template>
+        <template v-else>
+          <span class="time-current">{{ formatTime(currentTime) }}</span>
+        </template>
         <span v-if="!isLive"> / </span>
         <span v-if="!isLive">{{ formatTime(duration) }}</span>
         <span class="window-display" v-if="currentWindowId >= 0">
@@ -96,7 +123,7 @@
       <!-- Analysis Service Status -->
       <div class="analysis-services">
         <!-- SurgR1: 医生机器人图标 -->
-        <div class="service-badge" :class="{ available: surgr1Status.available }" title="SurgR1 手术图像分析">
+        <div class="service-badge" :class="{ available: surgr1Status.available, processing: surgr1Processing.running }" :title="surgr1Processing.running ? `SurgR1 处理中 (${surgr1Processing.framesAnalyzed} 帧)` : 'SurgR1 手术图像分析'">
           <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <!-- 机器人头部 -->
             <rect x="6" y="7" width="12" height="10" rx="2" />
@@ -118,6 +145,7 @@
             <line x1="9" y1="5.5" x2="15" y2="5.5" stroke-width="1.2" />
           </svg>
           <span class="service-label">SurgR1</span>
+          <span v-if="surgr1Processing.running" class="frame-count">{{ surgr1Processing.framesAnalyzed }}</span>
         </div>
         
         <!-- GLM: 大脑/神经网络图标 -->
@@ -187,6 +215,22 @@
         </div>
       </div>
       
+      <!-- SAM3 Toggle Button -->
+      <button 
+        class="btn sam3-toggle-btn"
+        :class="{ active: showSam3, disabled: !sam3Status.available }"
+        @click="$emit('toggleSam3')"
+        :disabled="!sam3Status.available"
+        :title="sam3Status.available ? (showSam3 ? '切换到原始视频' : '显示器械分割视图') : 'SAM3 服务不可用'"
+      >
+        <svg class="sam3-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="10" cy="10" r="5" />
+          <line x1="14" y1="14" x2="18" y2="18" stroke-width="2" stroke-linecap="round" />
+          <path d="M8 8L12 12" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        {{ showSam3 ? '原始视频' : '器械分割' }}
+      </button>
+      
       <!-- Analyze Button -->
       <button 
         v-if="!isAnalyzing"
@@ -228,7 +272,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const WINDOW_DURATION = 5
 
@@ -255,6 +299,10 @@ const props = defineProps({
     default: false
   },
   analyzedWindows: {
+    type: Array,
+    default: () => []
+  },
+  summaries: {
     type: Array,
     default: () => []
   },
@@ -285,10 +333,22 @@ const props = defineProps({
   ttsStatus: {
     type: Object,
     default: () => ({ available: false, checking: true })
+  },
+  showSam3: {
+    type: Boolean,
+    default: false
+  },
+  surgr1Processing: {
+    type: Object,
+    default: () => ({ running: false, framesAnalyzed: 0 })
+  },
+  sam3Time: {
+    type: Number,
+    default: null
   }
 })
 
-const emit = defineEmits(['play', 'pause', 'seek', 'volume', 'analyze', 'stopAnalyze', 'seekToWindow', 'hoverWindow', 'dragSeek'])
+const emit = defineEmits(['play', 'pause', 'seek', 'volume', 'analyze', 'stopAnalyze', 'seekToWindow', 'hoverWindow', 'dragSeek', 'toggleSam3'])
 
 const progressRef = ref(null)
 const isMuted = ref(false)
@@ -296,6 +356,39 @@ const previousVolume = ref(0.8)
 const isDragging = ref(false)
 const hoverTime = ref(null)
 const hoverPercent = ref(0)
+
+// Tooltip state for window summary
+const hoveredWindowId = ref(-1)
+const lockedWindowId = ref(-1)  // Locked window (clicked, stays visible)
+const tooltipPosition = ref({ x: 0 })
+
+// Get summary for displayed window (locked takes priority over hovered)
+const displayedWindowId = computed(() => {
+  if (lockedWindowId.value >= 0) return lockedWindowId.value
+  return hoveredWindowId.value
+})
+
+// Cache the locked window's summary to prevent flickering during updates
+const lockedWindowSummaryCache = ref(null)
+
+const hoveredWindowSummary = computed(() => {
+  if (displayedWindowId.value < 0) return null
+  
+  const summary = props.summaries.find(s => s.window_id === displayedWindowId.value)
+  
+  // If we have a locked window, cache and return the cached summary
+  if (lockedWindowId.value >= 0) {
+    if (summary) {
+      lockedWindowSummaryCache.value = { ...summary }
+    }
+    // Return cached or current summary
+    return lockedWindowSummaryCache.value || summary
+  }
+  
+  return summary
+})
+
+const isTooltipLocked = computed(() => lockedWindowId.value >= 0)
 
 const progressPercent = computed(() => {
   if (!props.duration) return 0
@@ -326,7 +419,6 @@ const getTimeFromEvent = (event) => {
 }
 
 const handleProgressClick = (event) => {
-  if (props.isLive) return  // Disable for live streams
   const time = getTimeFromEvent(event)
   if (time !== null) {
     emit('seek', time)
@@ -334,16 +426,41 @@ const handleProgressClick = (event) => {
 }
 
 const startDragging = (event) => {
-  if (props.isLive) return  // Disable for live streams
+  event.preventDefault()  // Prevent text selection while dragging
   isDragging.value = true
   const time = getTimeFromEvent(event)
   if (time !== null) {
     emit('dragSeek', time, true)  // true = drag started
+    emit('seek', time)  // Also seek immediately
   }
 }
 
+// Global mousemove handler for dragging (works even outside progress bar)
+const handleGlobalMouseMove = (event) => {
+  if (!isDragging.value) return
+  const time = getTimeFromEvent(event)
+  if (time !== null) {
+    // Update hover tooltip
+    hoverTime.value = time
+    hoverPercent.value = (time / props.duration) * 100
+    emit('dragSeek', time, false)  // false = dragging
+    emit('seek', time)  // Update video position while dragging
+  }
+}
+
+// Global mouseup handler for dragging (works even outside progress bar)
+const handleGlobalMouseUp = (event) => {
+  if (!isDragging.value) return
+  isDragging.value = false
+  const time = getTimeFromEvent(event)
+  if (time !== null) {
+    emit('seek', time)
+    emit('dragSeek', time, false)  // emit final position
+  }
+  hoverTime.value = null
+}
+
 const handleDragging = (event) => {
-  if (props.isLive) return  // Disable for live streams
   const time = getTimeFromEvent(event)
   if (time !== null) {
     // Update hover tooltip
@@ -352,42 +469,93 @@ const handleDragging = (event) => {
     
     if (isDragging.value) {
       emit('dragSeek', time, false)  // false = dragging
+      emit('seek', time)  // Update video position while dragging
     }
   }
 }
 
 const stopDragging = (event) => {
-  if (props.isLive) return  // Disable for live streams
-  if (isDragging.value) {
-    isDragging.value = false
-    const time = getTimeFromEvent(event)
-    if (time !== null) {
-      emit('seek', time)
-      emit('dragSeek', time, false)  // emit final position
-    }
-  }
+  // Handled by global mouseup event, but keep for safety
 }
 
 const handleMouseLeave = () => {
-  if (isDragging.value) {
-    isDragging.value = false
+  // Don't stop dragging on mouse leave - continue with global handlers
+  if (!isDragging.value) {
+    hoverTime.value = null
   }
-  hoverTime.value = null
 }
 
+// Set up global event listeners for drag handling
+onMounted(() => {
+  document.addEventListener('mousemove', handleGlobalMouseMove)
+  document.addEventListener('mouseup', handleGlobalMouseUp)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousemove', handleGlobalMouseMove)
+  document.removeEventListener('mouseup', handleGlobalMouseUp)
+})
+
 const seekToWindow = (windowId) => {
-  if (props.isLive) return  // Disable for live streams
   const time = windowId * WINDOW_DURATION
   emit('seek', time)
   emit('seekToWindow', windowId)
 }
 
-const handleWindowHover = (windowId) => {
+const handleWindowClick = (event, windowId) => {
+  // Only handle analyzed windows for locking
+  if (props.analyzedWindows.includes(windowId)) {
+    // Toggle lock: if already locked on this window, unlock; otherwise lock this window
+    if (lockedWindowId.value === windowId) {
+      lockedWindowId.value = -1
+    } else {
+      lockedWindowId.value = windowId
+      // Update tooltip position for locked state
+      if (progressRef.value) {
+        const rect = progressRef.value.getBoundingClientRect()
+        const windowStart = (windowId * WINDOW_DURATION) / props.duration
+        const windowCenter = windowStart + (WINDOW_DURATION / props.duration / 2)
+        let xPos = windowCenter * rect.width
+        xPos = Math.max(100, Math.min(rect.width - 100, xPos))
+        tooltipPosition.value = { x: xPos }
+      }
+    }
+  }
+  // Seek to window
+  seekToWindow(windowId)
+}
+
+const handleWindowMouseEnter = (event, windowId) => {
+  // Only show tooltip for analyzed windows
+  if (props.analyzedWindows.includes(windowId)) {
+    hoveredWindowId.value = windowId
+    // Calculate tooltip position based on window segment position
+    if (progressRef.value) {
+      const rect = progressRef.value.getBoundingClientRect()
+      const windowStart = (windowId * WINDOW_DURATION) / props.duration
+      const windowCenter = windowStart + (WINDOW_DURATION / props.duration / 2)
+      // Position tooltip at center of window, but keep within bounds
+      let xPos = windowCenter * rect.width
+      // Clamp to ensure tooltip stays within progress bar
+      xPos = Math.max(100, Math.min(rect.width - 100, xPos))
+      tooltipPosition.value = { x: xPos }
+    }
+  }
   emit('hoverWindow', windowId)
 }
 
-const handleWindowLeave = () => {
-  emit('hoverWindow', -1)
+const handleWindowMouseLeave = () => {
+  hoveredWindowId.value = -1
+  // Don't emit hover change if locked (tooltip still visible)
+  if (lockedWindowId.value < 0) {
+    emit('hoverWindow', -1)
+  }
+}
+
+const closeTooltip = () => {
+  lockedWindowId.value = -1
+  hoveredWindowId.value = -1
+  lockedWindowSummaryCache.value = null
 }
 
 const skipBack = () => {
@@ -422,6 +590,15 @@ const formatTime = (seconds) => {
   const secs = Math.floor(seconds % 60)
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
+
+const formatTimeOffset = (seconds) => {
+  const absSeconds = Math.abs(seconds)
+  if (absSeconds < 1) return '<1秒'
+  if (absSeconds < 60) return `${Math.round(absSeconds)}秒`
+  const mins = Math.floor(absSeconds / 60)
+  const secs = Math.round(absSeconds % 60)
+  return `${mins}分${secs}秒`
+}
 </script>
 
 <style scoped>
@@ -447,8 +624,13 @@ const formatTime = (seconds) => {
   height: 100%;
   border-right: 1px solid var(--border-subtle);
   transition: all 0.2s ease;
-  pointer-events: auto;
+  pointer-events: none;  /* Disable pointer events - let progress bar handle dragging */
   cursor: pointer;
+}
+
+/* Only enable pointer events for analyzed windows that show labels */
+.window-segment.analyzed {
+  pointer-events: auto;
 }
 
 .window-segment:hover {
@@ -494,12 +676,17 @@ const formatTime = (seconds) => {
 /* Playhead */
 .playhead {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 2px;
+  top: -6px;
+  bottom: -6px;
+  width: 20px;
   transform: translateX(-50%);
-  pointer-events: none;
-  z-index: 10;
+  pointer-events: auto;  /* Enable pointer events for dragging */
+  z-index: 15;
+  cursor: grab;
+}
+
+.playhead:active {
+  cursor: grabbing;
 }
 
 .playhead-handle {
@@ -507,16 +694,18 @@ const formatTime = (seconds) => {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   background: var(--accent-primary);
   border-radius: 50%;
-  box-shadow: 0 0 6px rgba(0, 212, 170, 0.6);
-  transition: transform 0.1s ease;
+  box-shadow: 0 0 8px rgba(0, 212, 170, 0.7);
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 
-.progress-bar:hover .playhead-handle {
-  transform: translate(-50%, -50%) scale(1.2);
+.progress-bar:hover .playhead-handle,
+.playhead:hover .playhead-handle {
+  transform: translate(-50%, -50%) scale(1.3);
+  box-shadow: 0 0 12px rgba(0, 212, 170, 0.9);
 }
 
 /* Hover Tooltip */
@@ -542,6 +731,19 @@ const formatTime = (seconds) => {
   color: var(--accent-primary);
   font-size: 0.8rem;
   margin-left: 0.25rem;
+}
+
+/* SAM3 Time Display */
+.time-current.sam3-time {
+  color: var(--accent-tertiary, #00bcd4);
+  text-shadow: 0 0 4px rgba(0, 188, 212, 0.5);
+}
+
+.time-delay {
+  color: var(--warning, #fdcb6e);
+  font-size: 0.7rem;
+  margin-left: 0.35rem;
+  opacity: 0.9;
 }
 
 /* Analysis Services Status */
@@ -584,6 +786,36 @@ const formatTime = (seconds) => {
 .service-badge:not(.available) .service-icon {
   color: var(--error, #ff6b6b);
   opacity: 0.7;
+}
+
+.service-badge.processing {
+  background: rgba(0, 212, 170, 0.15);
+  animation: pulse-processing 1.5s ease-in-out infinite;
+}
+
+.service-badge.processing .service-icon {
+  animation: rotate-icon 2s linear infinite;
+}
+
+@keyframes pulse-processing {
+  0%, 100% { background: rgba(0, 212, 170, 0.15); }
+  50% { background: rgba(0, 212, 170, 0.25); }
+}
+
+@keyframes rotate-icon {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.frame-count {
+  font-size: 0.55rem;
+  font-weight: 600;
+  background: var(--accent-primary, #00d4aa);
+  color: #000;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  min-width: 18px;
+  text-align: center;
 }
 
 .service-label {
@@ -652,20 +884,6 @@ const formatTime = (seconds) => {
   to { transform: rotate(360deg); }
 }
 
-/* Live mode styles */
-.progress-container.live-mode {
-  opacity: 0.5;
-}
-
-.progress-bar.non-interactive {
-  cursor: default;
-  pointer-events: none;
-}
-
-.control-btn.disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
 
 .live-badge {
   background: rgba(255, 0, 0, 0.8);
@@ -681,6 +899,203 @@ const formatTime = (seconds) => {
 @keyframes pulse-live {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
+}
+
+/* SAM3 Toggle Button */
+.sam3-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-md, 6px);
+  color: var(--text-secondary, #a0a0a0);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  margin-right: 0.5rem;
+}
+
+.sam3-toggle-btn:hover:not(.disabled) {
+  background: rgba(0, 212, 170, 0.1);
+  border-color: rgba(0, 212, 170, 0.3);
+  color: var(--text-primary, #fff);
+}
+
+.sam3-toggle-btn.active {
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.2) 0%, rgba(0, 180, 150, 0.15) 100%);
+  border-color: var(--accent-primary, #00d4aa);
+  color: var(--accent-primary, #00d4aa);
+  box-shadow: 0 0 12px rgba(0, 212, 170, 0.3);
+}
+
+.sam3-toggle-btn.active .sam3-icon {
+  filter: drop-shadow(0 0 4px rgba(0, 212, 170, 0.6));
+}
+
+.sam3-toggle-btn.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sam3-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+/* Window Summary Tooltip */
+.window-summary-tooltip {
+  position: absolute;
+  bottom: calc(100% + 16px);
+  transform: translateX(-50%);
+  width: 320px;
+  max-width: 90vw;
+  background: linear-gradient(145deg, var(--bg-elevated, #1a1a2e) 0%, var(--bg-primary, #16162a) 100%);
+  border: 1px solid var(--accent-primary, #00d4aa);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    0 0 16px rgba(0, 212, 170, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  z-index: 100;
+  pointer-events: none;
+  animation: tooltip-appear 0.2s ease-out;
+  overflow: hidden;
+}
+
+@keyframes tooltip-appear {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.window-summary-tooltip::before {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 8px solid transparent;
+  border-top-color: var(--accent-primary, #00d4aa);
+  border-bottom: none;
+}
+
+.window-summary-tooltip::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--bg-primary, #16162a);
+  border-bottom: none;
+}
+
+.tooltip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 212, 170, 0.1);
+  border-bottom: 1px solid rgba(0, 212, 170, 0.2);
+}
+
+.tooltip-window {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--accent-primary, #00d4aa);
+}
+
+.tooltip-time {
+  font-size: 0.75rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary, #8888aa);
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.tooltip-content {
+  padding: 0.875rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: var(--text-primary, #e0e0e8);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.tooltip-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.tooltip-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tooltip-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 170, 0.3);
+  border-radius: 2px;
+}
+
+.tooltip-hint {
+  padding: 0.5rem 1rem;
+  font-size: 0.7rem;
+  color: var(--text-tertiary, #6666aa);
+  text-align: center;
+  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Locked tooltip styles */
+.window-summary-tooltip.locked {
+  pointer-events: auto;
+  border-width: 2px;
+  box-shadow: 
+    0 12px 48px rgba(0, 0, 0, 0.6),
+    0 0 24px rgba(0, 212, 170, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.tooltip-close {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: var(--text-secondary, #aaa);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  transition: all 0.2s;
+}
+
+.tooltip-close:hover {
+  background: rgba(255, 100, 100, 0.3);
+  color: #ff6b6b;
+}
+
+.lock-icon {
+  margin-right: 0.35rem;
+}
+
+.tooltip-time-row {
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary, #8888aa);
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 </style>
 

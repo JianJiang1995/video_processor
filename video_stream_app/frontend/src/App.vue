@@ -43,19 +43,22 @@
       <!-- Main Content -->
       <main class="app-main">
         <!-- Video Section -->
-        <section class="video-section">
+        <section class="video-section" @click="handleVideoSectionClick">
           <VideoPlayer
             :session="currentSession"
             :currentTime="currentTime"
             :isPlaying="isPlaying"
             :isPaused="!isPlaying && mode === 'stream'"
             :mode="mode"
+            :showSam3="showSam3"
+            :sam3Available="sam3Status.available"
             @timeupdate="handleTimeUpdate"
             @play="handlePlay"
             @pause="handlePause"
             @seek="handleSeek"
             @upload="handleUpload"
             @load="handleLoad"
+            @sam3TimeUpdate="handleSam3TimeUpdate"
           />
           <ControlBar
             :currentTime="currentTime"
@@ -65,6 +68,7 @@
             :mode="mode"
             :isLive="mode === 'stream'"
             :analyzedWindows="analyzedWindows"
+            :summaries="summaries"
             :highlightedWindowId="highlightedWindowId"
             :isAnalyzing="isProcessing"
             :surgr1Status="surgr1Status"
@@ -72,6 +76,9 @@
             :sam3Status="sam3Status"
             :asrStatus="asrStatus"
             :ttsStatus="ttsStatus"
+            :showSam3="showSam3"
+            :surgr1Processing="surgr1ProcessingStatus"
+            :sam3Time="sam3Time"
             @play="handlePlay"
             @pause="handlePause"
             @seek="handleSeek"
@@ -81,6 +88,7 @@
             @seekToWindow="handleSeekToWindow"
             @hoverWindow="handleWindowHover"
             @dragSeek="handleDragSeek"
+            @toggleSam3="handleToggleSam3"
           />
         </section>
 
@@ -101,12 +109,13 @@
         </section>
       </main>
       
-      <!-- Frame Analysis Popup (shown during drag) -->
+      <!-- Frame Analysis Popup (shown during drag/seek) -->
       <FrameAnalysisPopup
         :visible="frameAnalysisPopup.visible"
         :frameData="frameAnalysisPopup.data"
         :isLoading="frameAnalysisPopup.isLoading"
         :position="frameAnalysisPopup.position"
+        @close="closeFrameAnalysisPopup"
       />
       
       <!-- Voice Chat Component -->
@@ -145,7 +154,10 @@ const isProcessing = ref(false)
 
 // New states for enhanced features
 const highlightedWindowId = ref(-1)
+const userSelectedWindow = ref(false)  // True when user manually selected a window
 const isDragging = ref(false)
+const showSam3 = ref(false)  // Toggle for SAM3 segmented view
+const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime due to processing delay)
 const frameAnalysisPopup = ref({
   visible: false,
   data: null,
@@ -163,6 +175,9 @@ const glmStatus = ref({ available: false, checking: true })
 const sam3Status = ref({ available: false, checking: true })
 const asrStatus = ref({ available: false, checking: true })
 const ttsStatus = ref({ available: false, checking: true })
+
+// SurgR1 continuous processing status
+const surgr1ProcessingStatus = ref({ running: false, framesAnalyzed: 0 })
 
 // Stream polling and timing
 let streamPollingInterval = null
@@ -211,6 +226,9 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   currentTime.value = 0
   streamStartTime.value = Date.now()  // Track when stream started
   
+  // Auto-start SurgR1 continuous processing when stream connects
+  startSurgR1Continuous(session.session_id)
+  
   if (autoAnalyze) {
     startAnalysis()
   }
@@ -221,11 +239,18 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
 
 const goHome = () => {
   stopStreamPolling()
+  stopSurgR1StatusPolling()
+  // Stop SurgR1 continuous processing
+  if (currentSession.value) {
+    stopSurgR1Continuous(currentSession.value.session_id)
+  }
   // Close analysis EventSource if running
   if (analysisEventSource) {
     analysisEventSource.close()
     analysisEventSource = null
   }
+  // Reset SAM3 view
+  showSam3.value = false
   currentView.value = 'select'
   currentSession.value = null
   summaries.value = []
@@ -237,6 +262,11 @@ const goHome = () => {
 // Video handlers
 const handleTimeUpdate = (time) => {
   currentTime.value = time
+}
+
+// Handle SAM3 frame timestamp update (for sync display)
+const handleSam3TimeUpdate = (time) => {
+  sam3Time.value = time
 }
 
 const handlePlay = () => {
@@ -289,6 +319,9 @@ const handleUpload = async (file) => {
     duration.value = response.data.duration
     summaries.value = []
     currentTime.value = 0
+    
+    // Auto-start SurgR1 continuous processing when video is uploaded
+    startSurgR1Continuous(response.data.session_id)
   } catch (error) {
     console.error('Upload failed:', error)
     alert('Upload failed: ' + (error.response?.data?.detail || error.message))
@@ -304,6 +337,9 @@ const handleLoad = async (path) => {
     duration.value = response.data.duration
     summaries.value = []
     currentTime.value = 0
+    
+    // Auto-start SurgR1 continuous processing when video is loaded
+    startSurgR1Continuous(response.data.session_id)
   } catch (error) {
     console.error('Load failed:', error)
     alert('Load failed: ' + (error.response?.data?.detail || error.message))
@@ -319,18 +355,97 @@ const loadExistingSummaries = async (sessionId) => {
   }
 }
 
+// Start continuous SurgR1 processing in background
+const startSurgR1Continuous = async (sessionId) => {
+  // Wait for status check to complete if still checking
+  if (surgr1Status.value.checking) {
+    console.log('Waiting for SurgR1 status check to complete...')
+    // Wait up to 5 seconds for status check
+    for (let i = 0; i < 50 && surgr1Status.value.checking; i++) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+  }
+  
+  // Try to start anyway - the backend will handle if service is unavailable
+  // We just log a warning if status shows unavailable
+  if (!surgr1Status.value.available) {
+    console.warn('SurgR1 service may not be available, attempting to start anyway...')
+  }
+  
+  try {
+    const response = await axios.post(`/api/analysis/start-surgr1-continuous/${sessionId}`)
+    console.log('SurgR1 continuous processing:', response.data)
+    
+    if (response.data.status === 'started' || response.data.status === 'running') {
+      surgr1ProcessingStatus.value.running = true
+      // Start polling for status updates
+      startSurgR1StatusPolling(sessionId)
+    }
+  } catch (error) {
+    console.error('Failed to start SurgR1 continuous processing:', error)
+    // Don't block - SurgR1 is optional
+  }
+}
+
+// Stop continuous SurgR1 processing
+const stopSurgR1Continuous = async (sessionId) => {
+  if (!sessionId) return
+  
+  try {
+    await axios.post(`/api/analysis/stop-surgr1-continuous/${sessionId}`)
+    console.log('SurgR1 continuous processing stopped')
+    surgr1ProcessingStatus.value.running = false
+    surgr1ProcessingStatus.value.framesAnalyzed = 0
+    stopSurgR1StatusPolling()
+  } catch (error) {
+    console.error('Failed to stop SurgR1 continuous processing:', error)
+  }
+}
+
+// Poll SurgR1 continuous status
+let surgr1StatusInterval = null
+
+const startSurgR1StatusPolling = (sessionId) => {
+  stopSurgR1StatusPolling()
+  
+  surgr1StatusInterval = setInterval(async () => {
+    try {
+      const response = await axios.get(`/api/analysis/surgr1-continuous-status/${sessionId}`)
+      surgr1ProcessingStatus.value.running = response.data.is_running
+      surgr1ProcessingStatus.value.framesAnalyzed = response.data.frames_analyzed
+    } catch (error) {
+      // Ignore errors
+    }
+  }, 3000)  // Check every 3 seconds
+}
+
+const stopSurgR1StatusPolling = () => {
+  if (surgr1StatusInterval) {
+    clearInterval(surgr1StatusInterval)
+    surgr1StatusInterval = null
+  }
+}
+
 const startAnalysis = async () => {
   if (!currentSession.value) return
+  
+  // Check if GLM is available
+  if (!glmStatus.value.available) {
+    alert('GLM 服务不可用，请确保 GLM 服务已启动')
+    return
+  }
   
   isProcessing.value = true
   
   try {
-    // Use SurgR1 + GLM processing pipeline
-    await axios.post('/api/analysis/process-video-surgr1-glm', {
+    // Use GLM-only summarization (SurgR1 is already running in background)
+    const response = await axios.post('/api/analysis/start-glm-summarization', {
       session_id: currentSession.value.session_id,
       use_chinese: true,  // Use Chinese for summaries
       use_glm_multimodal: false  // Text-only mode for faster processing
     })
+    
+    console.log('GLM summarization started:', response.data)
     
     // Start SSE for summaries
     analysisEventSource = new EventSource(
@@ -358,16 +473,19 @@ const startAnalysis = async () => {
         summaries.value.sort((a, b) => a.start_time - b.start_time)
       }
       
-      // Highlight new window briefly
-      highlightedWindowId.value = data.window_id
-      setTimeout(() => {
-        if (highlightedWindowId.value === data.window_id) {
-          highlightedWindowId.value = -1
-        }
-      }, 2000)
+      // Highlight new window briefly (only if user hasn't manually selected a window)
+      if (!userSelectedWindow.value) {
+        highlightedWindowId.value = data.window_id
+        setTimeout(() => {
+          if (highlightedWindowId.value === data.window_id && !userSelectedWindow.value) {
+            highlightedWindowId.value = -1
+          }
+        }, 2000)
+      }
     }
     
-    analysisEventSource.onerror = () => {
+    analysisEventSource.onerror = (err) => {
+      console.error('SSE error:', err)
       isProcessing.value = false
       if (analysisEventSource) {
         analysisEventSource.close()
@@ -378,6 +496,10 @@ const startAnalysis = async () => {
   } catch (error) {
     console.error('Analysis failed:', error)
     isProcessing.value = false
+    
+    // Show error message
+    const errorMsg = error.response?.data?.detail || error.message || 'Unknown error'
+    alert(`分析启动失败: ${errorMsg}`)
   }
 }
 
@@ -502,6 +624,16 @@ const handleVoiceTranscript = (transcript) => {
   console.log('Voice transcript:', transcript)
 }
 
+// SAM3 toggle handler
+const handleToggleSam3 = () => {
+  if (!sam3Status.value.available) {
+    console.warn('SAM3 service not available')
+    return
+  }
+  showSam3.value = !showSam3.value
+  console.log(`SAM3 view ${showSam3.value ? 'enabled' : 'disabled'}`)
+}
+
 // ===========================================================================
 // New handlers for enhanced features
 // ===========================================================================
@@ -510,7 +642,9 @@ const handleVoiceTranscript = (transcript) => {
 const handleWindowHover = (windowId) => {
   if (windowId >= 0 && summaries.value.find(s => s.window_id === windowId)) {
     highlightedWindowId.value = windowId
-  } else {
+    // Mark as user interaction but don't set full selection (for hover only)
+  } else if (!userSelectedWindow.value) {
+    // Only reset if user hasn't selected a window
     highlightedWindowId.value = -1
   }
 }
@@ -518,12 +652,15 @@ const handleWindowHover = (windowId) => {
 // Handle seek to specific window
 const handleSeekToWindow = (windowId) => {
   highlightedWindowId.value = windowId
-  // Auto-clear highlight after 2 seconds
+  userSelectedWindow.value = true
+  
+  // Auto-clear user selection after 5 seconds to allow auto-highlight to resume
   setTimeout(() => {
     if (highlightedWindowId.value === windowId) {
+      userSelectedWindow.value = false
       highlightedWindowId.value = -1
     }
-  }, 2000)
+  }, 5000)
 }
 
 // Handle drag seek with frame analysis popup
@@ -561,33 +698,47 @@ const handleDragSeek = async (time, isDragStart) => {
   }, 200)  // 200ms debounce
 }
 
-// Fetch frame analysis from backend
+// Fetch frame analysis from backend (with saved frame image and window summary)
 const fetchFrameAnalysis = async (timestamp) => {
   if (!currentSession.value) return
   
   try {
     frameAnalysisPopup.value.isLoading = true
     
-    const response = await axios.get(
-      `/api/analysis/frame-analysis/${currentSession.value.session_id}`,
-      { params: { timestamp } }
-    )
+    // Fetch both frame data and window summary in parallel
+    const [frameResponse, summaryResponse] = await Promise.all([
+      axios.get(
+        `/api/analysis/frame-at-timestamp/${currentSession.value.session_id}`,
+        { params: { timestamp, tolerance: 1.0 } }
+      ).catch(e => ({ data: { success: false } })),
+      axios.get(
+        `/api/analysis/window-summary-at-timestamp/${currentSession.value.session_id}`,
+        { params: { timestamp } }
+      ).catch(e => ({ data: { success: false } }))
+    ])
     
-    if (response.data.found) {
-      frameAnalysisPopup.value.data = {
-        timestamp: response.data.timestamp,
-        surgical_phase: response.data.surgical_phase,
-        surgical_action: response.data.surgical_action,
-        tool_localization: response.data.tool_localization,
-        window_id: response.data.window_id
-      }
-    } else {
-      frameAnalysisPopup.value.data = {
-        timestamp,
-        surgical_phase: '',
-        surgical_action: '',
-        tool_localization: ''
-      }
+    const frameData = frameResponse.data
+    const summaryData = summaryResponse.data
+    
+    frameAnalysisPopup.value.data = {
+      timestamp: frameData.actual_timestamp || timestamp,
+      // Frame image (base64)
+      image_base64: frameData.image_base64 || null,
+      has_saved_frame: frameData.has_saved_frame || false,
+      // Frame analysis
+      surgical_phase: frameData.analysis?.surgical_phase || '',
+      surgical_action: frameData.analysis?.surgical_action || '',
+      tool_localization: frameData.analysis?.tool_localization || '',
+      // Window summary
+      window_id: summaryData.window_id,
+      window_summary: summaryData.summary || null,
+      window_start: summaryData.window_start,
+      window_end: summaryData.window_end
+    }
+    
+    // If we got a window summary, also highlight it in the summary panel
+    if (summaryData.success && summaryData.window_id !== null) {
+      highlightWindow(summaryData.window_id)
     }
   } catch (error) {
     console.error('Failed to fetch frame analysis:', error)
@@ -597,15 +748,59 @@ const fetchFrameAnalysis = async (timestamp) => {
   }
 }
 
-// Hide popup when not dragging
+// Close frame analysis popup
+const closeFrameAnalysisPopup = () => {
+  frameAnalysisPopup.value.visible = false
+  if (popupAutoHideTimer) {
+    clearTimeout(popupAutoHideTimer)
+    popupAutoHideTimer = null
+  }
+}
+
+// Handle click on video section (close popup when clicking video area)
+const handleVideoSectionClick = (event) => {
+  // Don't close if clicking on progress bar or controls
+  const target = event.target
+  const isProgressBar = target.closest('.progress-bar') || target.closest('.progress-container')
+  const isControlBtn = target.closest('.control-btn') || target.closest('.controls-row')
+  
+  if (!isProgressBar && !isControlBtn && frameAnalysisPopup.value.visible) {
+    closeFrameAnalysisPopup()
+  }
+}
+
+// Auto-hide timer for popup
+let popupAutoHideTimer = null
+
+// Auto-hide popup after data is loaded (3 seconds)
+watch(() => frameAnalysisPopup.value.isLoading, (isLoading) => {
+  if (!isLoading && frameAnalysisPopup.value.visible) {
+    // Clear any existing timer
+    if (popupAutoHideTimer) {
+      clearTimeout(popupAutoHideTimer)
+    }
+    // Set new auto-hide timer (5 seconds after data loads)
+    popupAutoHideTimer = setTimeout(() => {
+      if (frameAnalysisPopup.value.visible && !isDragging.value) {
+        frameAnalysisPopup.value.visible = false
+      }
+    }, 5000)
+  }
+})
+
+// Hide popup when not dragging (with shorter delay)
 watch(isDragging, (newVal) => {
   if (!newVal) {
-    // Delay hiding popup to allow click
-    setTimeout(() => {
+    // Clear auto-hide timer when dragging stops
+    if (popupAutoHideTimer) {
+      clearTimeout(popupAutoHideTimer)
+    }
+    // Auto-hide after 3 seconds when dragging ends
+    popupAutoHideTimer = setTimeout(() => {
       if (!isDragging.value) {
         frameAnalysisPopup.value.visible = false
       }
-    }, 300)
+    }, 3000)
   }
 })
 
@@ -659,10 +854,24 @@ const checkAnalysisServices = async () => {
 // Status check interval
 let analysisStatusInterval = null
 
+// Handle page close/refresh - use sendBeacon for reliable cleanup
+const handleBeforeUnload = () => {
+  if (currentSession.value) {
+    // sendBeacon is reliable even when page is closing
+    navigator.sendBeacon(
+      `/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`,
+      ''
+    )
+  }
+}
+
 onMounted(() => {
   checkAnalysisServices()
   // Refresh status every 30 seconds
   analysisStatusInterval = setInterval(checkAnalysisServices, 30000)
+  
+  // Add beforeunload handler for reliable cleanup
+  window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
 onUnmounted(() => {
@@ -670,6 +879,13 @@ onUnmounted(() => {
     clearInterval(analysisStatusInterval)
   }
   stopStreamPolling()
+  stopSurgR1StatusPolling()
+  
+  // Stop SurgR1 continuous processing when leaving
+  if (currentSession.value) {
+    stopSurgR1Continuous(currentSession.value.session_id)
+  }
+  
   if (dragDebounceTimer.value) {
     clearTimeout(dragDebounceTimer.value)
   }
@@ -678,6 +894,9 @@ onUnmounted(() => {
     analysisEventSource.close()
     analysisEventSource = null
   }
+  
+  // Remove beforeunload handler
+  window.removeEventListener('beforeunload', handleBeforeUnload)
 })
 </script>
 

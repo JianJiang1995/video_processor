@@ -3,12 +3,16 @@ Video Analysis API Routes
 Handles GPT summarization, SAM2 masks, and TTS
 """
 import asyncio
+import time
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import json
+from PIL import Image
+from io import BytesIO
+import base64
 
 from ..database import (
     get_db, get_video_session, get_video_session_by_id,
@@ -25,12 +29,21 @@ from ..services.surgr1_client import get_surgr1_client, ensure_surgr1_available
 from ..services.sam3_client import get_sam3_client, ensure_sam3_available
 from ..services.glm_client import get_glm_client, ensure_glm_available
 from ..services.tts_cosyvoice_client import get_tts_client, ensure_tts_available
+from ..services.mysql_service import get_mysql_service
+from ..services.frame_storage_service import get_frame_storage_service
 from ..config import settings, ANALYSIS_SYSTEM_PROMPT
 
 import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
+
+
+def get_frame_attr(frame, attr: str, default=None):
+    """Helper to get attribute from frame - handles both dict and object."""
+    if isinstance(frame, dict):
+        return frame.get(attr, default)
+    return getattr(frame, attr, default)
 
 # Global service instances
 gpt_summarizer: Optional[GPTSummarizer] = None
@@ -40,6 +53,26 @@ tts_service: Optional[TTSService] = None
 # Global cancellation flags for analysis tasks
 # Key: session_id, Value: bool (True = should cancel)
 analysis_cancellation_flags: dict = {}
+
+# Global flags for continuous SurgR1 processing
+# Key: session_id, Value: bool (True = running)
+surgr1_continuous_flags: dict = {}
+
+# Global SAM3 streaming sessions
+# Key: session_id, Value: dict with sam3_session_id, last_frame, consistency_checker, etc.
+sam3_streaming_sessions: dict = {}
+
+# Store latest SAM3 segmented frames for quick access
+# Key: session_id, Value: dict with timestamp, image_base64, etc.
+sam3_latest_frames: dict = {}
+
+# Import consistency checker
+from ..services.sam3_consistency import (
+    SAM3ConsistencyChecker, 
+    SAM3State, 
+    ConsistencyConfig,
+    parse_bboxes_from_surgr1
+)
 
 
 def get_gpt_summarizer() -> GPTSummarizer:
@@ -139,7 +172,7 @@ async def analyze_window(
     
     # Create video processor
     processor = VideoProcessor(
-        video_path=session.video_path,
+        video_path=session["video_path"],
         window_duration=settings.WINDOW_DURATION,
         sample_interval=settings.SAMPLE_INTERVAL
     )
@@ -168,7 +201,7 @@ async def analyze_window(
         # Save to database
         summary = create_window_summary(
             db=db,
-            session_id=session.id,
+            session_id=session["session_id"],
             window_id=window.window_id,
             start_time=window.start_time,
             end_time=window.end_time,
@@ -205,7 +238,7 @@ async def analyze_window_with_vlm(
     
     # Create video processor
     processor = VideoProcessor(
-        video_path=session.video_path,
+        video_path=session["video_path"],
         window_duration=settings.WINDOW_DURATION,
         sample_interval=settings.SAMPLE_INTERVAL
     )
@@ -232,7 +265,7 @@ async def analyze_window_with_vlm(
         # Save frame analysis to database
         create_frame_analysis(
             db=db,
-            session_id=session.id,
+            session_id=session["session_id"],
             frame_idx=frame.frame_idx,
             timestamp=frame.timestamp,
             tool_localization=analysis.get("tools", ""),
@@ -286,7 +319,7 @@ async def analyze_window_with_vlm(
     # Save summary
     summary = create_window_summary(
         db=db,
-        session_id=session.id,
+        session_id=session["session_id"],
         window_id=window.window_id,
         start_time=window.start_time,
         end_time=window.end_time,
@@ -324,15 +357,15 @@ async def process_full_video(
     background_tasks.add_task(
         process_video_task,
         session_id=session_id,
-        video_path=session.video_path,
-        db_session_id=session.id,
+        video_path=session["video_path"],
+        db_session_id=session["session_id"],
         use_chinese=use_chinese
     )
     
     return {
         "message": "Processing started",
         "session_id": session_id,
-        "estimated_windows": int(session.duration / settings.WINDOW_DURATION) + 1
+        "estimated_windows": int(session["duration"] / settings.WINDOW_DURATION) + 1
     }
 
 
@@ -362,8 +395,8 @@ async def process_video_with_surgr1_glm(
     background_tasks.add_task(
         process_video_surgr1_glm_task,
         session_id=request.session_id,
-        video_path=session.video_path,
-        db_session_id=session.id,
+        video_path=session["video_path"],
+        db_session_id=session["session_id"],
         use_chinese=request.use_chinese,
         use_glm_multimodal=request.use_glm_multimodal
     )
@@ -371,7 +404,7 @@ async def process_video_with_surgr1_glm(
     return {
         "message": "SurgR1+GLM processing started",
         "session_id": request.session_id,
-        "estimated_windows": int(session.duration / settings.WINDOW_DURATION) + 1,
+        "estimated_windows": int(session["duration"] / settings.WINDOW_DURATION) + 1,
         "processing_mode": "surgr1_glm"
     }
 
@@ -405,6 +438,1014 @@ async def stop_analysis(
         "session_id": session_id,
         "status": "cancelling"
     }
+
+
+# ==============================================================================
+# Continuous SurgR1 Processing (runs in background when stream starts)
+# ==============================================================================
+
+@router.post("/start-surgr1-continuous/{session_id}")
+async def start_surgr1_continuous(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    enable_sam3: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Start continuous SurgR1 frame analysis for a video session.
+    
+    This runs in the background and continuously analyzes frames with SurgR1.
+    Results are stored in the database and can be used by GLM summarization later.
+    
+    If enable_sam3 is True, also creates a SAM3 streaming session for
+    real-time segmentation with mask propagation.
+    
+    Called automatically when entering stream mode.
+    """
+    try:
+        session = get_video_session(db, session_id)
+        if not session:
+            return {
+                "success": False,
+                "message": "Session not found",
+                "session_id": session_id,
+                "status": "error"
+            }
+        
+        # Check if already running
+        if surgr1_continuous_flags.get(session_id, False):
+            return {
+                "success": True,
+                "message": "SurgR1 continuous processing already running",
+                "session_id": session_id,
+                "status": "running",
+                "sam3_enabled": session_id in sam3_streaming_sessions
+            }
+        
+        # Initialize SAM3 streaming session if enabled
+        sam3_session_id = None
+        consistency_checker = None
+        
+        if enable_sam3:
+            try:
+                sam3_client = await ensure_sam3_available()
+                is_healthy = await sam3_client.check_health()
+                
+                if is_healthy:
+                    result = await sam3_client.create_stream_session(session_id)
+                    if result.get("success"):
+                        sam3_session_id = result.get("session_id")
+                        consistency_checker = SAM3ConsistencyChecker(ConsistencyConfig(
+                            forced_refresh_interval=10.0,
+                            max_propagate_frames=30,
+                            centroid_offset_threshold=0.3,
+                            area_change_threshold=0.5
+                        ))
+                        sam3_streaming_sessions[session_id] = {
+                            "sam3_session_id": sam3_session_id,
+                            "frame_count": 0,
+                            "last_update": 0,
+                            "consistency_checker": consistency_checker,
+                            "state": "idle"
+                        }
+                        logger.info(f"SAM3 streaming session created: {sam3_session_id}")
+            except Exception as e:
+                logger.warning(f"Failed to create SAM3 streaming session: {e}")
+        
+        # Mark as running
+        surgr1_continuous_flags[session_id] = True
+        
+        # Add background task
+        background_tasks.add_task(
+            surgr1_continuous_task,
+            session_id=session_id,
+            video_path=session["video_path"],
+            db_session_id=session["session_id"],
+            sam3_session_id=sam3_session_id
+        )
+        
+        logger.info(f"Started SurgR1 continuous processing for session {session_id}")
+        
+        return {
+            "success": True,
+            "message": "SurgR1 continuous processing started",
+            "session_id": session_id,
+            "status": "started",
+            "sam3_enabled": sam3_session_id is not None,
+            "sam3_session_id": sam3_session_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Error starting SurgR1 continuous: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to start: {e}",
+            "session_id": session_id,
+            "status": "error"
+        }
+
+
+@router.post("/stop-surgr1-continuous/{session_id}")
+async def stop_surgr1_continuous(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Stop continuous SurgR1 frame analysis.
+    
+    Called when leaving stream mode or stopping the session.
+    Also cleans up any active SAM3 streaming session.
+    
+    Note: This endpoint is lenient - returns success even if session
+    doesn't exist (for page close cleanup via sendBeacon).
+    """
+    # Mark as stopped - do this first even if session doesn't exist
+    was_running = surgr1_continuous_flags.get(session_id, False)
+    surgr1_continuous_flags[session_id] = False
+    
+    # Also try to close SAM3 session if still active
+    sam3_info = sam3_streaming_sessions.get(session_id)
+    if sam3_info:
+        try:
+            sam3_client = get_sam3_client()
+            sam3_session_id = sam3_info.get("sam3_session_id")
+            if sam3_session_id:
+                await sam3_client.close_stream_session(sam3_session_id)
+        except Exception as e:
+            logger.warning(f"Error closing SAM3 session during stop: {e}")
+        finally:
+            sam3_streaming_sessions.pop(session_id, None)
+            sam3_latest_frames.pop(session_id, None)
+    
+    logger.info(f"Stopped SurgR1 continuous processing for session {session_id}")
+    
+    return {
+        "message": "SurgR1 continuous processing stopped",
+        "session_id": session_id,
+        "status": "stopped"
+    }
+
+
+@router.get("/surgr1-continuous-status/{session_id}")
+async def get_surgr1_continuous_status(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get the status of continuous SurgR1 processing"""
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    is_running = surgr1_continuous_flags.get(session_id, False)
+    
+    # Get count of analyzed frames
+    frames = get_frames_by_session(db, session["session_id"])
+    
+    # Get SAM3 streaming status
+    sam3_info = sam3_streaming_sessions.get(session_id, {})
+    
+    return {
+        "session_id": session_id,
+        "is_running": is_running,
+        "frames_analyzed": len(frames) if frames else 0,
+        "sam3_enabled": session_id in sam3_streaming_sessions,
+        "sam3_frames_processed": sam3_info.get("frame_count", 0)
+    }
+
+
+@router.get("/sam3/stream-frame/{session_id}")
+async def get_sam3_stream_frame(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get the latest SAM3 streamed frame for a session.
+    
+    This returns the most recently processed frame with SAM3 segmentation
+    from the streaming pipeline. Much faster than re-processing each frame.
+    
+    The streaming task continuously updates sam3_latest_frames with
+    segmented frames, so this endpoint just returns the cached result.
+    
+    Response includes:
+    - image_base64: The segmented frame
+    - propagated: True if mask was propagated (vs. newly generated)
+    - state: "idle", "tracking", or "reinit"
+    - reinit_reason: Why reinit was triggered (if applicable)
+    """
+    try:
+        session = get_video_session(db, session_id)
+        if not session:
+            return {
+                "success": False,
+                "message": "Session not found",
+                "streaming_active": False
+            }
+        
+        latest = sam3_latest_frames.get(session_id)
+        streaming_info = sam3_streaming_sessions.get(session_id, {})
+        
+        if not latest:
+            # No SAM3 frame available yet
+            return {
+                "success": False,
+                "message": "No SAM3 streamed frame available yet",
+                "streaming_active": session_id in sam3_streaming_sessions,
+                "state": streaming_info.get("state", "idle")
+            }
+        
+        return {
+            "success": True,
+            "timestamp": latest.get("timestamp", 0),
+            "frame_idx": latest.get("frame_idx", 0),
+            "image_base64": latest.get("image_base64"),
+            "num_objects": latest.get("num_objects", 0),
+            "propagated": latest.get("propagated", False),
+            "state": latest.get("state", "unknown"),
+            "reinit_reason": latest.get("reinit_reason"),
+            "age_seconds": time.time() - latest.get("updated_at", time.time())
+        }
+    except Exception as e:
+        logger.error(f"Error in get_sam3_stream_frame: {e}")
+        return {
+            "success": False,
+            "message": f"Server error: {str(e)}",
+            "streaming_active": False
+        }
+
+
+@router.get("/sam3/stream-status/{session_id}")
+async def get_sam3_stream_status(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get the status of SAM3 streaming for a session"""
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    sam3_info = sam3_streaming_sessions.get(session_id, {})
+    latest = sam3_latest_frames.get(session_id)
+    
+    # Get consistency checker status if available
+    consistency_status = {}
+    checker = sam3_info.get("consistency_checker")
+    if checker:
+        consistency_status = checker.get_status()
+    
+    return {
+        "session_id": session_id,
+        "streaming_active": session_id in sam3_streaming_sessions,
+        "sam3_session_id": sam3_info.get("sam3_session_id"),
+        "frames_processed": sam3_info.get("frame_count", 0),
+        "last_update": sam3_info.get("last_update", 0),
+        "state": sam3_info.get("state", "unknown"),
+        "latest_frame_timestamp": latest.get("timestamp") if latest else None,
+        "latest_frame_objects": latest.get("num_objects") if latest else None,
+        "consistency": consistency_status
+    }
+
+
+@router.post("/sam3/force-reinit/{session_id}")
+async def force_sam3_reinit(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Force SAM3 streaming session to reinitialize.
+    
+    This manually triggers a reinit on the next key frame.
+    Useful when the user notices tracking issues.
+    """
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    sam3_info = sam3_streaming_sessions.get(session_id)
+    if not sam3_info:
+        raise HTTPException(400, "SAM3 streaming not active for this session")
+    
+    # Reset the consistency checker to force reinit on next check
+    checker = sam3_info.get("consistency_checker")
+    if checker:
+        checker.reset()
+        checker.state = SAM3State.REINIT
+        logger.info(f"Forced SAM3 reinit for session {session_id}")
+        return {
+            "success": True,
+            "message": "SAM3 will reinitialize on next key frame"
+        }
+    else:
+        return {
+            "success": False,
+            "message": "No consistency checker available"
+        }
+
+
+@router.get("/sam3/consistency/{session_id}")
+async def get_sam3_consistency_status(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed consistency checker status for debugging.
+    
+    Returns information about tracked instruments, reinit history, etc.
+    """
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    sam3_info = sam3_streaming_sessions.get(session_id, {})
+    checker = sam3_info.get("consistency_checker")
+    
+    if not checker:
+        return {
+            "available": False,
+            "message": "No consistency checker for this session"
+        }
+    
+    status = checker.get_status()
+    
+    # Add tracked instrument details
+    tracked_details = []
+    for obj_id, instrument in checker.tracked_instruments.items():
+        tracked_details.append({
+            "obj_id": obj_id,
+            "label": instrument.label,
+            "frames_tracked": instrument.frames_tracked,
+            "last_area": instrument.last_area,
+            "last_centroid": instrument.last_centroid,
+            "last_bbox": instrument.last_bbox
+        })
+    
+    return {
+        "available": True,
+        **status,
+        "tracked_instruments": tracked_details,
+        "config": {
+            "centroid_offset_threshold": checker.config.centroid_offset_threshold,
+            "area_change_threshold": checker.config.area_change_threshold,
+            "forced_refresh_interval": checker.config.forced_refresh_interval,
+            "max_propagate_frames": checker.config.max_propagate_frames
+        }
+    }
+
+
+async def surgr1_continuous_task(
+    session_id: str,
+    video_path: str,
+    db_session_id: int,
+    sam3_session_id: Optional[str] = None
+):
+    """
+    Background task for continuous SurgR1 frame analysis with SAM3 streaming.
+    
+    Continuously reads frames from video/stream and:
+    1. Analyzes key frames with SurgR1 (every 1 second)
+    2. Uses SAM3 to generate segmentation masks
+    3. Propagates masks to intermediate frames with SAM3
+    4. Uses consistency checker to detect when reinit is needed
+    
+    This implements the real-time streaming approach from:
+    https://github.com/matteo-tafuro/sam3-realtime
+    """
+    import cv2
+    import time as time_module
+    
+    db = next(get_db())
+    sam3_client = None
+    consistency_checker = None
+    
+    try:
+        surgr1_client = await ensure_surgr1_available()
+        
+        # Get SAM3 client and consistency checker if session exists
+        if sam3_session_id and session_id in sam3_streaming_sessions:
+            try:
+                sam3_client = await ensure_sam3_available()
+                consistency_checker = sam3_streaming_sessions[session_id].get("consistency_checker")
+            except Exception as e:
+                logger.warning(f"SAM3 client not available: {e}")
+                sam3_client = None
+        
+        # Open video/stream
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error(f"Cannot open video: {video_path}")
+            surgr1_continuous_flags[session_id] = False
+            return
+        
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        surgr1_interval = 1.0  # SurgR1 analyzes one frame per second
+        sam3_interval = 0.1  # SAM3 propagates masks at 10 FPS (propagation is very fast)
+        last_surgr1_time = -surgr1_interval  # Ensure first frame is analyzed
+        last_sam3_time = 0
+        frame_idx = 0
+        
+        # Store last known bboxes for SAM3 propagation
+        last_bboxes = []
+        last_tool_localization = ""
+        
+        # Track SAM3 initialization state - only reinit when instruments change
+        sam3_initialized = False
+        sam3_tracked_instruments = set()  # Set of instrument labels being tracked
+        
+        logger.info(f"SurgR1 continuous task started for {session_id} (SAM3: {sam3_session_id is not None})")
+        
+        while surgr1_continuous_flags.get(session_id, False):
+            ret, bgr_frame = cap.read()
+            
+            if not ret:
+                # For streams, wait and retry; for files, loop
+                if video_path.startswith('http'):
+                    await asyncio.sleep(0.1)
+                    continue
+                else:
+                    # End of file - restart from beginning for continuous processing
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    frame_idx = 0
+                    last_surgr1_time = -surgr1_interval
+                    if consistency_checker:
+                        consistency_checker.reset()
+                    continue
+            
+            current_time = frame_idx / fps
+            
+            # Convert to PIL Image
+            rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+            from PIL import Image
+            pil_image = Image.fromarray(rgb_frame)
+            
+            # Determine if this is a SurgR1 key frame
+            is_surgr1_frame = (current_time - last_surgr1_time >= surgr1_interval)
+            
+            if is_surgr1_frame:
+                last_surgr1_time = current_time
+                
+                try:
+                    # Analyze with SurgR1
+                    result = await surgr1_client.analyze_frame(
+                        image=pil_image,
+                        analysis_type="all",
+                        session_id=session_id,
+                        frame_idx=frame_idx,
+                        timestamp=current_time,
+                        save_to_mysql=True
+                    )
+                    
+                    # Get storage path for this session from MySQL
+                    mysql_service = get_mysql_service()
+                    video_session = mysql_service.get_video_session(session_id)
+                    storage_path = video_session.get("storage_path") if video_session else None
+                    
+                    # Save frame image to storage folder
+                    frame_storage = get_frame_storage_service()
+                    image_path = None
+                    image_saved = 0
+                    if storage_path:
+                        image_path = frame_storage.save_frame(
+                            storage_path=storage_path,
+                            timestamp=current_time,
+                            frame_data=bgr_frame,
+                            frame_idx=frame_idx,
+                            subfolder="frames"
+                        )
+                        if image_path:
+                            image_saved = 1
+                    
+                    # Save to MySQL database with image path
+                    mysql_service.save_analysis(
+                        session_id=session_id,
+                        frame_idx=frame_idx,
+                        timestamp=current_time,
+                        analysis_type="frame",
+                        tool_localization=result.get("tools", ""),
+                        surgical_action=result.get("action", ""),
+                        surgical_phase=result.get("phase", ""),
+                        image_path=image_path,
+                        image_saved=image_saved
+                    )
+                    
+                    # Also save to in-memory database (backward compat)
+                    create_frame_analysis(
+                        db=db,
+                        session_id=db_session_id,
+                        frame_idx=frame_idx,
+                        timestamp=current_time,
+                        tool_localization=result.get("tools", ""),
+                        surgical_action=result.get("action", ""),
+                        surgical_phase=result.get("phase", "")
+                    )
+                    
+                    # Update last known bboxes for SAM3
+                    last_tool_localization = result.get("tools", "")
+                    last_bboxes = parse_bboxes_from_surgr1(last_tool_localization)
+                    
+                    logger.debug(f"SurgR1 analyzed frame {frame_idx} at {current_time:.1f}s, found {len(last_bboxes)} bboxes")
+                    
+                except Exception as e:
+                    logger.warning(f"SurgR1 analysis failed for frame {frame_idx}: {e}")
+            
+            # SAM3 streaming: process frame with masks
+            # Key insight: Only reinit SAM3 when instruments change, otherwise just propagate
+            if sam3_client and sam3_session_id and (current_time - last_sam3_time >= sam3_interval):
+                last_sam3_time = current_time
+                
+                try:
+                    need_reinit = False
+                    reinit_reason = None
+                    sam3_result = None
+                    
+                    # Extract current instrument labels from bboxes
+                    current_instruments = set()
+                    for bbox in last_bboxes:
+                        label = bbox.get("label", "unknown")
+                        current_instruments.add(label)
+                    
+                    # Check if we need to reinitialize SAM3
+                    if not sam3_initialized and last_bboxes:
+                        # First time seeing instruments - initialize
+                        need_reinit = True
+                        reinit_reason = "first_detection"
+                    elif is_surgr1_frame and last_bboxes:
+                        # Check if instruments changed (new instruments appeared)
+                        new_instruments = current_instruments - sam3_tracked_instruments
+                        if new_instruments:
+                            need_reinit = True
+                            reinit_reason = f"new_instruments: {new_instruments}"
+                        # Check if instrument count changed significantly
+                        elif len(current_instruments) != len(sam3_tracked_instruments):
+                            need_reinit = True
+                            reinit_reason = f"count_changed: {len(sam3_tracked_instruments)} -> {len(current_instruments)}"
+                        # Also check consistency checker if available
+                        elif consistency_checker:
+                            decision = consistency_checker.check(
+                                current_time=current_time,
+                                surgr1_bboxes=last_bboxes,
+                                sam3_masks=None
+                            )
+                            if decision.need_reinit:
+                                need_reinit = True
+                                reinit_reason = decision.reason
+                    
+                    # Determine what to send to SAM3
+                    if need_reinit and last_bboxes:
+                        # Need to reinitialize - close old session and create new
+                        logger.info(f"SAM3 reinit triggered: {reinit_reason}")
+                        
+                        # Close old session if exists
+                        if sam3_initialized:
+                            try:
+                                await sam3_client.close_stream_session(sam3_session_id)
+                            except:
+                                pass
+                        
+                        # Create new session
+                        new_session_result = await sam3_client.create_stream_session(session_id)
+                        if new_session_result.get("success"):
+                            sam3_session_id = new_session_result.get("session_id")
+                            sam3_streaming_sessions[session_id]["sam3_session_id"] = sam3_session_id
+                            
+                            # Process frame with bboxes (initialization)
+                            sam3_result = await sam3_client.process_stream_frame(
+                                session_id=sam3_session_id,
+                                frame=pil_image,
+                                frame_idx=frame_idx,
+                                timestamp=current_time,
+                                bboxes=last_bboxes
+                            )
+                            
+                            if sam3_result.get("success"):
+                                sam3_initialized = True
+                                sam3_tracked_instruments = current_instruments.copy()
+                                logger.info(f"SAM3 initialized, tracking: {sam3_tracked_instruments}")
+                            
+                            # Update consistency checker
+                            if consistency_checker:
+                                consistency_checker.update_after_reinit(
+                                    current_time=current_time,
+                                    bboxes=last_bboxes,
+                                    sam3_result=sam3_result
+                                )
+                        else:
+                            logger.error("Failed to create new SAM3 session")
+                            continue
+                    
+                    elif sam3_initialized:
+                        # Already initialized - just propagate masks (FAST!)
+                        sam3_result = await sam3_client.process_stream_frame(
+                            session_id=sam3_session_id,
+                            frame=pil_image,
+                            frame_idx=frame_idx,
+                            timestamp=current_time,
+                            bboxes=None  # Propagate only
+                        )
+                        
+                        # Update consistency checker for propagation
+                        if consistency_checker:
+                            consistency_checker.update_after_propagate(
+                                current_time=current_time,
+                                sam3_masks=None
+                            )
+                    
+                    # Store result if successful
+                    if sam3_result and sam3_result.get("success") and sam3_result.get("image_base64"):
+                        # Store latest SAM3 frame for frontend access
+                        sam3_latest_frames[session_id] = {
+                            "timestamp": current_time,
+                            "frame_idx": frame_idx,
+                            "image_base64": sam3_result["image_base64"],
+                            "num_objects": sam3_result.get("num_objects", 0),
+                            "propagated": sam3_result.get("propagated", False),
+                            "reinit_reason": reinit_reason,
+                            "state": consistency_checker.state.value if consistency_checker else "unknown",
+                            "updated_at": time_module.time()
+                        }
+                        
+                        # Update streaming session info
+                        if session_id in sam3_streaming_sessions:
+                            sam3_streaming_sessions[session_id]["frame_count"] += 1
+                            sam3_streaming_sessions[session_id]["last_update"] = time_module.time()
+                            sam3_streaming_sessions[session_id]["state"] = \
+                                consistency_checker.state.value if consistency_checker else "unknown"
+                            
+                except Exception as e:
+                    logger.warning(f"SAM3 stream processing failed for frame {frame_idx}: {e}")
+            
+            frame_idx += 1
+            
+            # Small delay to prevent CPU overload
+            await asyncio.sleep(0.01)
+        
+        cap.release()
+        logger.info(f"SurgR1 continuous task stopped for {session_id}")
+        
+    except Exception as e:
+        logger.error(f"SurgR1 continuous task error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        surgr1_continuous_flags[session_id] = False
+        
+        # Clean up SAM3 streaming session
+        if sam3_client and sam3_session_id:
+            try:
+                await sam3_client.close_stream_session(sam3_session_id)
+            except Exception as e:
+                logger.warning(f"Error closing SAM3 session: {e}")
+        
+        # Clean up stored data
+        sam3_streaming_sessions.pop(session_id, None)
+        sam3_latest_frames.pop(session_id, None)
+        
+        db.close()
+
+
+# ==============================================================================
+# GLM-only Summarization (uses existing SurgR1 results)
+# ==============================================================================
+
+class GLMSummarizeRequest(BaseModel):
+    """Request for GLM-only summarization"""
+    session_id: str
+    use_chinese: bool = True
+    use_glm_multimodal: bool = False
+
+
+@router.post("/start-glm-summarization")
+async def start_glm_summarization(
+    request: GLMSummarizeRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Start GLM summarization using existing SurgR1 frame analysis results.
+    
+    This is called when user clicks "开始分析". It uses the SurgR1 results
+    that have been continuously collected in the background.
+    """
+    session = get_video_session(db, request.session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    # Check if GLM is available
+    try:
+        glm_client = await ensure_glm_available()
+        is_healthy = await glm_client.check_health()
+        if not is_healthy:
+            raise HTTPException(503, "GLM service not available")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(503, f"GLM service error: {e}")
+    
+    # Update session status to processing
+    from ..database import update_session_status
+    update_session_status(db, request.session_id, "processing")
+    
+    # Clear any previous cancellation flag
+    analysis_cancellation_flags[request.session_id] = False
+    
+    # Get current frame count
+    frames = get_frames_by_session(db, session["session_id"])
+    frame_count = len(frames) if frames else 0
+    
+    # Start background task using asyncio.create_task for proper async execution
+    # This ensures the task runs in the background and continues processing
+    asyncio.create_task(
+        glm_summarization_task(
+            session_id=request.session_id,
+            video_path=session["video_path"],
+            db_session_id=session["session_id"],
+            use_chinese=request.use_chinese,
+            use_glm_multimodal=request.use_glm_multimodal
+        )
+    )
+    
+    logger.info(f"[GLM] Started background task for session {request.session_id}")
+    
+    return {
+        "message": "GLM summarization started",
+        "session_id": request.session_id,
+        "processing_mode": "glm_only",
+        "frames_available": frame_count,
+        "surgr1_running": surgr1_continuous_flags.get(request.session_id, False)
+    }
+
+
+async def glm_summarization_task(
+    session_id: str,
+    video_path: str,
+    db_session_id: str,  # session_id string, not int
+    use_chinese: bool = True,
+    use_glm_multimodal: bool = False
+):
+    """
+    Background task for GLM summarization using existing SurgR1 results.
+    
+    Groups SurgR1 frame analyses into 5-second windows and generates
+    summaries using GLM.
+    """
+    from ..database import update_session_status
+    db = next(get_db())
+    
+    try:
+        glm_client = await ensure_glm_available()
+        
+        processor = VideoProcessor(
+            video_path=video_path,
+            window_duration=settings.WINDOW_DURATION,
+            sample_interval=settings.SAMPLE_INTERVAL
+        )
+        
+        # Wait for SurgR1 results if none exist yet (up to 30 seconds)
+        all_frames = None
+        wait_count = 0
+        max_wait = 30  # seconds
+        
+        while wait_count < max_wait:
+            # Check cancellation
+            if analysis_cancellation_flags.get(session_id, False):
+                logger.info(f"GLM summarization cancelled while waiting for SurgR1")
+                update_session_status(db, session_id, "cancelled")
+                return
+                
+            all_frames = get_frames_by_session(db, db_session_id)
+            if all_frames and len(all_frames) > 0:
+                break
+            
+            logger.info(f"Waiting for SurgR1 results... ({wait_count}s)")
+            await asyncio.sleep(1)
+            wait_count += 1
+            db.expire_all()  # Refresh database cache
+        
+        if not all_frames or len(all_frames) == 0:
+            logger.warning(f"No SurgR1 results available for session {session_id} after waiting")
+            # Create a placeholder summary to inform user
+            create_window_summary(
+                db=db,
+                session_id=db_session_id,
+                window_id=0,
+                start_time=0,
+                end_time=5,
+                summary_text="⚠️ 等待 SurgR1 分析帧... 请确保 SurgR1 服务正在运行。",
+                tools_detected=[],
+                key_actions=[]
+            )
+            update_session_status(db, session_id, "completed")
+            return
+        
+        # Group frames by window
+        window_frames = {}
+        for frame in all_frames:
+            # Handle both dict and object access patterns, ensure ts is not None
+            ts = frame.get("timestamp") if isinstance(frame, dict) else getattr(frame, "timestamp", None)
+            ts = ts if ts is not None else 0  # Ensure ts is never None
+            window_id = int(ts / settings.WINDOW_DURATION)
+            if window_id not in window_frames:
+                window_frames[window_id] = []
+            window_frames[window_id].append(frame)
+        
+        logger.info(f"Processing {len(window_frames)} windows with GLM for session {session_id}")
+        
+        # Chinese system prompt for surgical video analysis
+        CHINESE_SYSTEM_PROMPT = """你是一位专业的腹腔镜胆囊切除术视频分析专家。你将收到一个5秒视频窗口的逐帧分析结果。请将这些分析整合成一个简洁的中文叙述摘要。
+
+## 手术阶段
+- Preparation(准备)
+- CalotTriangleDissection(Calot三角分离)
+- ClippingCutting(夹闭切断)
+- GallbladderDissection(胆囊分离)
+- GallbladderRetraction(胆囊牵拉)
+- CleaningCoagulation(清洁止血)
+- GallbladderPackaging(胆囊取出)
+
+## 关键解剖结构
+胆囊管、胆囊动脉、胆囊、Calot三角、胆囊板
+
+## 手术器械
+抓钳、电钩、剪刀、施夹器、冲洗器、双极电凝
+
+## 你的任务
+根据多帧分析结果，用2-4句中文描述：
+1. 当前手术阶段和主要操作
+2. 使用的器械及操作方式
+3. 重要观察发现
+
+请务必使用中文回答！"""
+        
+        # Track processed windows to continue from where we left off
+        processed_windows = set()
+        last_window_id = -1
+        max_wait_for_new_frames = 120  # Wait up to 120 seconds for new frames
+        no_new_frames_count = 0
+        loop_count = 0
+        
+        logger.info(f"[GLM Task] Starting continuous summarization for session {session_id}")
+        
+        while True:
+            loop_count += 1
+            
+            # Check cancellation flag
+            if analysis_cancellation_flags.get(session_id, False):
+                logger.info(f"[GLM Task] Cancelled for session {session_id}")
+                update_session_status(db, session_id, "cancelled")
+                return
+            
+            # Refresh frames from database
+            try:
+                all_frames = get_frames_by_session(db, db_session_id)
+            except Exception as e:
+                logger.error(f"[GLM Task] Failed to get frames: {e}")
+                await asyncio.sleep(2)
+                continue
+            
+            # Rebuild window_frames with new data
+            window_frames = {}
+            for frame in all_frames:
+                # Ensure ts is never None
+                ts = frame.get("timestamp") if isinstance(frame, dict) else getattr(frame, "timestamp", None)
+                ts = ts if ts is not None else 0
+                window_id = int(ts / settings.WINDOW_DURATION)
+                if window_id not in window_frames:
+                    window_frames[window_id] = []
+                window_frames[window_id].append(frame)
+            
+            # Find new windows to process (only windows with at least 2 frames)
+            new_windows = [
+                wid for wid in sorted(window_frames.keys()) 
+                if wid not in processed_windows and len(window_frames[wid]) >= 2
+            ]
+            
+            # Log status every 10 loops
+            if loop_count % 10 == 1:
+                logger.info(f"[GLM Task] Loop {loop_count}: {len(all_frames)} frames, windows={list(window_frames.keys())}, processed={processed_windows}, new={new_windows}")
+            
+            if not new_windows:
+                no_new_frames_count += 1
+                if no_new_frames_count >= max_wait_for_new_frames:
+                    logger.info(f"[GLM Task] No new frames for {max_wait_for_new_frames}s, stopping for session {session_id}")
+                    break
+                await asyncio.sleep(1)
+                continue
+            
+            no_new_frames_count = 0  # Reset counter when we have new windows
+            logger.info(f"[GLM Task] Processing {len(new_windows)} new windows: {new_windows}")
+            
+            # Process new windows
+            for window_id in new_windows:
+                if analysis_cancellation_flags.get(session_id, False):
+                    break
+                    
+                frames = window_frames[window_id]
+                start_time = window_id * settings.WINDOW_DURATION
+                end_time = start_time + settings.WINDOW_DURATION
+                
+                # Build frame analyses for GLM
+                frame_analyses = []
+                for f in frames:
+                    if isinstance(f, dict):
+                        frame_analyses.append({
+                            "frame_idx": f.get("frame_idx", 0),
+                            "timestamp": f.get("timestamp", 0),
+                            "phase": f.get("surgical_phase", "") or "",
+                            "action": f.get("surgical_action", "") or "",
+                            "tools": f.get("tool_localization", "") or ""
+                        })
+                    else:
+                        frame_analyses.append({
+                            "frame_idx": getattr(f, "frame_idx", 0),
+                            "timestamp": getattr(f, "timestamp", 0),
+                            "phase": getattr(f, "surgical_phase", "") or "",
+                            "action": getattr(f, "surgical_action", "") or "",
+                            "tools": getattr(f, "tool_localization", "") or ""
+                        })
+                
+                # ========== Temporal Analysis ==========
+                # Use temporal_analyze to process SurgR1 results before sending to GLM
+                from ..services.temporal_analyze import process_window_for_glm
+                temporal_result = process_window_for_glm(
+                    frame_analyses=frame_analyses,
+                    window_id=window_id,
+                    window_duration=settings.WINDOW_DURATION
+                )
+                temporal_context = temporal_result.get("context", "")
+                consistency = temporal_result.get("consistency", {})
+                
+                logger.info(f"[Temporal] Window {window_id}: {consistency.get('cleaned_data', {})}")
+                
+                # Get images if multimodal mode
+                images = None
+                if use_glm_multimodal:
+                    try:
+                        window = processor.extract_window(start_time)
+                        if window and window.frames:
+                            images = window.get_images()
+                    except Exception as e:
+                        logger.warning(f"Failed to extract window images: {e}")
+                
+                # Generate summary with GLM
+                try:
+                    # Build prompt with temporal context
+                    if use_chinese:
+                        prompt = CHINESE_SYSTEM_PROMPT + f"\n\n{temporal_context}"
+                    else:
+                        prompt = ANALYSIS_SYSTEM_PROMPT + f"\n\n{temporal_context}"
+                    
+                    result = await glm_client.integrate_analysis_results(
+                        frame_analyses=frame_analyses,
+                        images=images,
+                        system_prompt=prompt,
+                        temperature=0.7,
+                        max_tokens=1500
+                    )
+                    
+                    if result.get("success"):
+                        summary_text = result.get("summary", "")
+                    else:
+                        summary_text = f"[GLM Error: {result.get('error', 'Unknown')}]"
+                        
+                except Exception as e:
+                    logger.error(f"GLM summarization failed for window {window_id}: {e}")
+                    summary_text = f"[GLM Error: {str(e)}]"
+                
+                # Extract dominant phase from temporal analysis
+                cleaned_data = consistency.get("cleaned_data", {})
+                dominant_phase = cleaned_data.get("phase", "Unknown")
+                tools_detected = cleaned_data.get("tools", [])
+                
+                # Save summary to database
+                create_window_summary(
+                    db=db,
+                    session_id=db_session_id,
+                    window_id=window_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                    summary_text=summary_text,
+                    dominant_phase=dominant_phase,
+                    tools_detected=tools_detected,
+                    key_actions=[f.get("action", "")[:200] for f in frame_analyses[:3]]
+                )
+                
+                processed_windows.add(window_id)
+                logger.info(f"GLM summarized window {window_id} for session {session_id}: {summary_text[:50]}...")
+            
+            # Small delay before checking for more frames
+            await asyncio.sleep(2)
+        
+        update_session_status(db, session_id, "completed")
+        logger.info(f"GLM summarization completed for session {session_id}")
+        
+    except Exception as e:
+        import traceback
+        logger.error(f"GLM summarization task error: {e}")
+        logger.error(f"GLM task traceback: {traceback.format_exc()}")
+        update_session_status(db, session_id, "error")
+    finally:
+        # Clean up cancellation flag
+        analysis_cancellation_flags.pop(session_id, None)
+        db.close()
 
 
 async def process_video_surgr1_glm_task(
@@ -574,7 +1615,7 @@ async def get_frame_analysis(
         raise HTTPException(404, "Session not found")
     
     # Get all frame analyses for this session
-    frames = get_frames_by_session(db, session.id)
+    frames = get_frames_by_session(db, session["session_id"])
     
     if not frames:
         return {
@@ -583,26 +1624,26 @@ async def get_frame_analysis(
             "timestamp": timestamp
         }
     
-    # Find nearest frame to the requested timestamp
-    nearest_frame = min(frames, key=lambda f: abs(f.timestamp - timestamp))
+    # Find nearest frame to the requested timestamp (frames is a list of dicts)
+    nearest_frame = min(frames, key=lambda f: abs(f["timestamp"] - timestamp))
     
     # Only return if within 1 second of requested time
-    if abs(nearest_frame.timestamp - timestamp) > 1.0:
+    if abs(nearest_frame["timestamp"] - timestamp) > 1.0:
         return {
             "found": False,
             "message": "No frame analysis near this timestamp",
             "timestamp": timestamp,
-            "nearest_timestamp": nearest_frame.timestamp
+            "nearest_timestamp": nearest_frame["timestamp"]
         }
     
     return {
         "found": True,
-        "frame_idx": nearest_frame.frame_idx,
-        "timestamp": nearest_frame.timestamp,
-        "tool_localization": nearest_frame.tool_localization or "",
-        "surgical_action": nearest_frame.surgical_action or "",
-        "surgical_phase": nearest_frame.surgical_phase or "",
-        "window_id": int(nearest_frame.timestamp / settings.WINDOW_DURATION)
+        "frame_idx": nearest_frame["frame_idx"],
+        "timestamp": nearest_frame["timestamp"],
+        "tool_localization": nearest_frame.get("tool_localization") or "",
+        "surgical_action": nearest_frame.get("surgical_action") or "",
+        "surgical_phase": nearest_frame.get("surgical_phase") or "",
+        "window_id": int(nearest_frame["timestamp"] / settings.WINDOW_DURATION)
     }
 
 
@@ -623,7 +1664,7 @@ async def analyze_single_frame(
     
     # Create video processor
     processor = VideoProcessor(
-        video_path=session.video_path,
+        video_path=session["video_path"],
         window_duration=settings.WINDOW_DURATION,
         sample_interval=settings.SAMPLE_INTERVAL
     )
@@ -650,7 +1691,7 @@ async def analyze_single_frame(
         # Save to SQLite database
         create_frame_analysis(
             db=db,
-            session_id=session.id,
+            session_id=session["session_id"],
             frame_idx=frame.frame_idx,
             timestamp=frame.timestamp,
             tool_localization=result.get("tools", ""),
@@ -747,7 +1788,7 @@ async def get_session_summaries(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    summaries = get_summaries_by_session(db, session.id)
+    summaries = get_summaries_by_session(db, session["session_id"])
     
     return [
         {
@@ -773,7 +1814,7 @@ async def get_summary_at_time(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    summary = get_summary_for_timestamp(db, session.id, timestamp)
+    summary = get_summary_for_timestamp(db, session["session_id"], timestamp)
     
     if summary:
         return {
@@ -799,6 +1840,7 @@ async def stream_summaries(
     db: Session = Depends(get_db)
 ):
     """Stream summaries as they are generated (SSE)"""
+    from ..database import get_session_record
     
     session = get_video_session(db, session_id)
     if not session:
@@ -806,31 +1848,56 @@ async def stream_summaries(
     
     async def event_generator():
         last_window_id = -1
+        max_iterations = 600  # Max 10 minutes (600 * 1s)
+        iteration = 0
         
-        while True:
-            summaries = get_summaries_by_session(db, session.id)
+        while iteration < max_iterations:
+            iteration += 1
             
-            for s in summaries:
-                if s.window_id > last_window_id:
-                    data = json.dumps({
-                        "window_id": s.window_id,
-                        "start_time": s.start_time,
-                        "end_time": s.end_time,
-                        "summary": s.summary_text
-                    })
-                    yield f"data: {data}\n\n"
-                    last_window_id = s.window_id
-            
-            # Check if processing is complete or cancelled
-            db.refresh(session)
-            if session.status == "completed":
-                yield f"data: {json.dumps({'status': 'completed'})}\n\n"
-                break
-            elif session.status == "cancelled":
-                yield f"data: {json.dumps({'status': 'cancelled'})}\n\n"
-                break
+            try:
+                summaries = get_summaries_by_session(db, session["session_id"])
+                
+                for s in summaries:
+                    # Handle both dict and object access
+                    s_window_id = s.get("window_id", 0) if isinstance(s, dict) else getattr(s, "window_id", 0)
+                    if s_window_id is not None and s_window_id > last_window_id:
+                        s_start = s.get("window_start", 0) if isinstance(s, dict) else getattr(s, "start_time", 0)
+                        s_end = s.get("window_end", 0) if isinstance(s, dict) else getattr(s, "end_time", 0)
+                        s_summary = s.get("glm_summary", "") if isinstance(s, dict) else getattr(s, "summary_text", "")
+                        
+                        data = json.dumps({
+                            "window_id": s_window_id,
+                            "start_time": s_start,
+                            "end_time": s_end,
+                            "summary": s_summary
+                        })
+                        yield f"data: {data}\n\n"
+                        last_window_id = s_window_id
+                
+                # Check if processing is complete or cancelled - reload session from cache/DB
+                current_session = get_session_record(session_id)
+                if current_session:
+                    status = current_session.get("status", "")
+                    if status == "completed":
+                        yield f"data: {json.dumps({'status': 'completed'})}\n\n"
+                        break
+                    elif status == "cancelled":
+                        yield f"data: {json.dumps({'status': 'cancelled'})}\n\n"
+                        break
+                
+                # Check cancellation flag
+                if analysis_cancellation_flags.get(session_id, False):
+                    yield f"data: {json.dumps({'status': 'cancelled'})}\n\n"
+                    break
+                    
+            except Exception as e:
+                logger.warning(f"[SSE] Error in event_generator: {e}")
             
             await asyncio.sleep(1)
+        
+        # Send final completed message if we hit max iterations
+        if iteration >= max_iterations:
+            yield f"data: {json.dumps({'status': 'completed', 'message': 'timeout'})}\n\n"
     
     return StreamingResponse(
         event_generator(),
@@ -850,7 +1917,7 @@ async def segment_frame(
         raise HTTPException(404, "Session not found")
     
     # Get frame
-    processor = VideoProcessor(video_path=session.video_path)
+    processor = VideoProcessor(video_path=session["video_path"])
     frame = processor.extract_frame(request.timestamp)
     
     if frame is None:
@@ -909,7 +1976,7 @@ async def synthesize_summary(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    summaries = get_summaries_by_session(db, session.id)
+    summaries = get_summaries_by_session(db, session["session_id"])
     summary = next((s for s in summaries if s.window_id == window_id), None)
     
     if not summary:
@@ -956,7 +2023,7 @@ async def analyze_images(
     
     # Create video processor
     processor = VideoProcessor(
-        video_path=session.video_path,
+        video_path=session["video_path"],
         window_duration=settings.WINDOW_DURATION,
         sample_interval=settings.SAMPLE_INTERVAL
     )
@@ -988,7 +2055,7 @@ async def analyze_images(
         # Save frame analysis to database
         create_frame_analysis(
             db=db,
-            session_id=session.id,
+            session_id=session["session_id"],
             frame_idx=frame.frame_idx,
             timestamp=frame.timestamp,
             tool_localization=analysis.get("tools", ""),
@@ -1023,7 +2090,7 @@ async def integrate_analysis_results(
     
     # Create video processor
     processor = VideoProcessor(
-        video_path=session.video_path,
+        video_path=session["video_path"],
         window_duration=settings.WINDOW_DURATION,
         sample_interval=settings.SAMPLE_INTERVAL
     )
@@ -1036,23 +2103,23 @@ async def integrate_analysis_results(
     
     # Get frame analyses from database or analyze on-the-fly
     frame_analyses = []
-    db_frames = get_frames_by_session(db, session.id)
+    db_frames = get_frames_by_session(db, session["session_id"])
     
-    # Filter frames for this window
+    # Filter frames for this window (db_frames is a list of dicts)
     window_frames = [
         f for f in db_frames
-        if window.start_time <= f.timestamp < window.end_time
+        if window.start_time <= f["timestamp"] < window.end_time
     ]
     
     if window_frames:
         # Use existing analyses from database
         for db_frame in window_frames:
             frame_analyses.append({
-                "frame_idx": db_frame.frame_idx,
-                "timestamp": db_frame.timestamp,
-                "phase": db_frame.surgical_phase or "",
-                "action": db_frame.surgical_action or "",
-                "tools": db_frame.tool_localization or ""
+                "frame_idx": db_frame["frame_idx"],
+                "timestamp": db_frame["timestamp"],
+                "phase": db_frame.get("surgical_phase") or "",
+                "action": db_frame.get("surgical_action") or "",
+                "tools": db_frame.get("tool_localization") or ""
             })
     else:
         # Analyze frames if not in database
@@ -1118,7 +2185,7 @@ async def integrate_analysis_results(
     # Save summary to database
     summary = create_window_summary(
         db=db,
-        session_id=session.id,
+        session_id=session["session_id"],
         window_id=window.window_id,
         start_time=window.start_time,
         end_time=window.end_time,
@@ -1206,116 +2273,156 @@ async def get_sam3_segmented_frame(
     
     Returns base64 encoded image with segmentation overlay.
     """
-    session = get_video_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "Session not found")
-    
-    # Check if SAM3 is available
     try:
-        sam3_client = await ensure_sam3_available()
-        is_healthy = await sam3_client.check_health()
-        if not is_healthy:
-            raise HTTPException(503, "SAM3 service not available")
-    except Exception as e:
-        raise HTTPException(503, f"SAM3 service error: {e}")
-    
-    # Create video processor and extract frame
-    processor = VideoProcessor(
-        video_path=session.video_path,
-        window_duration=settings.WINDOW_DURATION,
-        sample_interval=settings.SAMPLE_INTERVAL
-    )
-    
-    frame = processor.extract_frame(timestamp)
-    if frame is None:
-        raise HTTPException(400, f"Could not extract frame at timestamp {timestamp}")
-    
-    # Step 1: Get SurgR1 tool_localization result
-    # First try to get from database
-    frames = get_frames_by_session(db, session.id)
-    nearest_frame = None
-    if frames:
-        nearest_frame = min(frames, key=lambda f: abs(f.timestamp - timestamp))
-        if abs(nearest_frame.timestamp - timestamp) > 1.0:
-            nearest_frame = None
-    
-    tool_localization = ""
-    if nearest_frame and nearest_frame.tool_localization:
-        tool_localization = nearest_frame.tool_localization
-    else:
-        # Analyze with SurgR1 on-the-fly
+        session = get_video_session(db, session_id)
+        if not session:
+            return {
+                "success": False,
+                "message": "Session not found",
+                "timestamp": timestamp,
+                "has_segmentation": False
+            }
+        
+        # Check if SAM3 is available
         try:
-            surgr1_client = await ensure_surgr1_available()
-            result = await surgr1_client.analyze_frame(
-                image=frame.image,
-                analysis_type="tools",
-                session_id=session_id,
-                frame_idx=frame.frame_idx,
-                timestamp=frame.timestamp,
-                save_to_mysql=False
-            )
-            tool_localization = result.get("tools", "")
+            sam3_client = await ensure_sam3_available()
+            is_healthy = await sam3_client.check_health()
+            if not is_healthy:
+                return {
+                    "success": False,
+                    "message": "SAM3 service not available",
+                    "timestamp": timestamp,
+                    "has_segmentation": False
+                }
         except Exception as e:
-            logger.warning(f"SurgR1 analysis failed: {e}")
-            # Return original frame if SurgR1 fails
+            logger.warning(f"SAM3 service check failed: {e}")
+            return {
+                "success": False,
+                "message": f"SAM3 service error: {e}",
+                "timestamp": timestamp,
+                "has_segmentation": False
+            }
+        
+        # Create video processor and extract frame
+        processor = VideoProcessor(
+            video_path=session["video_path"],
+            window_duration=settings.WINDOW_DURATION,
+            sample_interval=settings.SAMPLE_INTERVAL
+        )
+        
+        frame = processor.extract_frame(timestamp)
+        if frame is None:
             return {
                 "success": False,
                 "timestamp": timestamp,
-                "frame_idx": frame.frame_idx,
-                "message": f"SurgR1 analysis failed: {e}",
-                "image_base64": frame.to_base64(),
+                "message": f"Could not extract frame at timestamp {timestamp}",
                 "has_segmentation": False
             }
-    
-    if not tool_localization:
-        # No tools detected, return original frame
-        return {
-            "success": True,
-            "timestamp": timestamp,
-            "frame_idx": frame.frame_idx,
-            "message": "No tools detected in frame",
-            "image_base64": frame.to_base64(),
-            "has_segmentation": False
-        }
-    
-    # Step 2: Parse bboxes and call SAM3
-    try:
-        result = await sam3_client.segment_from_surgr1(
-            image=frame.image,
-            surgr1_bbox_output=tool_localization,
-            alpha=alpha,
-            return_base64=True
-        )
         
-        if result.get("success") and result.get("image_base64"):
+        # Step 1: Get SurgR1 tool_localization result
+        # First try to get from database (frames is a list of dicts)
+        frames = get_frames_by_session(db, session["session_id"])
+        nearest_frame = None
+        if frames:
+            nearest_frame = min(frames, key=lambda f: abs(f["timestamp"] - timestamp))
+            if abs(nearest_frame["timestamp"] - timestamp) > 1.0:
+                nearest_frame = None
+        
+        tool_localization = ""
+        if nearest_frame and nearest_frame.get("tool_localization"):
+            tool_localization = nearest_frame["tool_localization"]
+        else:
+            # Analyze with SurgR1 on-the-fly
+            try:
+                surgr1_client = await ensure_surgr1_available()
+                result = await surgr1_client.analyze_frame(
+                    image=frame.image,
+                    analysis_type="tools",
+                    session_id=session_id,
+                    frame_idx=frame.frame_idx,
+                    timestamp=frame.timestamp,
+                    save_to_mysql=False
+                )
+                tool_localization = result.get("tools", "")
+            except Exception as e:
+                logger.warning(f"SurgR1 analysis failed: {e}")
+                # Return original frame if SurgR1 fails
+                return {
+                    "success": False,
+                    "timestamp": timestamp,
+                    "frame_idx": frame.frame_idx,
+                    "message": f"SurgR1 analysis failed: {e}",
+                    "image_base64": frame.to_base64(),
+                    "has_segmentation": False
+                }
+        
+        if not tool_localization:
+            # No tools detected, return original frame
             return {
                 "success": True,
                 "timestamp": timestamp,
                 "frame_idx": frame.frame_idx,
-                "image_base64": result["image_base64"],
-                "has_segmentation": True,
-                "num_objects": result.get("num_objects", 0),
-                "parsed_bboxes": result.get("parsed_bboxes", [])
-            }
-        else:
-            # SAM3 failed, return original frame
-            return {
-                "success": False,
-                "timestamp": timestamp,
-                "frame_idx": frame.frame_idx,
-                "message": result.get("error", "SAM3 segmentation failed"),
+                "message": "No tools detected in frame",
                 "image_base64": frame.to_base64(),
                 "has_segmentation": False
             }
+        
+        # Step 2: Parse bboxes and call SAM3
+        try:
+            result = await sam3_client.segment_from_surgr1(
+                image=frame.image,
+                surgr1_bbox_output=tool_localization,
+                alpha=alpha,
+                return_base64=True
+            )
             
-    except Exception as e:
-        logger.error(f"SAM3 segmentation failed: {e}")
+            if result.get("success") and result.get("image_base64"):
+                return {
+                    "success": True,
+                    "timestamp": timestamp,
+                    "frame_idx": frame.frame_idx,
+                    "image_base64": result["image_base64"],
+                    "has_segmentation": True,
+                    "num_objects": result.get("num_objects", 0),
+                    "parsed_bboxes": result.get("parsed_bboxes", [])
+                }
+            else:
+                # SAM3 failed, return original frame
+                return {
+                    "success": False,
+                    "timestamp": timestamp,
+                    "frame_idx": frame.frame_idx,
+                    "message": result.get("error", "SAM3 segmentation failed"),
+                    "image_base64": frame.to_base64(),
+                    "has_segmentation": False
+                }
+                
+        except Exception as e:
+            logger.error(f"SAM3 segmentation failed: {e}")
+            try:
+                return {
+                    "success": False,
+                    "timestamp": timestamp,
+                    "frame_idx": frame.frame_idx,
+                    "message": f"SAM3 error: {e}",
+                    "image_base64": frame.to_base64(),
+                    "has_segmentation": False
+                }
+            except:
+                return {
+                    "success": False,
+                    "timestamp": timestamp,
+                    "message": f"SAM3 error: {e}",
+                    "has_segmentation": False
+                }
+                
+    except Exception as outer_e:
+        # Catch any other unhandled exceptions
+        logger.error(f"Unexpected error in get_sam3_segmented_frame: {outer_e}")
         return {
             "success": False,
             "timestamp": timestamp,
-            "frame_idx": frame.frame_idx,
-            "message": f"SAM3 error: {e}",
-            "image_base64": frame.to_base64(),
+            "message": f"Server error: {outer_e}",
             "has_segmentation": False
         }
 
@@ -1352,7 +2459,7 @@ async def stream_sam3_segmented_video(
     
     # Open video
     import cv2
-    cap = cv2.VideoCapture(session.video_path)
+    cap = cv2.VideoCapture(session["video_path"])
     if not cap.isOpened():
         raise HTTPException(400, "Cannot open video file")
     
@@ -1441,4 +2548,176 @@ async def stream_sam3_segmented_video(
         generate_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
+
+
+# ==============================================================================
+# Frame and Summary Retrieval APIs (for seek/drag operations)
+# ==============================================================================
+
+@router.get("/frame-at-timestamp/{session_id}")
+async def get_frame_at_timestamp(
+    session_id: str,
+    timestamp: float = Query(..., description="Target timestamp in seconds"),
+    tolerance: float = Query(1.0, description="Time tolerance for finding frame"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the saved frame closest to the specified timestamp.
+    
+    Used when seeking/dragging in the video player to show the analyzed frame.
+    Returns frame image (base64) and analysis results.
+    """
+    mysql_service = get_mysql_service()
+    
+    # Get video session info
+    video_session = mysql_service.get_video_session(session_id)
+    if not video_session:
+        raise HTTPException(404, "Session not found")
+    
+    storage_path = video_session.get("storage_path")
+    
+    # Get frame analysis from database
+    frame_data = mysql_service.get_frame_at_timestamp(session_id, timestamp, tolerance)
+    
+    if not frame_data:
+        # No saved frame found, try to find from file system
+        if storage_path:
+            frame_storage = get_frame_storage_service()
+            nearest = frame_storage.find_nearest_frame(storage_path, timestamp)
+            if nearest:
+                image_base64 = frame_storage.get_frame(storage_path, nearest["path"])
+                return {
+                    "success": True,
+                    "has_saved_frame": True,
+                    "timestamp": timestamp,
+                    "actual_timestamp": timestamp - nearest["timestamp_diff"],
+                    "image_base64": image_base64,
+                    "analysis": None
+                }
+        
+        return {
+            "success": False,
+            "has_saved_frame": False,
+            "timestamp": timestamp,
+            "message": "No saved frame found for this timestamp"
+        }
+    
+    # Get image from storage
+    image_base64 = None
+    if storage_path and frame_data.get("image_path"):
+        frame_storage = get_frame_storage_service()
+        image_base64 = frame_storage.get_frame(storage_path, frame_data["image_path"])
+    
+    return {
+        "success": True,
+        "has_saved_frame": bool(image_base64),
+        "timestamp": timestamp,
+        "actual_timestamp": frame_data.get("timestamp"),
+        "frame_idx": frame_data.get("frame_idx"),
+        "image_base64": image_base64,
+        "analysis": {
+            "tool_localization": frame_data.get("tool_localization"),
+            "surgical_action": frame_data.get("surgical_action"),
+            "surgical_phase": frame_data.get("surgical_phase")
+        }
+    }
+
+
+@router.get("/window-summary-at-timestamp/{session_id}")
+async def get_window_summary_at_timestamp(
+    session_id: str,
+    timestamp: float = Query(..., description="Target timestamp in seconds"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the GLM window summary that covers the specified timestamp.
+    
+    Used when seeking/dragging to show the corresponding analysis summary.
+    """
+    mysql_service = get_mysql_service()
+    
+    # Get window summary
+    summary = mysql_service.get_window_summary_at_timestamp(session_id, timestamp)
+    
+    if not summary:
+        return {
+            "success": False,
+            "timestamp": timestamp,
+            "window_id": None,
+            "summary": None,
+            "message": "No window summary found for this timestamp"
+        }
+    
+    return {
+        "success": True,
+        "timestamp": timestamp,
+        "window_id": summary.get("window_id"),
+        "window_start": summary.get("window_start"),
+        "window_end": summary.get("window_end"),
+        "summary": summary.get("glm_summary"),
+        "surgical_phase": summary.get("surgical_phase")
+    }
+
+
+@router.get("/all-window-summaries/{session_id}")
+async def get_all_window_summaries(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all GLM window summaries for a session.
+    
+    Used to populate the summary list in the UI.
+    """
+    mysql_service = get_mysql_service()
+    
+    summaries = mysql_service.get_all_window_summaries(session_id)
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "count": len(summaries),
+        "summaries": summaries
+    }
+
+
+@router.get("/session-frames/{session_id}")
+async def list_session_frames(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    List all saved frames for a session.
+    
+    Returns metadata about saved frames for timeline display.
+    """
+    mysql_service = get_mysql_service()
+    
+    # Get video session info
+    video_session = mysql_service.get_video_session(session_id)
+    if not video_session:
+        raise HTTPException(404, "Session not found")
+    
+    storage_path = video_session.get("storage_path")
+    
+    # Get all frame analyses with saved images
+    frames = mysql_service.get_analyses(session_id, limit=10000)
+    saved_frames = [
+        {
+            "frame_idx": f.get("frame_idx"),
+            "timestamp": f.get("timestamp"),
+            "has_image": f.get("image_saved") == 1,
+            "surgical_phase": f.get("surgical_phase")
+        }
+        for f in frames
+        if f.get("analysis_type") == "frame"
+    ]
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "storage_path": storage_path,
+        "count": len(saved_frames),
+        "frames": sorted(saved_frames, key=lambda x: x.get("timestamp", 0))
+    }
 

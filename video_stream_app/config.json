@@ -1,0 +1,92 @@
+{
+    "description": "Video Stream Analyzer Configuration",
+    
+    "services": {
+        "frontend": {
+            "port": 5176,
+            "host": "localhost"
+        },
+        "backend": {
+            "port": 8001,
+            "host": "0.0.0.0"
+        },
+        "surgr1": {
+            "enabled": true,
+            "required": true,
+            "port": 9003,
+            "host": "localhost",
+            "api_url": "http://localhost:9003",
+            "comment": "SurgR1 API - 手术图片分析（bbox定位、动作描述、阶段识别）[核心服务，必须开启]"
+        },
+        "glm": {
+            "enabled": true,
+            "required": true,
+            "port": 8000,
+            "host": "localhost",
+            "api_url": "http://localhost:8000/v1",
+            "model_name": "GLM-4.6V-Flash",
+            "temperature": 0.7,
+            "max_tokens": 1000,
+            "comment": "GLM-4.6-Flash用于多图像问题分析的总结（文本时序总结）[核心服务，必须开启]"
+        },
+        "sam3": {
+            "enabled": true,
+            "required": false,
+            "port": 9004,
+            "host": "localhost",
+            "api_url": "http://localhost:9004",
+            "comment": "SAM3 API - 给定SurgR1模型的bbox输出做mask分割 [可选服务]"
+        },
+        "tts": {
+            "enabled": true,
+            "required": false,
+            "port": 50000,
+            "host": "localhost",
+            "api_url": "http://localhost:50000",
+            "speaker": "中文女",
+            "comment": "CosyVoice TTS API - 给定中文文本输入，输出中文女声 [可选服务]"
+        },
+        "asr": {
+            "enabled": true,
+            "required": false,
+            "port": 8765,
+            "host": "localhost",
+            "api_url": "http://localhost:8765",
+            "ws_url": "ws://localhost:8765",
+            "keywords": ["你好小助", "小助小助", "开始识别"],
+            "standby_timeout": 180,
+            "comment": "FunASR API - 长时间监控模式，唤醒后待机N分钟后进入监控模式 [可选服务]"
+        }
+    },
+    
+    "video_processing": {
+        "window_duration": 5.0,
+        "sample_interval": 1.0,
+        "comment": "N=5秒窗口，每秒采样1帧，每个窗口5帧"
+    },
+    
+    "analysis": {
+        "questions": {
+            "tool_localization": "Given the laparoscopic surgical image <image>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
+            "surgical_action": "Given the laparoscopic surgical image <image>, describe the complete surgical action in terms of tool, action, and tissue.",
+            "surgical_phase": "Given the laparoscopic surgical image <image>, which surgical phase does this frame belong to? Choose from: Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderPackaging, CleaningCoagulation, GallbladderRetraction."
+        },
+        "temperature": 0.1,
+        "max_tokens": 512
+    },
+    
+    "database": {
+        "mysql": {
+            "host": "localhost",
+            "port": 3306,
+            "user": "root",
+            "password": "",
+            "database": "video_analyzer",
+            "comment": "MySQL用于存储所有数据（会话、分析结果、对话历史）"
+        }
+    },
+    
+    "openai": {
+        "comment": "用于GPT总结和TTS（备用），从 .env 读取 OPENAI_API_KEY"
+    }
+}
