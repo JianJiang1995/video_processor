@@ -186,6 +186,34 @@ let streamPollingInterval = null
 let streamTimerInterval = null
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
 
+// Global AbortController for session-related requests
+// When goHome is called, this will abort all pending requests
+let sessionAbortController = null
+
+// Create a new abort controller for the session
+const createSessionAbortController = () => {
+  // Abort any existing controller first
+  if (sessionAbortController) {
+    sessionAbortController.abort()
+  }
+  sessionAbortController = new AbortController()
+  return sessionAbortController
+}
+
+// Get the current abort signal (for axios requests)
+const getSessionSignal = () => {
+  return sessionAbortController?.signal
+}
+
+// Abort all session requests
+const abortAllSessionRequests = () => {
+  if (sessionAbortController) {
+    console.log('[Session] Aborting all session requests')
+    sessionAbortController.abort()
+    sessionAbortController = null
+  }
+}
+
 // Window duration (5 seconds)
 const WINDOW_DURATION = 5
 
@@ -209,6 +237,8 @@ const handleModeSelect = (selectedMode) => {
     currentView.value = 'stream-input'
   } else {
     currentView.value = 'main'
+    // Restart service status polling when entering main view
+    restartAnalysisStatusInterval()
   }
 }
 
@@ -218,6 +248,8 @@ const handleResumeSession = (session) => {
   mode.value = 'local'
   currentView.value = 'main'
   loadExistingSummaries(session.session_id)
+  // Restart service status polling when resuming session
+  restartAnalysisStatusInterval()
 }
 
 const handleStreamConnect = ({ session, autoAnalyze }) => {
@@ -227,6 +259,9 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   isPlaying.value = true
   currentTime.value = 0
   streamStartTime.value = Date.now()  // Track when stream started
+  
+  // Restart service status polling when entering main view
+  restartAnalysisStatusInterval()
   
   // Auto-start SurgR1 continuous processing when stream connects
   startSurgR1Continuous(session.session_id)
@@ -240,25 +275,57 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
 }
 
 const goHome = () => {
+  console.log('[goHome] Cleaning up and returning to home...')
+  
+  // 1. Abort all pending session requests immediately
+  abortAllSessionRequests()
+  
+  // 2. Stop all polling intervals
   stopStreamPolling()
   stopSurgR1StatusPolling()
   
-  // Clear analysis queue - immediately stops pending requests
+  // 3. Stop the analysis status interval (30s service check)
+  if (analysisStatusInterval) {
+    clearInterval(analysisStatusInterval)
+    analysisStatusInterval = null
+  }
+  
+  // 4. Clear analysis queue - this will also abort any pending batch requests
   const droppedFrames = analysisQueue.clear()
   if (droppedFrames > 0) {
     console.log(`[goHome] Dropped ${droppedFrames} queued frames`)
   }
   
-  // Stop SurgR1 continuous processing
+  // 5. Stop SurgR1 continuous processing on backend (use sendBeacon for reliability)
   if (currentSession.value) {
-    stopSurgR1Continuous(currentSession.value.session_id)
+    // Use sendBeacon to ensure the stop request is sent even if page navigation happens
+    const sessionId = currentSession.value.session_id
+    try {
+      navigator.sendBeacon(`/api/analysis/stop-surgr1-continuous/${sessionId}`, '')
+      console.log(`[goHome] Sent stop request for session ${sessionId}`)
+    } catch (e) {
+      console.warn('[goHome] sendBeacon failed, trying fetch:', e)
+      // Fallback: fire-and-forget fetch
+      fetch(`/api/analysis/stop-surgr1-continuous/${sessionId}`, { 
+        method: 'POST',
+        keepalive: true 
+      }).catch(() => {})
+    }
   }
-  // Close analysis EventSource if running
+  
+  // 6. Close analysis EventSource if running
   if (analysisEventSource) {
     analysisEventSource.close()
     analysisEventSource = null
   }
-  // Reset SAM3 view
+  
+  // 7. Clear any pending timers
+  if (dragDebounceTimer.value) {
+    clearTimeout(dragDebounceTimer.value)
+    dragDebounceTimer.value = null
+  }
+  
+  // 8. Reset all state
   showSam3.value = false
   currentView.value = 'select'
   currentSession.value = null
@@ -266,6 +333,12 @@ const goHome = () => {
   isProcessing.value = false
   isPlaying.value = false
   currentTime.value = 0
+  surgr1ProcessingStatus.value = { running: false, framesAnalyzed: 0 }
+  highlightedWindowId.value = -1
+  userSelectedWindow.value = false
+  frameAnalysisPopup.value = { visible: false, data: null, isLoading: false, position: { x: 0, y: 0 } }
+  
+  console.log('[goHome] Cleanup complete')
 }
 
 // Video handlers
@@ -366,6 +439,9 @@ const loadExistingSummaries = async (sessionId) => {
 
 // Start continuous SurgR1 processing in background
 const startSurgR1Continuous = async (sessionId) => {
+  // Create a new abort controller for this session
+  createSessionAbortController()
+  
   // Wait for status check to complete if still checking
   if (surgr1Status.value.checking) {
     console.log('Waiting for SurgR1 status check to complete...')
@@ -394,7 +470,9 @@ const startSurgR1Continuous = async (sessionId) => {
   analysisQueue.init(sessionId)
   
   try {
-    const response = await axios.post(`/api/analysis/start-surgr1-continuous/${sessionId}`)
+    const response = await axios.post(`/api/analysis/start-surgr1-continuous/${sessionId}`, null, {
+      signal: getSessionSignal()
+    })
     console.log('SurgR1 continuous processing:', response.data)
     
     if (response.data.status === 'started' || response.data.status === 'running') {
@@ -403,6 +481,10 @@ const startSurgR1Continuous = async (sessionId) => {
       startSurgR1StatusPolling(sessionId)
     }
   } catch (error) {
+    if (axios.isCancel(error) || error.name === 'AbortError') {
+      console.log('SurgR1 start request was cancelled')
+      return
+    }
     console.error('Failed to start SurgR1 continuous processing:', error)
     // Don't block - SurgR1 is optional
   }
@@ -433,12 +515,27 @@ const startSurgR1StatusPolling = (sessionId) => {
   stopSurgR1StatusPolling()
   
   surgr1StatusInterval = setInterval(async () => {
+    // Check if session is still active (abort controller exists)
+    const signal = getSessionSignal()
+    if (!signal || signal.aborted) {
+      console.log('[SurgR1StatusPolling] Session aborted, stopping polling')
+      stopSurgR1StatusPolling()
+      return
+    }
+    
     try {
-      const response = await axios.get(`/api/analysis/surgr1-continuous-status/${sessionId}`)
+      const response = await axios.get(`/api/analysis/surgr1-continuous-status/${sessionId}`, {
+        signal: signal
+      })
       surgr1ProcessingStatus.value.running = response.data.is_running
       surgr1ProcessingStatus.value.framesAnalyzed = response.data.frames_analyzed
     } catch (error) {
-      // Ignore errors
+      if (axios.isCancel(error) || error.name === 'AbortError') {
+        console.log('[SurgR1StatusPolling] Request cancelled')
+        stopSurgR1StatusPolling()
+        return
+      }
+      // Ignore other errors
     }
   }, 3000)  // Check every 3 seconds
 }
@@ -467,6 +564,8 @@ const startAnalysis = async () => {
       session_id: currentSession.value.session_id,
       use_chinese: true,  // Use Chinese for summaries
       use_glm_multimodal: false  // Text-only mode for faster processing
+    }, {
+      signal: getSessionSignal()
     })
     
     console.log('GLM summarization started:', response.data)
@@ -518,6 +617,11 @@ const startAnalysis = async () => {
     }
     
   } catch (error) {
+    if (axios.isCancel(error) || error.name === 'AbortError') {
+      console.log('Analysis start request was cancelled')
+      isProcessing.value = false
+      return
+    }
     console.error('Analysis failed:', error)
     isProcessing.value = false
     
@@ -726,6 +830,9 @@ const handleDragSeek = async (time, isDragStart) => {
 const fetchFrameAnalysis = async (timestamp) => {
   if (!currentSession.value) return
   
+  const signal = getSessionSignal()
+  if (!signal || signal.aborted) return
+  
   try {
     frameAnalysisPopup.value.isLoading = true
     
@@ -733,11 +840,11 @@ const fetchFrameAnalysis = async (timestamp) => {
     const [frameResponse, summaryResponse] = await Promise.all([
       axios.get(
         `/api/analysis/frame-at-timestamp/${currentSession.value.session_id}`,
-        { params: { timestamp, tolerance: 1.0 } }
+        { params: { timestamp, tolerance: 1.0 }, signal }
       ).catch(e => ({ data: { success: false } })),
       axios.get(
         `/api/analysis/window-summary-at-timestamp/${currentSession.value.session_id}`,
-        { params: { timestamp } }
+        { params: { timestamp }, signal }
       ).catch(e => ({ data: { success: false } }))
     ])
     
@@ -765,6 +872,10 @@ const fetchFrameAnalysis = async (timestamp) => {
       highlightWindow(summaryData.window_id)
     }
   } catch (error) {
+    if (axios.isCancel(error) || error.name === 'AbortError') {
+      console.log('Frame analysis request was cancelled')
+      return
+    }
     console.error('Failed to fetch frame analysis:', error)
     frameAnalysisPopup.value.data = { timestamp }
   } finally {
@@ -878,6 +989,17 @@ const checkAnalysisServices = async () => {
 // Status check interval
 let analysisStatusInterval = null
 
+// Restart the analysis status interval (30s service check)
+// Call this when entering the main view
+const restartAnalysisStatusInterval = () => {
+  if (analysisStatusInterval) {
+    clearInterval(analysisStatusInterval)
+  }
+  // Check immediately and then every 30 seconds
+  checkAnalysisServices()
+  analysisStatusInterval = setInterval(checkAnalysisServices, 30000)
+}
+
 // Handle page close/refresh - use sendBeacon for reliable cleanup
 const handleBeforeUnload = () => {
   if (currentSession.value) {
@@ -899,8 +1021,12 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  // Abort all pending session requests
+  abortAllSessionRequests()
+  
   if (analysisStatusInterval) {
     clearInterval(analysisStatusInterval)
+    analysisStatusInterval = null
   }
   stopStreamPolling()
   stopSurgR1StatusPolling()
@@ -910,7 +1036,11 @@ onUnmounted(() => {
   
   // Stop SurgR1 continuous processing when leaving
   if (currentSession.value) {
-    stopSurgR1Continuous(currentSession.value.session_id)
+    // Use sendBeacon for reliable cleanup
+    navigator.sendBeacon(
+      `/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`,
+      ''
+    )
   }
   
   if (dragDebounceTimer.value) {

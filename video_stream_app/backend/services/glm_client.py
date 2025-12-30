@@ -2,6 +2,11 @@
 GLM-4.6V-Flash API Client - Text Summarization Service
 Calls the external GLM API for multimodal text summarization.
 Used for integrating multiple surgical image analyses into coherent summaries.
+
+支持并发批量处理:
+- summarize_windows_concurrent: 并发摘要多个窗口
+- 使用 asyncio.Semaphore 控制并发数
+- 自动重试失败的请求
 """
 import asyncio
 import json
@@ -10,9 +15,10 @@ import base64
 import time
 from pathlib import Path
 from io import BytesIO
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 from PIL import Image
 import httpx
+from dataclasses import dataclass
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,6 +51,14 @@ def load_background_knowledge() -> str:
             return f.read()
     logger.warning(f"[GLMClient] Background knowledge file not found: {BACKGROUND_PATH}")
     return ""
+
+
+@dataclass
+class GLMConcurrentConfig:
+    """GLM 并发处理配置"""
+    max_concurrent: int = 3  # 最大并发请求数
+    retry_count: int = 2     # 失败重试次数
+    retry_delay: float = 0.5 # 重试延迟（秒）
 
 
 # Cache background knowledge at module load time
@@ -85,7 +99,8 @@ class GLMClient:
         temperature: float = None,
         max_tokens: int = None,
         timeout: float = 180.0,
-        disable_thinking: bool = True  # 默认禁用思考模式加速
+        disable_thinking: bool = True,  # 默认禁用思考模式加速
+        max_concurrent: int = 3  # 最大并发数
     ):
         config = load_config()
         glm_config = config.get("services", {}).get("glm", {})
@@ -98,7 +113,11 @@ class GLMClient:
         self.disable_thinking = disable_thinking
         self._client = None
         
-        logger.info(f"[GLMClient] Initialized with API: {self.api_url}")
+        # 并发配置
+        self.concurrent_config = GLMConcurrentConfig(max_concurrent=max_concurrent)
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        
+        logger.info(f"[GLMClient] Initialized with API: {self.api_url}, max_concurrent: {max_concurrent}")
         logger.info(f"[GLMClient] Model: {self.model_name}")
         logger.info(f"[GLMClient] Thinking mode: {'disabled' if disable_thinking else 'enabled'}")
     
@@ -531,6 +550,120 @@ Output only the summary, no additional formatting."""
             "error": result.get("error")
         }
     
+    def _analyze_consistency(self, frame_analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        分析帧间一致性，按照temporal_analyze.py的逻辑
+        
+        参数:
+            frame_analyses: 帧分析结果列表
+            
+        返回:
+            一致性分析结果字典
+        """
+        phases = []
+        actions = []
+        tools = []
+        
+        for analysis in frame_analyses:
+            phases.append(analysis.get('phase', '') or '')
+            actions.append(analysis.get('action', '') or '')
+            tools.append(analysis.get('tools', '') or '')
+        
+        # 图像级一致性：统计唯一值
+        unique_phases = set(p for p in phases if p)
+        unique_actions = set(a for a in actions if a)
+        
+        # 相邻一致性：统计转换次数
+        phase_transitions = sum(1 for i in range(len(phases) - 1) if phases[i] != phases[i + 1])
+        action_transitions = sum(1 for i in range(len(actions) - 1) if actions[i] != actions[i + 1])
+        
+        # 工具分析：统计有工具的帧数
+        frames_with_tools = sum(1 for tool in tools if tool and 'null' not in tool.lower() and len(tool) > 10)
+        
+        # 计算主导阶段
+        phase_counts = {}
+        for p in phases:
+            if p:
+                phase_counts[p] = phase_counts.get(p, 0) + 1
+        dominant_phase = max(phase_counts, key=phase_counts.get) if phase_counts else "未知"
+        
+        num_frames = len(frame_analyses)
+        
+        return {
+            "图像级一致性": {
+                "唯一阶段数": len(unique_phases),
+                "主导阶段": dominant_phase,
+                "阶段分布": phase_counts,
+                "唯一动作数": len(unique_actions),
+                "动作多样性": len(unique_actions) / len(actions) if actions else 0
+            },
+            "相邻一致性": {
+                "阶段转换次数": phase_transitions,
+                "阶段稳定性": 1 - (phase_transitions / (num_frames - 1)) if num_frames > 1 else 1.0,
+                "动作转换次数": action_transitions,
+                "动作稳定性": 1 - (action_transitions / (num_frames - 1)) if num_frames > 1 else 1.0
+            },
+            "工具分析": {
+                "有工具帧数": frames_with_tools,
+                "工具出现率": frames_with_tools / num_frames if num_frames else 0
+            }
+        }
+    
+    def _build_surgr1_context(
+        self,
+        frame_analyses: List[Dict[str, Any]],
+        consistency_analysis: Dict[str, Any]
+    ) -> str:
+        """
+        按照temporal_analyze.py的build_llm_context逻辑构建上下文
+        
+        参数:
+            frame_analyses: 帧分析结果列表
+            consistency_analysis: 一致性分析结果
+            
+        返回:
+            格式化的上下文字符串
+        """
+        # 获取时间范围
+        timestamps = [a.get('timestamp', 0) for a in frame_analyses]
+        start_time = min(timestamps) if timestamps else 0
+        end_time = max(timestamps) if timestamps else 0
+        
+        context = f"## 片段信息\n"
+        context += f"- 时间范围：{start_time:.2f}秒 到 {end_time:.2f}秒\n"
+        context += f"- 总帧数：{len(frame_analyses)}\n\n"
+        
+        # 添加一致性指标
+        img_cons = consistency_analysis["图像级一致性"]
+        adj_cons = consistency_analysis["相邻一致性"]
+        tool_analysis = consistency_analysis["工具分析"]
+        
+        context += f"## 数据质量指标\n"
+        context += f"- 主导阶段：{img_cons['主导阶段']}\n"
+        context += f"- 阶段分布：{img_cons['阶段分布']}\n"
+        context += f"- 阶段稳定性：{adj_cons['阶段稳定性']:.1%}\n"
+        context += f"- 动作稳定性：{adj_cons['动作稳定性']:.1%}\n"
+        context += f"- 工具出现率：{tool_analysis['工具出现率']:.1%}\n\n"
+        
+        # 添加逐帧标注
+        context += f"## 逐帧标注\n\n"
+        
+        for i, analysis in enumerate(frame_analyses):
+            timestamp = analysis.get('timestamp', 0)
+            context += f"### 第{i+1}帧（时间：{timestamp:.2f}秒）\n"
+            
+            phase = analysis.get('phase', '') or ''
+            action = analysis.get('action', '') or ''
+            tools = analysis.get('tools', '') or ''
+            
+            context += f"**手术阶段：** {phase}\n"
+            context += f"**手术动作：** {action}\n"
+            # 工具定位截取前200字符
+            tools_display = tools[:200] + "..." if len(tools) > 200 else tools
+            context += f"**工具定位：** {tools_display}\n\n"
+        
+        return context
+    
     async def integrate_analysis_results(
         self,
         frame_analyses: List[Dict[str, Any]],
@@ -541,93 +674,82 @@ Output only the summary, no additional formatting."""
         include_background: bool = True
     ) -> Dict[str, Any]:
         """
-        Integrate multiple frame analysis results into a coherent summary.
+        整合多帧分析结果为连贯的叙事摘要
+        按照temporal_analyze.py和video_analyze_prompt.txt的逻辑
+        只使用文本输入，输出纯中文叙事
         
-        Args:
-            frame_analyses: List of frame analysis results with phase, action, tools
-            images: Optional list of frame images for visual context
-            system_prompt: Custom system prompt
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens
-            include_background: Whether to include domain background knowledge
+        参数:
+            frame_analyses: 帧分析结果列表，包含阶段、动作、工具
+            images: 忽略此参数，只使用纯文本
+            system_prompt: 忽略此参数，使用内置提示词
+            temperature: 采样温度
+            max_tokens: 最大生成长度
+            include_background: 是否包含领域背景知识
             
-        Returns:
-            Dict with integrated summary
+        返回:
+            包含整合摘要的字典
         """
-        if system_prompt is None:
-            system_prompt = """You are an expert surgical video analyst specializing in Laparoscopic Cholecystectomy. You will receive frame-by-frame analysis results from a 5-second video window. Your task is to synthesize these analyses into a coherent, concise narrative summary.
-
-## Domain Knowledge
-
-This is a Laparoscopic Cholecystectomy procedure with 7 phases:
-- Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderRetraction, CleaningCoagulation, GallbladderPackaging
-
-Key anatomical structures: Cystic Duct, Cystic Artery, Gallbladder, Calot Triangle, Cystic Plate
-
-Tools: Grasper, Hook, Scissors, Clipper, Irrigator, Bipolar Forceps
-
-## Critical View of Safety (CVS)
-
-CVS = TRUE only when ALL three criteria are met:
-1. Only two tubular structures (cystic duct + cystic artery) connect to gallbladder
-2. Hepatocystic triangle cleared - liver visible through triangle
-3. Lower third of gallbladder detached from liver bed
-
-## Temporal Consistency Rules
-
-When synthesizing frame analyses:
-1. Resolve intra-frame contradictions (e.g., conflicting tool/phase predictions within same frame)
-2. Resolve inter-frame contradictions (e.g., sudden phase changes, tools appearing/disappearing)
-3. Use majority voting or temporal smoothing for inconsistent predictions
-4. Phase progression should be logical (rarely goes backward except for complications)
-
-## Your Task
-
-Given multiple frame analyses, integrate them into a single paragraph (2-4 sentences) that:
-1. Describes the overall surgical phase/action (resolve contradictions)
-2. Identifies key tools and their usage patterns
-3. Highlights important observations including CVS status if relevant
-
-## Guidelines
-
-- Synthesize temporal information across frames
-- Resolve contradictions between frames using temporal consistency
-- Focus on the most important and consistent observations
-- Use proper surgical terminology
-- Be concise and clear
-
-Output only the summary, no additional formatting."""
+        # 执行一致性分析
+        consistency_analysis = self._analyze_consistency(frame_analyses)
         
-        # Build context from frame analyses
-        context_parts = ["## Frame-by-Frame Analysis Results\n"]
-        for i, analysis in enumerate(frame_analyses):
-            context_parts.append(f"### Frame {i+1} (t={analysis.get('timestamp', 0):.2f}s)")
-            if analysis.get('phase'):
-                context_parts.append(f"**Phase:** {analysis['phase']}")
-            if analysis.get('action'):
-                context_parts.append(f"**Action:** {analysis['action']}")
-            if analysis.get('tools'):
-                context_parts.append(f"**Tools:** {analysis['tools'][:200]}")
-            context_parts.append("")
+        # 构建内部分析上下文（供模型理解，但不要求输出）
+        internal_context = self._build_internal_context(frame_analyses, consistency_analysis)
         
-        context = "\n".join(context_parts)
-        prompt_text = "Please integrate the following frame-by-frame analysis results into a coherent summary:\n\n" + context
+        # 使用完整的中文叙事提示词（聚焦动作和CVS状态）
+        system_prompt = """你是一名专业的腹腔镜胆囊切除术视频分析专家。根据逐帧标注生成简洁的中文叙事，重点描述手术动作和安全关键视角状态。
+
+## 安全关键视角三标准
+
+CVS确认需同时满足：
+1. 仅两个管状结构连接胆囊（胆囊管和胆囊动脉）
+2. 肝胆三角清理干净，可见底部肝脏
+3. 胆囊下1/3已从肝床分离
+
+## 输出要求
+
+直接输出一段流畅的中文叙事（2-4句），描述：
+1. 当前手术阶段和主要动作
+2. 使用的工具及操作方式
+3. CVS状态评估（如适用）
+
+## 禁止内容
+
+- 不要输出片段时长、帧数、时间戳
+- 不要输出"这是一段...视频片段"这类开头
+- 不要输出帧编号或分析指标
+- 不要使用英文
+
+## 工具和阶段中文名称
+
+工具：抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
+阶段：准备阶段、肝胆三角解剖阶段、夹闭切断阶段、胆囊分离阶段、胆囊牵拉阶段、清洁凝血阶段、胆囊取出阶段
+
+## 时序处理（内部）
+
+- 工具出现<10%帧视为误检，忽略
+- 以工具定位为权威来源
+- 内部解决矛盾，输出统一叙事
+
+## 示例输出
+
+"当前处于肝胆三角解剖阶段，抓钳牵拉胆囊暴露肝胆三角区域，电钩沿胆囊壁进行精细分离。肝胆三角区域逐步清晰，可见胆囊管和胆囊动脉两个管状结构，CVS第一标准部分达成。"
+
+"胆囊分离阶段，电钩沿胆囊板分离胆囊与肝床连接，抓钳持续牵拉提供张力。分离操作稳定推进，视野清晰。" """
         
-        if images:
-            result = await self.analyze_multiple_images(
-                images=images,
-                question=prompt_text,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-        else:
-            result = await self.chat(
-                message=prompt_text,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+        # 构建用户消息（包含帧数据供模型内部分析）
+        prompt_text = f"""根据以下逐帧标注，描述当前手术动作和CVS状态：
+
+{internal_context}
+
+直接输出叙事，不要输出时长、帧数或分析过程。"""
+        
+        # 只使用纯文本聊天
+        result = await self.chat(
+            message=prompt_text,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
         
         return {
             "success": result.get("success", False),
@@ -635,8 +757,198 @@ Output only the summary, no additional formatting."""
             "model": self.model_name,
             "tokens_used": result.get("tokens_used", 0),
             "frame_count": len(frame_analyses),
+            "consistency_analysis": consistency_analysis,
             "error": result.get("error")
         }
+    
+    def _build_internal_context(
+        self,
+        frame_analyses: List[Dict[str, Any]],
+        consistency_analysis: Dict[str, Any]
+    ) -> str:
+        """
+        构建供模型内部分析的上下文（模型应综合后只输出叙事）
+        不包含时长、帧数等信息
+        """
+        # 添加一致性指标供参考
+        img_cons = consistency_analysis["图像级一致性"]
+        tool_analysis = consistency_analysis["工具分析"]
+        
+        context = f"主导阶段：{img_cons['主导阶段']}\n"
+        context += f"工具出现率：{tool_analysis['工具出现率']:.0%}\n\n"
+        
+        # 逐帧数据（简化格式）
+        context += "帧标注：\n"
+        for i, analysis in enumerate(frame_analyses):
+            phase = analysis.get('phase', '') or ''
+            action = analysis.get('action', '') or ''
+            tools = analysis.get('tools', '') or ''
+            # 截取工具信息
+            if len(tools) > 120:
+                tools = tools[:120] + "..."
+            context += f"[{phase}] {action} | {tools}\n"
+        
+        return context
+    
+    # ==================== 并发处理方法 ====================
+    
+    async def summarize_windows_concurrent(
+        self,
+        windows: List[Dict[str, Any]],
+        max_concurrent: int = None
+    ) -> List[Dict[str, Any]]:
+        """
+        并发摘要多个窗口 - 高性能版本
+        
+        使用 asyncio.gather + Semaphore 并发处理多个窗口，
+        比串行处理快 N 倍（N = 并发数）
+        
+        Args:
+            windows: 窗口列表，每个包含:
+                - window_id: 窗口 ID
+                - frame_analyses: 帧分析结果列表
+                - images: 可选图片列表（多模态）
+            max_concurrent: 最大并发数，None 使用默认配置
+            
+        Returns:
+            摘要结果列表（按原始顺序）
+        """
+        if not windows:
+            return []
+        
+        # 使用指定的并发数或默认配置
+        semaphore = self._semaphore
+        if max_concurrent and max_concurrent != self.concurrent_config.max_concurrent:
+            semaphore = asyncio.Semaphore(max_concurrent)
+        
+        start_time = time.time()
+        
+        async def summarize_with_semaphore(window: Dict[str, Any], index: int) -> Tuple[int, Dict[str, Any]]:
+            """带信号量控制的单窗口摘要"""
+            async with semaphore:
+                try:
+                    result = await self.integrate_analysis_results(
+                        frame_analyses=window.get("frame_analyses", []),
+                        images=window.get("images")
+                    )
+                    return index, {
+                        "window_id": window.get("window_id"),
+                        "success": result.get("success", False),
+                        "summary": result.get("summary", ""),
+                        "tokens_used": result.get("tokens_used", 0),
+                        "error": result.get("error")
+                    }
+                except Exception as e:
+                    logger.warning(f"[GLMClient] Concurrent summarization failed for window {window.get('window_id')}: {e}")
+                    return index, {
+                        "window_id": window.get("window_id"),
+                        "success": False,
+                        "summary": f"[Error: {str(e)}]",
+                        "error": str(e)
+                    }
+        
+        # 创建所有任务并并发执行
+        tasks = [
+            summarize_with_semaphore(window, i) 
+            for i, window in enumerate(windows)
+        ]
+        
+        # 并发执行
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 按原始顺序排序结果
+        sorted_results = [None] * len(windows)
+        success_count = 0
+        
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"[GLMClient] Unexpected error in concurrent summarization: {result}")
+                continue
+            
+            index, data = result
+            sorted_results[index] = data
+            if data.get("success"):
+                success_count += 1
+        
+        # 填充失败的结果
+        for i, r in enumerate(sorted_results):
+            if r is None:
+                sorted_results[i] = {
+                    "window_id": windows[i].get("window_id"),
+                    "success": False,
+                    "summary": "[Unknown error]",
+                    "error": "Unknown error"
+                }
+        
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[GLMClient] Concurrent summarization completed: "
+            f"{success_count}/{len(windows)} windows in {elapsed:.2f}s"
+        )
+        
+        return sorted_results
+    
+    async def chat_concurrent(
+        self,
+        messages: List[Dict[str, Any]],
+        max_concurrent: int = None
+    ) -> List[Dict[str, Any]]:
+        """
+        并发处理多个聊天请求
+        
+        Args:
+            messages: 消息列表，每个包含:
+                - message: 用户消息
+                - system_prompt: 可选系统提示
+                - temperature: 可选温度
+            max_concurrent: 最大并发数
+            
+        Returns:
+            响应列表（按原始顺序）
+        """
+        if not messages:
+            return []
+        
+        semaphore = self._semaphore
+        if max_concurrent and max_concurrent != self.concurrent_config.max_concurrent:
+            semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def chat_with_semaphore(msg: Dict[str, Any], index: int) -> Tuple[int, Dict[str, Any]]:
+            async with semaphore:
+                try:
+                    result = await self.chat(
+                        message=msg.get("message", ""),
+                        system_prompt=msg.get("system_prompt"),
+                        temperature=msg.get("temperature")
+                    )
+                    return index, result
+                except Exception as e:
+                    return index, {
+                        "success": False,
+                        "text": f"[Error: {str(e)}]",
+                        "error": str(e)
+                    }
+        
+        tasks = [chat_with_semaphore(msg, i) for i, msg in enumerate(messages)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        sorted_results = [None] * len(messages)
+        for result in results:
+            if isinstance(result, Exception):
+                continue
+            index, data = result
+            sorted_results[index] = data
+        
+        # 填充失败的结果
+        for i, r in enumerate(sorted_results):
+            if r is None:
+                sorted_results[i] = {
+                    "success": False,
+                    "text": "[Unknown error]",
+                    "error": "Unknown error"
+                }
+        
+        return sorted_results
 
 
 # Global client instance

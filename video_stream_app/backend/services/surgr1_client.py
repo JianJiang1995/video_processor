@@ -4,18 +4,24 @@ Calls the external SurgR1 API for image analysis with three questions:
 1. Tool localization (bounding boxes)
 2. Surgical action description
 3. Surgical phase identification
+
+支持并发批量处理:
+- analyze_frames_concurrent: 并发分析多帧
+- 使用 asyncio.Semaphore 控制并发数
+- 自动重试失败的请求
 """
 import asyncio
 import json
 import logging
 import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 from PIL import Image
 import httpx
 import base64
 from io import BytesIO
 import tempfile
+from dataclasses import dataclass
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,6 +45,14 @@ def load_config() -> dict:
     return {}
 
 
+@dataclass
+class ConcurrentConfig:
+    """并发处理配置"""
+    max_concurrent: int = 3  # 最大并发请求数
+    retry_count: int = 2     # 失败重试次数
+    retry_delay: float = 0.5 # 重试延迟（秒）
+
+
 class SurgR1Client:
     """
     SurgR1 API Client
@@ -48,12 +62,22 @@ class SurgR1Client:
     1. Tool localization (bounding boxes)
     2. Surgical action description  
     3. Surgical phase identification
+    
+    并发特性:
+    - analyze_frames_concurrent: 使用 asyncio.gather 并发分析
+    - 自动 Semaphore 控制并发数防止过载
+    - 支持失败重试
+    
+    配置从 config.json 的 services.surgr1 读取:
+    - max_concurrent: 最大并发数
+    - retry_count: 重试次数
     """
     
     def __init__(
         self,
         api_url: str = None,
-        timeout: float = 120.0
+        timeout: float = 120.0,
+        max_concurrent: int = None  # None 表示从配置读取
     ):
         config = load_config()
         surgr1_config = config.get("services", {}).get("surgr1", {})
@@ -62,7 +86,21 @@ class SurgR1Client:
         self.timeout = timeout
         self._client = None
         
-        logger.info(f"[SurgR1Client] Initialized with API: {self.api_url}")
+        # 从配置读取并发参数
+        config_max_concurrent = surgr1_config.get("max_concurrent", 3)
+        config_retry_count = surgr1_config.get("retry_count", 2)
+        
+        # 使用传入参数或配置值
+        actual_max_concurrent = max_concurrent if max_concurrent is not None else config_max_concurrent
+        
+        # 并发配置
+        self.concurrent_config = ConcurrentConfig(
+            max_concurrent=actual_max_concurrent,
+            retry_count=config_retry_count
+        )
+        self._semaphore = asyncio.Semaphore(actual_max_concurrent)
+        
+        logger.info(f"[SurgR1Client] Initialized with API: {self.api_url}, max_concurrent: {actual_max_concurrent}, retry_count: {config_retry_count}")
     
     @property
     def client(self) -> httpx.AsyncClient:
@@ -244,6 +282,127 @@ class SurgR1Client:
                 "results": []
             }
     
+    async def analyze_frames_batch(
+        self,
+        frames: List[Dict[str, Any]],
+        analysis_type: str = "all",
+        session_id: str = None,
+        save_to_mysql: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Analyze multiple frames in a single batch request.
+        
+        This is much faster than analyzing frames one by one because:
+        1. Single HTTP request overhead
+        2. GPU can batch process multiple images more efficiently
+        
+        Args:
+            frames: List of dicts with keys: image (PIL/bytes/path), frame_idx, timestamp
+            analysis_type: "all", "phase", "action", or "tools"
+            session_id: Optional session ID for MySQL storage
+            save_to_mysql: Whether to save results to MySQL
+            
+        Returns:
+            List of analysis results for each frame
+        """
+        if not frames:
+            return []
+        
+        # Convert all images to temp file paths
+        image_paths = []
+        cleanup_paths = []
+        frame_info = []  # Store frame_idx and timestamp for each image
+        
+        for frame_data in frames:
+            image = frame_data.get("image")
+            if isinstance(image, (Image.Image, bytes)):
+                image_path = self._save_temp_image(image)
+                cleanup_paths.append(image_path)
+            else:
+                image_path = image
+            image_paths.append(image_path)
+            frame_info.append({
+                "frame_idx": frame_data.get("frame_idx"),
+                "timestamp": frame_data.get("timestamp")
+            })
+        
+        try:
+            # Map analysis type to questions
+            custom_questions = None
+            if analysis_type != "all":
+                config = load_config()
+                questions_config = config.get("analysis", {}).get("questions", {})
+                question_map = {
+                    "phase": ["surgical_phase"],
+                    "action": ["surgical_action"],
+                    "tools": ["tool_localization"],
+                }
+                selected_keys = question_map.get(analysis_type, [])
+                custom_questions = [questions_config[k] for k in selected_keys if k in questions_config]
+            
+            # Single batch API call
+            batch_result = await self.analyze_batch(
+                image_paths=image_paths,
+                questions=custom_questions
+            )
+            
+            results = []
+            
+            if batch_result.get("success") and batch_result.get("results"):
+                api_results = batch_result["results"]
+                
+                for i, api_result in enumerate(api_results):
+                    responses = api_result.get("responses", {})
+                    
+                    analysis_result = {
+                        "frame_idx": frame_info[i]["frame_idx"],
+                        "timestamp": frame_info[i]["timestamp"],
+                        "phase": responses.get("surgical_phase", ""),
+                        "action": responses.get("surgical_action", ""),
+                        "tools": responses.get("tool_localization", "")
+                    }
+                    results.append(analysis_result)
+                    
+                    # Save to MySQL if enabled
+                    if save_to_mysql and session_id:
+                        try:
+                            from .mysql_service import get_mysql_service
+                            mysql = get_mysql_service()
+                            mysql.save_analysis(
+                                session_id=session_id,
+                                tool_localization=analysis_result["tools"],
+                                surgical_action=analysis_result["action"],
+                                surgical_phase=analysis_result["phase"],
+                                image_path=image_paths[i],
+                                frame_idx=frame_info[i]["frame_idx"],
+                                timestamp=frame_info[i]["timestamp"],
+                                analysis_type="frame"
+                            )
+                        except Exception as e:
+                            logger.warning(f"[SurgR1Client] Failed to save to MySQL: {e}")
+                
+                logger.info(f"[SurgR1Client] Batch analyzed {len(results)} frames successfully")
+            else:
+                # Return empty results on failure
+                for i in range(len(frames)):
+                    results.append({
+                        "frame_idx": frame_info[i]["frame_idx"],
+                        "timestamp": frame_info[i]["timestamp"],
+                        "phase": f"[Error: {batch_result.get('error', 'Batch failed')}]",
+                        "action": "",
+                        "tools": ""
+                    })
+            
+            return results
+            
+        finally:
+            # Cleanup temp files
+            for path in cleanup_paths:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except:
+                    pass
+
     async def analyze_frame(
         self,
         image: Union[str, Image.Image, bytes],
@@ -337,6 +496,177 @@ class SurgR1Client:
                     Path(cleanup_path).unlink(missing_ok=True)
                 except:
                     pass
+    
+    async def analyze_frames_concurrent(
+        self,
+        frames: List[Dict[str, Any]],
+        analysis_type: str = "all",
+        session_id: str = None,
+        save_to_mysql: bool = True,
+        max_concurrent: int = None
+    ) -> List[Dict[str, Any]]:
+        """
+        并发分析多帧 - 高性能版本
+        
+        使用 asyncio.gather + Semaphore 并发处理多个帧，
+        比串行处理快 N 倍（N = 并发数）
+        
+        Args:
+            frames: 帧列表，每个包含 image, frame_idx, timestamp
+            analysis_type: 分析类型 "all", "phase", "action", "tools"
+            session_id: 会话 ID
+            save_to_mysql: 是否保存到数据库
+            max_concurrent: 最大并发数，None 使用默认配置
+            
+        Returns:
+            分析结果列表（按原始顺序）
+        """
+        if not frames:
+            return []
+        
+        # 使用指定的并发数或默认配置
+        semaphore = self._semaphore
+        if max_concurrent and max_concurrent != self.concurrent_config.max_concurrent:
+            semaphore = asyncio.Semaphore(max_concurrent)
+        
+        start_time = time.time()
+        
+        async def analyze_with_semaphore(frame_data: Dict[str, Any], index: int) -> Tuple[int, Dict[str, Any]]:
+            """带信号量控制的单帧分析"""
+            async with semaphore:
+                try:
+                    result = await self.analyze_frame(
+                        image=frame_data.get("image"),
+                        analysis_type=analysis_type,
+                        session_id=session_id,
+                        frame_idx=frame_data.get("frame_idx"),
+                        timestamp=frame_data.get("timestamp"),
+                        save_to_mysql=save_to_mysql
+                    )
+                    return index, {
+                        "frame_idx": frame_data.get("frame_idx"),
+                        "timestamp": frame_data.get("timestamp"),
+                        "success": True,
+                        **result
+                    }
+                except Exception as e:
+                    logger.warning(f"[SurgR1Client] Concurrent analysis failed for frame {frame_data.get('frame_idx')}: {e}")
+                    return index, {
+                        "frame_idx": frame_data.get("frame_idx"),
+                        "timestamp": frame_data.get("timestamp"),
+                        "success": False,
+                        "error": str(e),
+                        "phase": f"[Error: {str(e)}]",
+                        "action": "",
+                        "tools": ""
+                    }
+        
+        # 创建所有任务并并发执行
+        tasks = [
+            analyze_with_semaphore(frame, i) 
+            for i, frame in enumerate(frames)
+        ]
+        
+        # 并发执行
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 按原始顺序排序结果
+        sorted_results = [None] * len(frames)
+        success_count = 0
+        
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"[SurgR1Client] Unexpected error in concurrent analysis: {result}")
+                continue
+            
+            index, data = result
+            sorted_results[index] = data
+            if data.get("success"):
+                success_count += 1
+        
+        # 填充失败的结果
+        for i, r in enumerate(sorted_results):
+            if r is None:
+                sorted_results[i] = {
+                    "frame_idx": frames[i].get("frame_idx"),
+                    "timestamp": frames[i].get("timestamp"),
+                    "success": False,
+                    "error": "Unknown error",
+                    "phase": "",
+                    "action": "",
+                    "tools": ""
+                }
+        
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[SurgR1Client] Concurrent analysis completed: "
+            f"{success_count}/{len(frames)} frames in {elapsed:.2f}s "
+            f"({len(frames)/elapsed:.1f} fps)"
+        )
+        
+        return sorted_results
+    
+    async def analyze_frames_concurrent_with_retry(
+        self,
+        frames: List[Dict[str, Any]],
+        analysis_type: str = "all",
+        session_id: str = None,
+        save_to_mysql: bool = True,
+        max_retries: int = 2,
+        retry_delay: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """
+        带重试的并发帧分析
+        
+        失败的帧会自动重试，最多重试 max_retries 次
+        
+        Args:
+            frames: 帧列表
+            analysis_type: 分析类型
+            session_id: 会话 ID
+            save_to_mysql: 是否保存到数据库
+            max_retries: 最大重试次数
+            retry_delay: 重试延迟（秒）
+            
+        Returns:
+            分析结果列表
+        """
+        # 第一轮并发分析
+        results = await self.analyze_frames_concurrent(
+            frames=frames,
+            analysis_type=analysis_type,
+            session_id=session_id,
+            save_to_mysql=save_to_mysql
+        )
+        
+        # 收集失败的帧
+        for retry in range(max_retries):
+            failed_indices = [
+                i for i, r in enumerate(results) 
+                if not r.get("success")
+            ]
+            
+            if not failed_indices:
+                break
+            
+            logger.info(f"[SurgR1Client] Retry {retry + 1}/{max_retries}: {len(failed_indices)} failed frames")
+            
+            await asyncio.sleep(retry_delay)
+            
+            # 重试失败的帧
+            retry_frames = [frames[i] for i in failed_indices]
+            retry_results = await self.analyze_frames_concurrent(
+                frames=retry_frames,
+                analysis_type=analysis_type,
+                session_id=session_id,
+                save_to_mysql=save_to_mysql
+            )
+            
+            # 更新结果
+            for i, idx in enumerate(failed_indices):
+                results[idx] = retry_results[i]
+        
+        return results
 
 
 # Global client instance

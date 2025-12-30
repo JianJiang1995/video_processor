@@ -71,12 +71,21 @@ class Settings(BaseSettings):
     
     # SurgR1 Service (surgical image analysis with 3 questions)
     SURGR1_API_URL: str = _json_config.get("services", {}).get("surgr1", {}).get("api_url", "http://localhost:9003")
+    SURGR1_MAX_CONCURRENT: int = _json_config.get("services", {}).get("surgr1", {}).get("max_concurrent", 3)
+    SURGR1_RETRY_COUNT: int = _json_config.get("services", {}).get("surgr1", {}).get("retry_count", 2)
+    # 动态批处理配置
+    SURGR1_MIN_BATCH_SIZE: int = _json_config.get("services", {}).get("surgr1", {}).get("min_batch_size", 1)
+    SURGR1_MAX_BATCH_SIZE: int = _json_config.get("services", {}).get("surgr1", {}).get("max_batch_size", 10)
+    SURGR1_BATCH_TIMEOUT: float = _json_config.get("services", {}).get("surgr1", {}).get("batch_timeout", 2.0)
+    SURGR1_TARGET_LATENCY: float = _json_config.get("services", {}).get("surgr1", {}).get("target_latency", 5.0)
     
     # GLM-4.6V-Flash Service (for summarization and integration)
     GLM_API_URL: str = _json_config.get("services", {}).get("glm", {}).get("api_url", "http://localhost:8000/v1")
     GLM_MODEL_NAME: str = _json_config.get("services", {}).get("glm", {}).get("model_name", "GLM-4.6V-Flash")
     GLM_TEMPERATURE: float = _json_config.get("services", {}).get("glm", {}).get("temperature", 0.7)
     GLM_MAX_TOKENS: int = _json_config.get("services", {}).get("glm", {}).get("max_tokens", 1000)
+    GLM_MAX_CONCURRENT: int = _json_config.get("services", {}).get("glm", {}).get("max_concurrent", 3)
+    GLM_RETRY_COUNT: int = _json_config.get("services", {}).get("glm", {}).get("retry_count", 2)
     
     # SAM3 Service (bbox to mask segmentation)
     SAM3_API_URL: str = _json_config.get("services", {}).get("sam3", {}).get("api_url", "http://localhost:9004")
