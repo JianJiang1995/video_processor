@@ -14,6 +14,8 @@ import cv2
 
 from ..database import get_db, create_video_session, get_video_session, get_all_sessions, update_session_status
 from ..services.video_processor import VideoProcessor, ProcessingState
+from ..services.mysql_service import get_mysql_service
+from ..services.frame_storage_service import get_frame_storage_service
 from ..config import settings
 
 router = APIRouter(prefix="/api/video", tags=["video"])
@@ -95,7 +97,7 @@ async def upload_video(
     )
     
     return VideoUploadResponse(
-        session_id=session.session_id,
+        session_id=session["session_id"],
         video_name=file.filename,
         duration=duration,
         fps=fps,
@@ -128,7 +130,7 @@ async def load_video_from_path(
     duration = total_frames / fps if fps > 0 else 0
     cap.release()
     
-    # Create database session
+    # Create database session (in-memory)
     session = create_video_session(
         db=db,
         video_path=str(path),
@@ -140,14 +142,68 @@ async def load_video_from_path(
         total_frames=total_frames
     )
     
+    session_id = session["session_id"]
+    video_name = path.name
+    
+    # Create session storage folder
+    frame_storage = get_frame_storage_service()
+    storage_path = frame_storage.create_session_folder(session_id, video_name)
+    
+    # Save to MySQL with storage path
+    mysql_service = get_mysql_service()
+    try:
+        mysql_service.create_video_session(
+            session_id=session_id,
+            video_name=video_name,
+            video_path=str(path),
+            video_type="local",
+            duration=duration,
+            fps=fps,
+            width=width,
+            height=height,
+            total_frames=total_frames,
+            storage_path=storage_path
+        )
+    except Exception as e:
+        print(f"[Video] Warning: Failed to save session to MySQL: {e}")
+    
     return {
-        "session_id": session.session_id,
-        "video_name": path.name,
+        "session_id": session_id,
+        "video_name": video_name,
         "duration": duration,
         "fps": fps,
         "width": width,
-        "height": height
+        "height": height,
+        "storage_path": storage_path
     }
+
+
+def _try_open_stream(stream_url: str, timeout: float = 10.0):
+    """Try to open a video stream with timeout (runs in thread pool)"""
+    import threading
+    result = {"cap": None, "error": None}
+    
+    def open_stream():
+        try:
+            cap = cv2.VideoCapture(stream_url)
+            if cap.isOpened():
+                result["cap"] = cap
+            else:
+                result["error"] = "Cannot open stream"
+        except Exception as e:
+            result["error"] = str(e)
+    
+    thread = threading.Thread(target=open_stream)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout=timeout)
+    
+    if thread.is_alive():
+        # Timeout - thread still running
+        result["error"] = "Connection timeout"
+        return None, result["error"]
+    
+    return result["cap"], result["error"]
 
 
 @router.post("/connect-stream")
@@ -159,10 +215,20 @@ async def connect_to_stream(
     
     stream_url = request.stream_url
     
-    # Try to connect to stream
-    cap = cv2.VideoCapture(stream_url)
-    if not cap.isOpened():
-        raise HTTPException(400, f"Cannot connect to stream: {stream_url}")
+    # Try to connect to stream with timeout (run in thread pool to avoid blocking)
+    import concurrent.futures
+    loop = asyncio.get_event_loop()
+    
+    try:
+        cap, error = await asyncio.wait_for(
+            loop.run_in_executor(None, _try_open_stream, stream_url, 10.0),
+            timeout=15.0  # Overall timeout
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(408, f"连接超时: {stream_url}")
+    
+    if error or cap is None:
+        raise HTTPException(400, f"无法连接视频流: {stream_url} - {error or '未知错误'}")
     
     # Get stream properties
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0  # Default to 25fps if not available
@@ -175,7 +241,7 @@ async def connect_to_stream(
     parsed = urlparse(stream_url)
     stream_name = parsed.path.split('/')[-1] or f"stream_{parsed.hostname}"
     
-    # Create database session
+    # Create database session (in-memory)
     session = create_video_session(
         db=db,
         video_path=stream_url,
@@ -187,17 +253,41 @@ async def connect_to_stream(
         total_frames=0
     )
     
+    session_id = session["session_id"]
+    video_name = f"🔴 {stream_name}"
+    
+    # Create session storage folder
+    frame_storage = get_frame_storage_service()
+    storage_path = frame_storage.create_session_folder(session_id, stream_name)
+    
+    # Save to MySQL with storage path
+    mysql_service = get_mysql_service()
+    try:
+        mysql_service.create_video_session(
+            session_id=session_id,
+            video_name=video_name,
+            video_path=stream_url,
+            video_type="stream",
+            fps=fps,
+            width=width,
+            height=height,
+            storage_path=storage_path
+        )
+    except Exception as e:
+        print(f"[Video] Warning: Failed to save session to MySQL: {e}")
+    
     # Mark as processing (live)
-    update_session_status(db, session.session_id, "processing")
+    update_session_status(db, session_id, "processing")
     
     return {
-        "session_id": session.session_id,
-        "video_name": f"🔴 {stream_name}",
+        "session_id": session_id,
+        "video_name": video_name,
         "video_path": stream_url,  # Include for frontend compatibility
         "stream_url": stream_url,
         "fps": fps,
         "width": width,
         "height": height,
+        "storage_path": storage_path,
         "is_live": True,
         "message": "Connected to live stream"
     }
@@ -213,12 +303,12 @@ async def list_sessions(
     
     return [
         SessionInfo(
-            session_id=s.session_id,
-            video_name=s.video_name,
-            duration=s.duration,
-            status=s.status,
-            current_position=s.current_position,
-            is_paused=s.is_paused
+            session_id=s["session_id"],
+            video_name=s["video_name"],
+            duration=s.get("duration", 0),
+            status=s.get("status", "unknown"),
+            current_position=s.get("current_position", 0),
+            is_paused=s.get("is_paused", False)
         )
         for s in sessions
     ]
@@ -235,18 +325,18 @@ async def get_session_info(
         raise HTTPException(404, "Session not found")
     
     return {
-        "session_id": session.session_id,
-        "video_name": session.video_name,
-        "video_path": session.video_path,
-        "duration": session.duration,
-        "fps": session.fps,
-        "width": session.width,
-        "height": session.height,
-        "total_frames": session.total_frames,
-        "status": session.status,
-        "current_position": session.current_position,
-        "is_paused": session.is_paused,
-        "created_at": session.created_at.isoformat()
+        "session_id": session["session_id"],
+        "video_name": session["video_name"],
+        "video_path": session.get("video_path", ""),
+        "duration": session.get("duration", 0),
+        "fps": session.get("fps", 0),
+        "width": session.get("width", 0),
+        "height": session.get("height", 0),
+        "total_frames": session.get("total_frames", 0),
+        "status": session.get("status", "unknown"),
+        "current_position": session.get("current_position", 0),
+        "is_paused": session.get("is_paused", False),
+        "created_at": session.get("created_at", "")
     }
 
 
@@ -266,19 +356,19 @@ async def control_video(
     
     if action == "play":
         update_session_status(db, session_id, "processing", is_paused=False)
-        return {"status": "playing", "position": session.current_position}
+        return {"status": "playing", "position": session.get("current_position", 0)}
     
     elif action == "pause":
         update_session_status(db, session_id, "paused", is_paused=True)
         if session_id in active_processors:
             active_processors[session_id].pause()
-        return {"status": "paused", "position": session.current_position}
+        return {"status": "paused", "position": session.get("current_position", 0)}
     
     elif action == "resume":
         update_session_status(db, session_id, "processing", is_paused=False)
         if session_id in active_processors:
             active_processors[session_id].resume()
-        return {"status": "playing", "position": session.current_position}
+        return {"status": "playing", "position": session.get("current_position", 0)}
     
     elif action == "stop":
         update_session_status(db, session_id, "stopped", current_position=0, is_paused=False)
@@ -290,11 +380,11 @@ async def control_video(
     elif action == "seek":
         if request.position is None:
             raise HTTPException(400, "Position required for seek")
-        position = max(0, min(request.position, session.duration))
-        update_session_status(db, session_id, session.status, current_position=position)
+        position = max(0, min(request.position, session.get("duration", 0)))
+        update_session_status(db, session_id, session.get("status", "processing"), current_position=position)
         if session_id in active_processors:
             active_processors[session_id].seek(position)
-        return {"status": session.status, "position": position}
+        return {"status": session.get("status", "processing"), "position": position}
     
     else:
         raise HTTPException(400, f"Unknown action: {action}")
@@ -311,14 +401,14 @@ async def stream_video(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    video_path = Path(session.video_path)
+    video_path = Path(session.get("video_path", ""))
     if not video_path.exists():
         raise HTTPException(404, "Video file not found")
     
     return FileResponse(
         path=str(video_path),
         media_type="video/mp4",
-        filename=session.video_name
+        filename=session.get("video_name", "video.mp4")
     )
 
 
@@ -335,7 +425,7 @@ async def get_frame(
         raise HTTPException(404, "Session not found")
     
     processor = VideoProcessor(
-        video_path=session.video_path,
+        video_path=session.get("video_path", ""),
         window_duration=settings.WINDOW_DURATION
     )
     
@@ -361,7 +451,7 @@ async def get_thumbnail(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    processor = VideoProcessor(video_path=session.video_path)
+    processor = VideoProcessor(video_path=session.get("video_path", ""))
     frame = processor.extract_frame(0)
     
     if frame is None:
