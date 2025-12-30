@@ -178,32 +178,27 @@ async def load_video_from_path(
     }
 
 
-def _try_open_stream(stream_url: str, timeout: float = 10.0):
-    """Try to open a video stream with timeout (runs in thread pool)"""
-    import threading
-    result = {"cap": None, "error": None}
-    
-    def open_stream():
-        try:
-            cap = cv2.VideoCapture(stream_url)
-            if cap.isOpened():
-                result["cap"] = cap
-            else:
-                result["error"] = "Cannot open stream"
-        except Exception as e:
-            result["error"] = str(e)
-    
-    thread = threading.Thread(target=open_stream)
-    thread.daemon = True
-    thread.start()
-    thread.join(timeout=timeout)
-    
-    if thread.is_alive():
-        # Timeout - thread still running
-        result["error"] = "Connection timeout"
-        return None, result["error"]
-    
-    return result["cap"], result["error"]
+def _sync_open_stream(stream_url: str):
+    """Synchronous stream open - runs in thread pool"""
+    try:
+        # Set OpenCV timeout options for network streams
+        cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+        # Set read timeout to 5 seconds
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+        
+        if not cap.isOpened():
+            return None, "无法打开视频流"
+        
+        # Try to read one frame to verify connection
+        ret, _ = cap.read()
+        if not ret:
+            cap.release()
+            return None, "无法读取视频流帧"
+        
+        return cap, None
+    except Exception as e:
+        return None, str(e)
 
 
 @router.post("/connect-stream")
@@ -215,17 +210,16 @@ async def connect_to_stream(
     
     stream_url = request.stream_url
     
-    # Try to connect to stream with timeout (run in thread pool to avoid blocking)
-    import concurrent.futures
+    # Run blocking cv2.VideoCapture in thread pool with timeout
     loop = asyncio.get_event_loop()
     
     try:
         cap, error = await asyncio.wait_for(
-            loop.run_in_executor(None, _try_open_stream, stream_url, 10.0),
-            timeout=15.0  # Overall timeout
+            loop.run_in_executor(None, _sync_open_stream, stream_url),
+            timeout=10.0  # 10 second timeout
         )
     except asyncio.TimeoutError:
-        raise HTTPException(408, f"连接超时: {stream_url}")
+        raise HTTPException(408, f"连接超时 (10秒): {stream_url}")
     
     if error or cap is None:
         raise HTTPException(400, f"无法连接视频流: {stream_url} - {error or '未知错误'}")
