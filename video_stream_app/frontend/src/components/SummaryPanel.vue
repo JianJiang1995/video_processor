@@ -67,8 +67,6 @@
           highlighted: summary.window_id === highlightedWindowId
         }"
         @click="handleCardClick(summary)"
-        @mouseenter="handleCardHover(summary)"
-        @mouseleave="handleCardLeave"
       >
         <div class="summary-badge">
           窗口 {{ summary.window_id + 1 }}
@@ -80,7 +78,7 @@
         <div class="summary-text-preview">
           {{ truncate(summary.summary, 120) }}
         </div>
-        <div class="expand-hint">悬浮查看完整内容 · 点击跳转</div>
+        <div class="expand-hint">点击查看完整内容</div>
       </div>
       
       <!-- Loading indicator -->
@@ -102,12 +100,11 @@
     <Teleport to="body">
       <Transition name="popup-fade">
         <div v-if="popupSummary" class="summary-popup-overlay" @click.self="closePopup">
-          <div class="summary-popup" :class="{ locked: isPopupLocked }">
+          <div class="summary-popup">
             <div class="popup-header">
               <div class="popup-title">
                 <span class="popup-icon">📝</span>
                 <span>窗口 {{ popupSummary.window_id + 1 }} 分析摘要</span>
-                <span v-if="isPopupLocked" class="lock-badge">📌 已固定</span>
               </div>
               <button class="popup-close" @click="closePopup">✕</button>
             </div>
@@ -129,8 +126,8 @@
                 🔊 语音朗读
               </button>
             </div>
-            <div class="popup-hint" v-if="!isPopupLocked">
-              点击卡片固定弹窗 · 点击外部关闭
+            <div class="popup-hint">
+              点击外部区域或 ✕ 关闭弹窗
             </div>
           </div>
         </div>
@@ -156,7 +153,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['tts', 'sam2', 'seek', 'seekToWindow'])
+const emit = defineEmits(['tts', 'sam2', 'seek', 'seekToWindow', 'play'])
 
 const isTTSPlaying = ref(false)
 const currentAudio = ref(null)
@@ -165,8 +162,6 @@ const itemRefs = ref({})
 
 // Popup state
 const popupSummary = ref(null)
-const isPopupLocked = ref(false)
-const hoverTimeout = ref(null)
 
 // Sorted summaries by window_id (ascending)
 const sortedSummaries = computed(() => {
@@ -244,67 +239,30 @@ const seekToWindow = (summary) => {
   emit('seekToWindow', summary.window_id)
 }
 
-// Handle card hover - show popup after brief delay
-const handleCardHover = (summary) => {
-  // Clear any existing timeout
-  if (hoverTimeout.value) {
-    clearTimeout(hoverTimeout.value)
-  }
-  
-  // If popup is locked on a different summary, don't change it on hover
-  if (isPopupLocked.value && popupSummary.value?.window_id !== summary.window_id) {
-    return
-  }
-  
-  // Show popup after 300ms delay
-  hoverTimeout.value = setTimeout(() => {
-    popupSummary.value = summary
-  }, 300)
-}
-
-// Handle card leave
-const handleCardLeave = () => {
-  // Clear hover timeout
-  if (hoverTimeout.value) {
-    clearTimeout(hoverTimeout.value)
-    hoverTimeout.value = null
-  }
-  
-  // Only close popup if not locked
-  if (!isPopupLocked.value) {
-    // Add small delay before closing to allow moving to popup
-    setTimeout(() => {
-      if (!isPopupLocked.value) {
-        popupSummary.value = null
-      }
-    }, 200)
-  }
-}
-
-// Handle card click - lock popup and seek
+// Handle card click - show popup with full content
 const handleCardClick = (summary) => {
-  // If clicking same card that's already locked, close it
-  if (isPopupLocked.value && popupSummary.value?.window_id === summary.window_id) {
+  // If clicking same card that's already showing, close popup and seek
+  if (popupSummary.value?.window_id === summary.window_id) {
     closePopup()
     seekToWindow(summary)
     return
   }
   
-  // Lock popup on this summary
-  popupSummary.value = summary
-  isPopupLocked.value = true
+  // Show popup with this summary (create a copy to prevent reactivity issues)
+  popupSummary.value = { ...summary }
 }
 
 // Close popup
 const closePopup = () => {
   popupSummary.value = null
-  isPopupLocked.value = false
 }
 
 // Popup actions
 const handlePopupSeek = () => {
   if (popupSummary.value) {
     seekToWindow(popupSummary.value)
+    // 跳转后自动播放
+    emit('play')
     closePopup()
   }
 }

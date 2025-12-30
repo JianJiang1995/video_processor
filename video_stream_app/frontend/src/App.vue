@@ -105,6 +105,7 @@
             @sam2="handleSAM2"
             @seek="handleSeek"
             @seekToWindow="handleSeekToWindow"
+            @play="handlePlay"
           />
         </section>
       </main>
@@ -131,6 +132,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import analysisQueue from './utils/AnalysisQueue.js'
 import ModeSelector from './components/ModeSelector.vue'
 import StreamInput from './components/StreamInput.vue'
 import VideoPlayer from './components/VideoPlayer.vue'
@@ -240,6 +242,13 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
 const goHome = () => {
   stopStreamPolling()
   stopSurgR1StatusPolling()
+  
+  // Clear analysis queue - immediately stops pending requests
+  const droppedFrames = analysisQueue.clear()
+  if (droppedFrames > 0) {
+    console.log(`[goHome] Dropped ${droppedFrames} queued frames`)
+  }
+  
   // Stop SurgR1 continuous processing
   if (currentSession.value) {
     stopSurgR1Continuous(currentSession.value.session_id)
@@ -372,6 +381,18 @@ const startSurgR1Continuous = async (sessionId) => {
     console.warn('SurgR1 service may not be available, attempting to start anyway...')
   }
   
+  // Initialize the analysis queue with callbacks
+  analysisQueue.onResult = (result) => {
+    console.log('[AnalysisQueue] Frame result:', result.frame_idx)
+    // Results are auto-saved by backend, could update UI here if needed
+  }
+  analysisQueue.onBatchComplete = ({ batchId, success, frameCount }) => {
+    if (success) {
+      surgr1ProcessingStatus.value.framesAnalyzed += frameCount
+    }
+  }
+  analysisQueue.init(sessionId)
+  
   try {
     const response = await axios.post(`/api/analysis/start-surgr1-continuous/${sessionId}`)
     console.log('SurgR1 continuous processing:', response.data)
@@ -390,6 +411,9 @@ const startSurgR1Continuous = async (sessionId) => {
 // Stop continuous SurgR1 processing
 const stopSurgR1Continuous = async (sessionId) => {
   if (!sessionId) return
+  
+  // Clear the analysis queue first
+  analysisQueue.clear()
   
   try {
     await axios.post(`/api/analysis/stop-surgr1-continuous/${sessionId}`)
@@ -880,6 +904,9 @@ onUnmounted(() => {
   }
   stopStreamPolling()
   stopSurgR1StatusPolling()
+  
+  // Clear analysis queue to cancel pending requests
+  analysisQueue.clear()
   
   // Stop SurgR1 continuous processing when leaving
   if (currentSession.value) {
