@@ -126,6 +126,14 @@
           {{ formatTime(currentTime) }}
         </template>
       </div>
+      
+      <!-- Loop Playback Indicator -->
+      <div v-if="loopWindow" class="loop-indicator">
+        <span class="loop-icon">🔄</span>
+        <span class="loop-text">循环播放窗口 {{ loopWindow.window_id + 1 }}</span>
+        <span class="loop-time">{{ formatTime(loopWindow.start_time) }} - {{ formatTime(loopWindow.end_time) }}</span>
+        <span class="loop-hint">点击视频退出循环</span>
+      </div>
     </div>
   </div>
 </template>
@@ -149,10 +157,14 @@ const props = defineProps({
   sam3Available: {
     type: Boolean,
     default: false
+  },
+  loopWindow: {
+    type: Object,
+    default: null  // { window_id, start_time, end_time }
   }
 })
 
-const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate'])
+const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop'])
 
 const videoRef = ref(null)
 const streamImgRef = ref(null)
@@ -273,8 +285,11 @@ watch(() => props.isPaused, async (paused) => {
 })
 
 // Watch for external time changes (seeking)
+// Use a small threshold (0.1s) to avoid unnecessary seeks during normal playback
+// but still allow precise seeking for loop playback and user interactions
 watch(() => props.currentTime, (newTime) => {
-  if (videoRef.value && Math.abs(videoRef.value.currentTime - newTime) > 0.5) {
+  if (videoRef.value && Math.abs(videoRef.value.currentTime - newTime) > 0.1) {
+    console.log(`[VideoPlayer] Seeking from ${videoRef.value.currentTime.toFixed(2)}s to ${newTime.toFixed(2)}s`)
     videoRef.value.currentTime = newTime
   }
 })
@@ -301,6 +316,12 @@ const onLoadedMetadata = () => {
 }
 
 const togglePlay = () => {
+  // If in loop mode, clicking video exits loop mode
+  if (props.loopWindow) {
+    emit('exitLoop')
+    return
+  }
+  
   if (props.isPlaying) {
     emit('pause')
   } else {
@@ -727,6 +748,62 @@ onUnmounted(() => {
 .sam3-retry-btn:hover {
   transform: scale(1.05);
   box-shadow: 0 0 15px rgba(0, 212, 170, 0.5);
+}
+
+/* Loop Playback Indicator */
+.loop-indicator {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  background: rgba(0, 0, 0, 0.85);
+  border: 2px solid var(--accent-secondary, #00bcd4);
+  border-radius: var(--radius-md, 8px);
+  padding: 0.75rem 1.25rem;
+  z-index: 20;
+  animation: loop-pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 20px rgba(0, 188, 212, 0.4);
+}
+
+@keyframes loop-pulse {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(0, 188, 212, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(0, 188, 212, 0.6);
+  }
+}
+
+.loop-icon {
+  font-size: 1.5rem;
+  animation: loop-spin 2s linear infinite;
+}
+
+@keyframes loop-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.loop-text {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--accent-secondary, #00bcd4);
+}
+
+.loop-time {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--text-secondary, #aaa);
+}
+
+.loop-hint {
+  font-size: 0.7rem;
+  color: var(--text-tertiary, #666);
+  margin-top: 0.25rem;
 }
 </style>
 

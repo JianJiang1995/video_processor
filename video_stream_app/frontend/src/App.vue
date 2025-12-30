@@ -52,6 +52,7 @@
             :mode="mode"
             :showSam3="showSam3"
             :sam3Available="sam3Status.available"
+            :loopWindow="loopWindow"
             @timeupdate="handleTimeUpdate"
             @play="handlePlay"
             @pause="handlePause"
@@ -59,6 +60,7 @@
             @upload="handleUpload"
             @load="handleLoad"
             @sam3TimeUpdate="handleSam3TimeUpdate"
+            @exitLoop="exitLoopMode"
           />
           <ControlBar
             :currentTime="currentTime"
@@ -159,6 +161,11 @@ const highlightedWindowId = ref(-1)
 const userSelectedWindow = ref(false)  // True when user manually selected a window
 const isDragging = ref(false)
 const showSam3 = ref(false)  // Toggle for SAM3 segmented view
+
+// Loop playback state - when set, video will loop within this window
+const loopWindow = ref(null)  // { window_id, start_time, end_time }
+// Flag to prevent clearing loopWindow during loop-triggered seeks
+let isLoopSeek = false
 const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime due to processing delay)
 const frameAnalysisPopup = ref({
   visible: false,
@@ -336,6 +343,7 @@ const goHome = () => {
   surgr1ProcessingStatus.value = { running: false, framesAnalyzed: 0 }
   highlightedWindowId.value = -1
   userSelectedWindow.value = false
+  loopWindow.value = null
   frameAnalysisPopup.value = { visible: false, data: null, isLoading: false, position: { x: 0, y: 0 } }
   
   console.log('[goHome] Cleanup complete')
@@ -344,6 +352,18 @@ const goHome = () => {
 // Video handlers
 const handleTimeUpdate = (time) => {
   currentTime.value = time
+  
+  // Check if we need to loop within window
+  if (loopWindow.value && isPlaying.value) {
+    // If time has passed or is about to pass the end of the loop window, seek back to start
+    if (time >= loopWindow.value.end_time - 0.1) {
+      console.log(`[Loop] Reached end of window ${loopWindow.value.window_id}, looping back to ${loopWindow.value.start_time}`)
+      isLoopSeek = true
+      handleSeek(loopWindow.value.start_time)
+      // Reset flag after a short delay
+      setTimeout(() => { isLoopSeek = false }, 100)
+    }
+  }
 }
 
 // Handle SAM3 frame timestamp update (for sync display)
@@ -379,11 +399,28 @@ const handlePause = () => {
 
 const handleSeek = (time) => {
   currentTime.value = time
+  
+  // If this is a manual seek (not triggered by loop), exit loop mode
+  if (!isLoopSeek && loopWindow.value) {
+    console.log('[Loop] Manual seek detected, exiting loop mode')
+    loopWindow.value = null
+  }
+  
   if (currentSession.value) {
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
       action: 'seek',
       position: time
     })
+  }
+}
+
+// Exit loop playback mode
+const exitLoopMode = () => {
+  if (loopWindow.value) {
+    console.log('[Loop] Exiting loop mode')
+    loopWindow.value = null
+    userSelectedWindow.value = false
+    highlightedWindowId.value = -1
   }
 }
 
@@ -777,18 +814,28 @@ const handleWindowHover = (windowId) => {
   }
 }
 
-// Handle seek to specific window
+// Handle seek to specific window - enables loop playback mode
 const handleSeekToWindow = (windowId) => {
+  // Find the summary for this window to get time bounds
+  const summary = summaries.value.find(s => s.window_id === windowId)
+  
+  if (summary) {
+    // Set up loop playback for this window
+    loopWindow.value = {
+      window_id: windowId,
+      start_time: summary.start_time,
+      end_time: summary.end_time
+    }
+    console.log(`[Loop] Enabled loop playback for window ${windowId}: ${summary.start_time}s - ${summary.end_time}s`)
+    
+    // Seek to the start of this window
+    isLoopSeek = true
+    handleSeek(summary.start_time)
+    setTimeout(() => { isLoopSeek = false }, 100)
+  }
+  
   highlightedWindowId.value = windowId
   userSelectedWindow.value = true
-  
-  // Auto-clear user selection after 5 seconds to allow auto-highlight to resume
-  setTimeout(() => {
-    if (highlightedWindowId.value === windowId) {
-      userSelectedWindow.value = false
-      highlightedWindowId.value = -1
-    }
-  }, 5000)
 }
 
 // Handle drag seek with frame analysis popup
@@ -892,15 +939,24 @@ const closeFrameAnalysisPopup = () => {
   }
 }
 
-// Handle click on video section (close popup when clicking video area)
+// Handle click on video section (close popup when clicking video area, exit loop mode)
 const handleVideoSectionClick = (event) => {
-  // Don't close if clicking on progress bar or controls
+  // Don't handle if clicking on progress bar or controls
   const target = event.target
   const isProgressBar = target.closest('.progress-bar') || target.closest('.progress-container')
   const isControlBtn = target.closest('.control-btn') || target.closest('.controls-row')
+  const isSummaryPanel = target.closest('.summary-section') || target.closest('.summary-panel')
   
-  if (!isProgressBar && !isControlBtn && frameAnalysisPopup.value.visible) {
-    closeFrameAnalysisPopup()
+  if (!isProgressBar && !isControlBtn && !isSummaryPanel) {
+    // Close frame analysis popup if visible
+    if (frameAnalysisPopup.value.visible) {
+      closeFrameAnalysisPopup()
+    }
+    
+    // Exit loop mode when clicking on video area
+    if (loopWindow.value) {
+      exitLoopMode()
+    }
   }
 }
 
