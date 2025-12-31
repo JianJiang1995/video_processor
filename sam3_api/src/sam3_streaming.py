@@ -236,16 +236,29 @@ class SAM3StreamingModel:
                 
                 # 处理每个 bbox
                 new_masks = {}
+                failed_bboxes = []
                 
-                for bbox in bboxes:
+                logger.info(f"[SAM3Streaming] Processing {len(bboxes)} bboxes for frame {frame_idx}")
+                
+                for bbox_idx, bbox in enumerate(bboxes):
                     obj_id = self._get_next_obj_id()
                     label = bbox.get("label", "object")
                     
                     # 转换 bbox 格式
                     x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
+                    
+                    # 验证 bbox 有效性
+                    if x2 <= x1 or y2 <= y1:
+                        logger.warning(f"[SAM3Streaming] Invalid bbox {bbox_idx} ({label}): ({x1},{y1})-({x2},{y2})")
+                        continue
+                    
+                    # 归一化 bbox 为 xywh 格式
                     box_xywh = [x1/width, y1/height, (x2-x1)/width, (y2-y1)/height]
                     
+                    logger.debug(f"[SAM3Streaming] bbox {bbox_idx} ({label}): ({x1},{y1})-({x2},{y2}) -> xywh={box_xywh}")
+                    
                     try:
+                        # 首先尝试使用 bbox + text prompt
                         prompt_response = self.predictor.handle_request(
                             request=dict(
                                 type="add_prompt",
@@ -258,16 +271,36 @@ class SAM3StreamingModel:
                         )
                         
                         outputs = prompt_response.get("outputs")
+                        mask_found = False
+                        
                         if outputs and "out_binary_masks" in outputs:
                             out_masks = outputs["out_binary_masks"]
+                            logger.debug(f"[SAM3Streaming] Got {len(out_masks)} masks from SAM3")
+                            
                             if len(out_masks) > 0:
                                 mask = out_masks[0]
                                 if isinstance(mask, torch.Tensor):
                                     mask = mask.squeeze().cpu().numpy()
                                 
-                                # 验证 mask
+                                # 放宽验证：只要 mask 非空就接受
                                 mask_binary = mask > 0.5
-                                if np.any(mask_binary):
+                                mask_area = np.sum(mask_binary)
+                                
+                                if mask_area > 0:
+                                    # 计算 mask 的质心
+                                    ys, xs = np.where(mask_binary)
+                                    centroid_x = np.mean(xs)
+                                    centroid_y = np.mean(ys)
+                                    
+                                    # 计算与 bbox 的交集比例（仅用于日志）
+                                    bbox_mask = np.zeros_like(mask_binary)
+                                    bbox_mask[max(0,y1):min(height,y2), max(0,x1):min(width,x2)] = True
+                                    intersection = np.sum(mask_binary & bbox_mask)
+                                    iou = intersection / (mask_area + 1e-6)
+                                    
+                                    logger.info(f"[SAM3Streaming] bbox {bbox_idx} ({label}): mask accepted "
+                                              f"(area={mask_area}, iou={iou:.2f}, centroid=({centroid_x:.0f},{centroid_y:.0f})) ✓")
+                                    
                                     color = get_tool_color(label, obj_id)
                                     tracked_obj = TrackedObject(
                                         obj_id=obj_id,
@@ -280,9 +313,23 @@ class SAM3StreamingModel:
                                     session.tracked_objects[obj_id] = tracked_obj
                                     new_masks[obj_id] = mask
                                     session.last_masks[obj_id] = mask
+                                    mask_found = True
+                                else:
+                                    logger.warning(f"[SAM3Streaming] bbox {bbox_idx} ({label}): empty mask ✗")
+                        else:
+                            logger.warning(f"[SAM3Streaming] bbox {bbox_idx} ({label}): no outputs from SAM3")
+                        
+                        if not mask_found:
+                            failed_bboxes.append({"bbox": bbox, "reason": "no valid mask"})
                                     
                     except Exception as e:
-                        logger.warning(f"Error adding prompt for bbox: {e}")
+                        logger.error(f"[SAM3Streaming] Error processing bbox {bbox_idx} ({label}): {e}")
+                        import traceback
+                        traceback.print_exc()
+                        failed_bboxes.append({"bbox": bbox, "reason": str(e)})
+                
+                if failed_bboxes:
+                    logger.warning(f"[SAM3Streaming] {len(failed_bboxes)}/{len(bboxes)} bboxes failed")
                 
                 # 生成可视化结果
                 result_frame = self._visualize_masks(frame, new_masks, session)
@@ -317,8 +364,12 @@ class SAM3StreamingModel:
         """
         传播 mask 到新帧
         
-        对于 SurgR1 没有分析的中间帧，使用上一帧的 mask
-        SAM3 可以自动跟踪和传播 mask
+        对于 SurgR1 没有分析的中间帧，使用上一帧的 mask 并尝试用 SAM3 重新分割
+        
+        实现策略：
+        1. 如果有上一帧的 mask，使用 mask 的 bbox 作为 prompt 重新分割当前帧
+        2. 这比简单复用 mask 更准确，因为器械可能移动了
+        3. 如果重新分割失败，回退到复用上一帧的 mask
         
         Args:
             session_id: 会话ID
@@ -341,14 +392,124 @@ class SAM3StreamingModel:
                     "success": True,
                     "frame_idx": frame_idx,
                     "num_objects": 0,
+                    "propagated": False,
                     "visualization": frame
                 }
             
-            # 对于简单的传播，我们重用上一帧的 mask
-            # 在真实的 SAM3 流式处理中，会使用 propagate_in_video 方法
-            # 这里简化处理：直接使用上一帧的 mask
+            height, width = frame.shape[:2]
             
-            result_frame = self._visualize_masks(frame, session.last_masks, session)
+            # 尝试使用上一帧的 mask 中心点作为 point prompt 进行重新分割
+            # 这比直接复用 mask 更准确，可以跟踪移动的器械
+            use_point_propagation = True
+            propagated_masks = {}
+            
+            if use_point_propagation and self.predictor:
+                try:
+                    # 保存当前帧到临时文件
+                    import tempfile
+                    temp_path = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False).name
+                    cv2.imwrite(temp_path, frame)
+                    
+                    try:
+                        # 为当前帧创建新的 predictor session
+                        if session.predictor_session_id:
+                            try:
+                                self.predictor.handle_request(
+                                    request=dict(
+                                        type="close_session",
+                                        session_id=session.predictor_session_id
+                                    )
+                                )
+                            except:
+                                pass
+                        
+                        response = self.predictor.handle_request(
+                            request=dict(
+                                type="start_session",
+                                resource_path=temp_path
+                            )
+                        )
+                        session.predictor_session_id = response["session_id"]
+                        
+                        # 对每个跟踪的物体，使用其 mask 中心作为 point prompt
+                        for obj_id, mask in session.last_masks.items():
+                            if obj_id not in session.tracked_objects:
+                                continue
+                            
+                            tracked_obj = session.tracked_objects[obj_id]
+                            
+                            # 计算 mask 的中心点
+                            mask_binary = mask > 0.5 if mask.max() <= 1 else mask > 128
+                            if not np.any(mask_binary):
+                                continue
+                            
+                            ys, xs = np.where(mask_binary)
+                            center_x = np.mean(xs) / width  # 归一化
+                            center_y = np.mean(ys) / height
+                            
+                            # 也可以使用 bbox 的中心
+                            if tracked_obj.bbox:
+                                bbox = tracked_obj.bbox
+                                bbox_cx = (bbox["x1"] + bbox["x2"]) / 2 / width
+                                bbox_cy = (bbox["y1"] + bbox["y2"]) / 2 / height
+                                # 取 mask 中心和 bbox 中心的平均
+                                center_x = (center_x + bbox_cx) / 2
+                                center_y = (center_y + bbox_cy) / 2
+                            
+                            try:
+                                # 使用点 prompt 进行分割
+                                prompt_response = self.predictor.handle_request(
+                                    request=dict(
+                                        type="add_prompt",
+                                        session_id=session.predictor_session_id,
+                                        frame_index=0,
+                                        text=tracked_obj.label,
+                                        points=[[center_x, center_y]],
+                                        point_labels=[1],  # 1 = foreground
+                                    )
+                                )
+                                
+                                outputs = prompt_response.get("outputs")
+                                if outputs and "out_binary_masks" in outputs:
+                                    out_masks = outputs["out_binary_masks"]
+                                    if len(out_masks) > 0:
+                                        new_mask = out_masks[0]
+                                        if isinstance(new_mask, torch.Tensor):
+                                            new_mask = new_mask.squeeze().cpu().numpy()
+                                        
+                                        # 验证新 mask 有效
+                                        if np.any(new_mask > 0.5):
+                                            propagated_masks[obj_id] = new_mask
+                                            logger.debug(f"Propagated mask for {tracked_obj.label} using point prompt")
+                                
+                            except Exception as e:
+                                logger.warning(f"Point prompt failed for {tracked_obj.label}: {e}")
+                        
+                    finally:
+                        # 清理临时文件
+                        try:
+                            os.unlink(temp_path)
+                        except:
+                            pass
+                            
+                except Exception as e:
+                    logger.warning(f"Point-based propagation failed: {e}")
+            
+            # 如果 point propagation 成功，使用新的 mask；否则回退到旧 mask
+            if propagated_masks:
+                # 更新 session 中的 mask
+                for obj_id, new_mask in propagated_masks.items():
+                    session.last_masks[obj_id] = new_mask
+                    if obj_id in session.tracked_objects:
+                        session.tracked_objects[obj_id].last_mask = new_mask
+                
+                result_frame = self._visualize_masks(frame, session.last_masks, session)
+                logger.debug(f"Frame {frame_idx}: propagated {len(propagated_masks)} masks using SAM3")
+            else:
+                # 回退：直接复用上一帧的 mask（简单但可能不准确）
+                result_frame = self._visualize_masks(frame, session.last_masks, session)
+                logger.debug(f"Frame {frame_idx}: reused {len(session.last_masks)} masks (fallback)")
+            
             session.frame_count = frame_idx + 1
             session.last_frame_time = timestamp
             
@@ -357,6 +518,12 @@ class SAM3StreamingModel:
                 "frame_idx": frame_idx,
                 "num_objects": len(session.last_masks),
                 "propagated": True,
+                "propagated_with_sam3": len(propagated_masks) > 0,
+                "tracked_objects": [
+                    {"obj_id": oid, "label": session.tracked_objects[oid].label}
+                    for oid in session.last_masks.keys()
+                    if oid in session.tracked_objects
+                ],
                 "visualization": result_frame
             }
     

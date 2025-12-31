@@ -456,6 +456,134 @@ def close_stream_session(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# 诊断 API
+# ============================================================================
+
+@app.get("/diagnostics")
+def get_diagnostics():
+    """
+    获取 SAM3 服务诊断信息
+    
+    用于调试分割问题，返回：
+    - 模型状态
+    - GPU 内存使用
+    - 活跃会话
+    - 配置信息
+    """
+    import torch
+    
+    diagnostics = {
+        "service": "SAM3 Segmentation API",
+        "version": "2.0.0",
+        "status": "running"
+    }
+    
+    # GPU 信息
+    if torch.cuda.is_available():
+        diagnostics["gpu"] = {
+            "available": True,
+            "device_count": torch.cuda.device_count(),
+            "current_device": torch.cuda.current_device(),
+            "device_name": torch.cuda.get_device_name(0),
+            "memory_allocated_mb": round(torch.cuda.memory_allocated(0) / 1024 / 1024, 2),
+            "memory_reserved_mb": round(torch.cuda.memory_reserved(0) / 1024 / 1024, 2),
+            "max_memory_allocated_mb": round(torch.cuda.max_memory_allocated(0) / 1024 / 1024, 2)
+        }
+    else:
+        diagnostics["gpu"] = {"available": False}
+    
+    # 单图模型状态
+    try:
+        from sam3_model import _global_model
+        diagnostics["image_model"] = {
+            "loaded": _global_model is not None,
+            "has_predictor": _global_model.predictor is not None if _global_model else False
+        }
+    except Exception as e:
+        diagnostics["image_model"] = {"error": str(e)}
+    
+    # 流式模型状态
+    try:
+        from sam3_streaming import _streaming_model
+        if _streaming_model:
+            diagnostics["streaming_model"] = {
+                "loaded": True,
+                "active_sessions": len(_streaming_model.sessions),
+                "sessions": [
+                    {
+                        "session_id": sid,
+                        "stream_id": sess.stream_id,
+                        "frame_count": sess.frame_count,
+                        "tracked_objects": len(sess.tracked_objects),
+                        "last_masks": len(sess.last_masks)
+                    }
+                    for sid, sess in _streaming_model.sessions.items()
+                ]
+            }
+        else:
+            diagnostics["streaming_model"] = {"loaded": False}
+    except Exception as e:
+        diagnostics["streaming_model"] = {"error": str(e)}
+    
+    # 配置信息
+    diagnostics["config"] = {
+        "visualization": get_visualization_config(),
+        "server": get_server_config()
+    }
+    
+    return diagnostics
+
+
+@app.post("/diagnostics/test-segment")
+def test_segment_internal():
+    """
+    内部测试端点 - 使用测试数据验证分割功能
+    
+    不需要输入图片，使用内置测试图案验证模型是否正常工作
+    """
+    import torch
+    
+    # 创建一个简单的测试图像 (蓝色背景 + 白色矩形)
+    test_image = np.zeros((480, 640, 3), dtype=np.uint8)
+    test_image[:] = (100, 80, 60)  # 暗蓝色背景
+    cv2.rectangle(test_image, (200, 150), (400, 300), (255, 255, 255), -1)  # 白色矩形
+    
+    # 保存临时文件
+    import tempfile
+    temp_path = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name
+    cv2.imwrite(temp_path, test_image)
+    
+    try:
+        model = get_model()
+        result = model.segment_with_bboxes(
+            image_path=temp_path,
+            bboxes=[{"x1": 180, "y1": 130, "x2": 420, "y2": 320, "label": "test_object"}],
+            return_base64=True
+        )
+        
+        return {
+            "success": True,
+            "test_passed": result.get("num_objects", 0) > 0,
+            "num_objects": result.get("num_objects", 0),
+            "masks": result.get("masks", []),
+            "message": "分割测试成功" if result.get("num_objects", 0) > 0 else "未检测到物体"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "test_passed": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+    finally:
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+
+
 if __name__ == "__main__":
     import uvicorn
     

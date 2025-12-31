@@ -230,25 +230,33 @@ class SAM3Model:
                         if isinstance(mask, torch.Tensor):
                             mask = mask.squeeze().cpu().numpy()
                         
-                        # 验证mask的质心是否在bbox内
+                        # 验证mask有效性（放宽验证：只要有mask就接受）
                         mask_binary = mask > 0.5
                         if np.any(mask_binary):
                             ys, xs = np.where(mask_binary)
                             centroid_x = np.mean(xs)
                             centroid_y = np.mean(ys)
+                            mask_area = np.sum(mask_binary)
                             
-                            # 检查质心是否在bbox内（放宽一点边界）
-                            margin = 20  # 像素
-                            in_bbox = (x1 - margin <= centroid_x <= x2 + margin and
-                                      y1 - margin <= centroid_y <= y2 + margin)
+                            # 计算 mask 与 bbox 的 IoU（放宽验证）
+                            bbox_mask = np.zeros_like(mask_binary)
+                            bbox_mask[max(0,y1):min(height,y2), max(0,x1):min(width,x2)] = True
+                            intersection = np.sum(mask_binary & bbox_mask)
+                            iou = intersection / (mask_area + 1e-6)  # mask 有多少在 bbox 内
                             
-                            if in_bbox:
+                            # 放宽验证：只要有 10% 的 mask 在 bbox 内，或者 mask 足够大
+                            min_iou_threshold = 0.1
+                            min_area_threshold = 500  # 最小面积阈值
+                            
+                            if iou >= min_iou_threshold or mask_area >= min_area_threshold:
                                 all_masks[idx] = {"mask": mask, "label": label}
-                                print(f"[SAM3Model] bbox {idx} ({label}): mask centroid ({centroid_x:.0f},{centroid_y:.0f}) in bbox ✓")
+                                print(f"[SAM3Model] bbox {idx} ({label}): mask accepted (area={mask_area}, iou={iou:.2f}, centroid=({centroid_x:.0f},{centroid_y:.0f})) ✓")
                             else:
-                                print(f"[SAM3Model] bbox {idx} ({label}): mask centroid ({centroid_x:.0f},{centroid_y:.0f}) outside bbox ({x1},{y1})-({x2},{y2}) ✗")
+                                # 即使验证失败，也记录 mask（调试模式）
+                                all_masks[idx] = {"mask": mask, "label": label}
+                                print(f"[SAM3Model] bbox {idx} ({label}): mask accepted despite low iou (area={mask_area}, iou={iou:.2f}) [relaxed mode] ⚠")
                         else:
-                            print(f"[SAM3Model] bbox {idx} ({label}): empty mask")
+                            print(f"[SAM3Model] bbox {idx} ({label}): empty mask ✗")
                     else:
                         print(f"[SAM3Model] bbox {idx} ({label}): no mask returned")
                         

@@ -1299,28 +1299,45 @@ async def surgr1_continuous_task(
                             )
                     
                     # Store result if successful
-                    if sam3_result and sam3_result.get("success") and sam3_result.get("image_base64"):
-                        # Store latest SAM3 frame for frontend access
-                        sam3_latest_frames[session_id] = {
-                            "timestamp": current_time,
-                            "frame_idx": frame_idx,
-                            "image_base64": sam3_result["image_base64"],
-                            "num_objects": sam3_result.get("num_objects", 0),
-                            "propagated": sam3_result.get("propagated", False),
-                            "reinit_reason": reinit_reason,
-                            "state": consistency_checker.state.value if consistency_checker else "unknown",
-                            "updated_at": time_module.time()
-                        }
+                    if sam3_result:
+                        success = sam3_result.get("success", False)
+                        has_image = bool(sam3_result.get("image_base64"))
+                        num_objects = sam3_result.get("num_objects", 0)
+                        propagated = sam3_result.get("propagated", False)
                         
-                        # Update streaming session info
-                        if session_id in sam3_streaming_sessions:
-                            sam3_streaming_sessions[session_id]["frame_count"] += 1
-                            sam3_streaming_sessions[session_id]["last_update"] = time_module.time()
-                            sam3_streaming_sessions[session_id]["state"] = \
-                                consistency_checker.state.value if consistency_checker else "unknown"
+                        # 调试日志：详细记录 SAM3 结果
+                        if success and has_image:
+                            logger.debug(f"[SAM3] Frame {frame_idx}: success, {num_objects} objects, propagated={propagated}")
+                            
+                            # Store latest SAM3 frame for frontend access
+                            sam3_latest_frames[session_id] = {
+                                "timestamp": current_time,
+                                "frame_idx": frame_idx,
+                                "image_base64": sam3_result["image_base64"],
+                                "num_objects": num_objects,
+                                "propagated": propagated,
+                                "reinit_reason": reinit_reason,
+                                "state": consistency_checker.state.value if consistency_checker else "unknown",
+                                "updated_at": time_module.time()
+                            }
+                            
+                            # Update streaming session info
+                            if session_id in sam3_streaming_sessions:
+                                sam3_streaming_sessions[session_id]["frame_count"] += 1
+                                sam3_streaming_sessions[session_id]["last_update"] = time_module.time()
+                                sam3_streaming_sessions[session_id]["state"] = \
+                                    consistency_checker.state.value if consistency_checker else "unknown"
+                        else:
+                            # 调试：记录失败原因
+                            error_msg = sam3_result.get("error", "unknown")
+                            logger.warning(f"[SAM3] Frame {frame_idx}: failed - success={success}, has_image={has_image}, num_objects={num_objects}, error={error_msg}")
+                    else:
+                        logger.warning(f"[SAM3] Frame {frame_idx}: sam3_result is None")
                             
                 except Exception as e:
-                    logger.warning(f"SAM3 stream processing failed for frame {frame_idx}: {e}")
+                    logger.error(f"[SAM3] Frame {frame_idx} exception: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             frame_idx += 1
             

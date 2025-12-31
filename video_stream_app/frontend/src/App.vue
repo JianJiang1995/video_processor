@@ -733,10 +733,13 @@ const startStreamTimer = () => {
     
     // Calculate elapsed time since stream started
     const elapsed = (Date.now() - streamStartTime.value) / 1000
-    currentTime.value = elapsed
+    
+    // Ensure elapsed time is never negative (can happen if server/client clocks are out of sync)
+    const safeElapsed = Math.max(0, elapsed)
+    currentTime.value = safeElapsed
     
     // Also update duration for display purposes
-    duration.value = elapsed
+    duration.value = safeElapsed
   }, 100)  // Update every 100ms for smooth display
 }
 

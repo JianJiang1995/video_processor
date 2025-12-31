@@ -396,7 +396,9 @@ const progressPercent = computed(() => {
 })
 
 const windowCount = computed(() => {
-  return Math.ceil(props.duration / WINDOW_DURATION)
+  // Ensure duration is positive to avoid negative window count
+  const safeDuration = Math.max(0, props.duration || 0)
+  return Math.max(0, Math.ceil(safeDuration / WINDOW_DURATION))
 })
 
 const currentWindowId = computed(() => {
