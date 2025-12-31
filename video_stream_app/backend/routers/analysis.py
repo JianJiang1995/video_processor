@@ -1257,6 +1257,9 @@ async def surgr1_continuous_task(
                             sam3_streaming_sessions[session_id]["sam3_session_id"] = sam3_session_id
                             
                             # Process frame with bboxes (initialization)
+                            # 调试：记录发送给 SAM3 的 bboxes
+                            logger.info(f"[SAM3] Initializing with {len(last_bboxes)} bboxes: {last_bboxes}")
+                            
                             sam3_result = await sam3_client.process_stream_frame(
                                 session_id=sam3_session_id,
                                 frame=pil_image,
@@ -1265,10 +1268,17 @@ async def surgr1_continuous_task(
                                 bboxes=last_bboxes
                             )
                             
+                            # 调试：记录 SAM3 返回结果
+                            logger.info(f"[SAM3] Init result: success={sam3_result.get('success')}, "
+                                       f"num_objects={sam3_result.get('num_objects', 0)}, "
+                                       f"has_image={bool(sam3_result.get('image_base64'))}")
+                            
                             if sam3_result.get("success"):
                                 sam3_initialized = True
                                 sam3_tracked_instruments = current_instruments.copy()
-                                logger.info(f"SAM3 initialized, tracking: {sam3_tracked_instruments}")
+                                logger.info(f"[SAM3] Initialized successfully, tracking: {sam3_tracked_instruments}")
+                            else:
+                                logger.warning(f"[SAM3] Initialization failed: {sam3_result.get('error', 'unknown')}")
                             
                             # Update consistency checker
                             if consistency_checker:

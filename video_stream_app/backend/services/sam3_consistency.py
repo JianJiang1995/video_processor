@@ -390,6 +390,8 @@ def parse_bboxes_from_surgr1(tool_localization: str) -> List[Dict[str, Any]]:
     - SurgR1 格式: "<think>...</think><answer>grasper(328,0),(466,112) hook(516,0),(853,287)</answer>"
     - 简单格式: "grasper(328,0),(466,112) hook(516,0),(853,287)"
     - 旧格式: "label: (x1, y1), (x2, y2)"
+    - bbox格式: "bbox (x1,y1), (x2,y2)" 或 "tool bbox (x1,y1), (x2,y2)"
+    - 通用格式: "(x1,y1), (x2,y2)" 或 "(x1, y1) (x2, y2)"
     """
     import re
     
@@ -405,9 +407,12 @@ def parse_bboxes_from_surgr1(tool_localization: str) -> List[Dict[str, Any]]:
     else:
         text = tool_localization
     
-    # 优先尝试 SurgR1 格式: "label(x1,y1),(x2,y2)"
+    # 调试日志
+    logger.debug(f"[parse_bboxes] Input: {text[:200]}...")
+    
+    # 格式1: SurgR1 格式 "label(x1,y1),(x2,y2)"
     # 例如: grasper(328,0),(466,112)
-    pattern1 = r"(\w+)\((\d+),\s*(\d+)\),\s*\((\d+),\s*(\d+)\)"
+    pattern1 = r"(\w+)\((\d+),\s*(\d+)\),?\s*\((\d+),\s*(\d+)\)"
     matches = re.findall(pattern1, text)
     
     if matches:
@@ -420,21 +425,82 @@ def parse_bboxes_from_surgr1(tool_localization: str) -> List[Dict[str, Any]]:
                 "y2": int(y2),
                 "label": label
             })
+        logger.debug(f"[parse_bboxes] Format1 matched: {len(bboxes)} bboxes")
         return bboxes
     
-    # 回退到旧格式: "label: (x1, y1), (x2, y2)"
-    pattern2 = r"(\w+):\s*\((\d+),\s*(\d+)\),\s*\((\d+),\s*(\d+)\)"
+    # 格式2: "label: (x1, y1), (x2, y2)"
+    pattern2 = r"(\w+):\s*\((\d+),\s*(\d+)\),?\s*\((\d+),\s*(\d+)\)"
     matches = re.findall(pattern2, text)
     
-    for match in matches:
-        label, x1, y1, x2, y2 = match
-        bboxes.append({
-            "x1": int(x1),
-            "y1": int(y1),
-            "x2": int(x2),
-            "y2": int(y2),
-            "label": label
-        })
+    if matches:
+        for match in matches:
+            label, x1, y1, x2, y2 = match
+            bboxes.append({
+                "x1": int(x1),
+                "y1": int(y1),
+                "x2": int(x2),
+                "y2": int(y2),
+                "label": label
+            })
+        logger.debug(f"[parse_bboxes] Format2 matched: {len(bboxes)} bboxes")
+        return bboxes
     
+    # 格式3: "label bbox (x1,y1), (x2,y2)" 或 "label: bbox (x1,y1), (x2,y2)"
+    pattern3 = r"(\w+)[:\s]+bbox\s*\((\d+),\s*(\d+)\),?\s*\((\d+),\s*(\d+)\)"
+    matches = re.findall(pattern3, text, re.IGNORECASE)
+    
+    if matches:
+        for match in matches:
+            label, x1, y1, x2, y2 = match
+            bboxes.append({
+                "x1": int(x1),
+                "y1": int(y1),
+                "x2": int(x2),
+                "y2": int(y2),
+                "label": label
+            })
+        logger.debug(f"[parse_bboxes] Format3 matched: {len(bboxes)} bboxes")
+        return bboxes
+    
+    # 格式4: 无标签的 bbox "(x1,y1), (x2,y2)" 或 "(x1,y1) (x2,y2)"
+    # 这种格式常见于简单的 bbox 输出
+    pattern4 = r"\((\d+),\s*(\d+)\)[,\s]*\((\d+),\s*(\d+)\)"
+    matches = re.findall(pattern4, text)
+    
+    if matches:
+        for i, match in enumerate(matches):
+            x1, y1, x2, y2 = match
+            bboxes.append({
+                "x1": int(x1),
+                "y1": int(y1),
+                "x2": int(x2),
+                "y2": int(y2),
+                "label": f"tool_{i}"  # 没有标签时使用通用名称
+            })
+        logger.debug(f"[parse_bboxes] Format4 matched: {len(bboxes)} bboxes")
+        return bboxes
+    
+    # 格式5: 尝试匹配任何包含四个数字的模式
+    # 例如: "100,50,300,200" 或 "x1=100, y1=50, x2=300, y2=200"
+    pattern5 = r"(\d+)[,\s]+(\d+)[,\s]+(\d+)[,\s]+(\d+)"
+    matches = re.findall(pattern5, text)
+    
+    if matches:
+        for i, match in enumerate(matches):
+            x1, y1, x2, y2 = match
+            # 验证这是合理的 bbox（x2>x1, y2>y1）
+            if int(x2) > int(x1) and int(y2) > int(y1):
+                bboxes.append({
+                    "x1": int(x1),
+                    "y1": int(y1),
+                    "x2": int(x2),
+                    "y2": int(y2),
+                    "label": f"tool_{i}"
+                })
+        if bboxes:
+            logger.debug(f"[parse_bboxes] Format5 matched: {len(bboxes)} bboxes")
+            return bboxes
+    
+    logger.warning(f"[parse_bboxes] No bboxes found in: {text[:100]}...")
     return bboxes
 
