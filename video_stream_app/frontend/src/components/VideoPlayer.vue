@@ -1007,6 +1007,13 @@ onUnmounted(() => {
 }
 
 /* Loop Playback Indicator */
+/* Video wrapper - vertical layout */
+.video-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
 /* Loop indicator bar - placed below video container */
 .loop-indicator-bar {
   display: flex;
@@ -1019,6 +1026,7 @@ onUnmounted(() => {
   padding: 0.5rem 1.5rem;
   margin-top: 0.5rem;
   box-shadow: 0 2px 8px rgba(0, 188, 212, 0.3);
+  flex-shrink: 0;
 }
 
 .loop-indicator-bar .loop-icon {
