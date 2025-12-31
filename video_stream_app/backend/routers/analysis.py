@@ -1046,8 +1046,16 @@ async def surgr1_continuous_task(
                     video_session = mysql_service.get_video_session(session_id)
                     storage_path = video_session.get("storage_path") if video_session else None
                     
-                    # Save frame image to storage folder
+                    # If no storage path exists, create one now
                     frame_storage = get_frame_storage_service()
+                    if not storage_path:
+                        video_name = video_session.get("video_name", "stream") if video_session else "stream"
+                        storage_path = frame_storage.create_session_folder(session_id, video_name)
+                        # Update MySQL with the new storage path
+                        mysql_service.update_video_session(session_id, storage_path=storage_path)
+                        logger.info(f"[SurgR1] Created storage folder for session {session_id}: {storage_path}")
+                    
+                    # Save frame image to storage folder
                     image_path = None
                     image_saved = 0
                     if storage_path:
@@ -2787,6 +2795,38 @@ async def get_frame_at_timestamp(
                     "analysis": None
                 }
         
+        # Fallback: Try to get frame from live video stream
+        video_path = video_session.get("video_path")
+        if video_path and (video_path.startswith("http://") or video_path.startswith("https://")):
+            try:
+                import cv2
+                import base64
+                cap = cv2.VideoCapture(video_path)
+                if cap.isOpened():
+                    # Skip first few frames to get fresh frame (avoid cached/buffered frame)
+                    frame = None
+                    for _ in range(3):  # Read 3 frames, use the last one
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                    cap.release()
+                    if frame is not None:
+                        # Encode frame to base64
+                        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        image_base64 = base64.b64encode(buffer).decode('utf-8')
+                        return {
+                            "success": True,
+                            "has_saved_frame": False,
+                            "is_live_frame": True,
+                            "timestamp": timestamp,
+                            "actual_timestamp": timestamp,
+                            "image_base64": image_base64,
+                            "analysis": None,
+                            "message": "Live frame from stream (no saved frame available)"
+                        }
+            except Exception as e:
+                logger.warning(f"Failed to get live frame from stream: {e}")
+        
         return {
             "success": False,
             "has_saved_frame": False,
@@ -2870,6 +2910,52 @@ async def get_all_window_summaries(
         "session_id": session_id,
         "count": len(summaries),
         "summaries": summaries
+    }
+
+
+@router.get("/frames-in-range/{session_id}")
+async def get_frames_in_range(
+    session_id: str,
+    start: float = Query(..., description="Start timestamp in seconds"),
+    end: float = Query(..., description="End timestamp in seconds"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get list of saved frames within a time range.
+    
+    Used for loop playback feature to fetch available frames in a window.
+    Returns frame metadata (timestamp, frame_idx) without full image data.
+    """
+    mysql_service = get_mysql_service()
+    
+    # Get video session info
+    video_session = mysql_service.get_video_session(session_id)
+    if not video_session:
+        raise HTTPException(404, "Session not found")
+    
+    storage_path = video_session.get("storage_path")
+    
+    # Get all frame analyses and filter by time range
+    frames = mysql_service.get_analyses(session_id, limit=10000)
+    frames_in_range = [
+        {
+            "frame_idx": f.get("frame_idx"),
+            "timestamp": f.get("timestamp"),
+            "has_image": f.get("image_saved") == 1,
+        }
+        for f in frames
+        if f.get("analysis_type") == "frame" 
+        and f.get("timestamp") is not None
+        and start <= f.get("timestamp") <= end
+    ]
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "start": start,
+        "end": end,
+        "count": len(frames_in_range),
+        "frames": sorted(frames_in_range, key=lambda x: x.get("timestamp", 0))
     }
 
 

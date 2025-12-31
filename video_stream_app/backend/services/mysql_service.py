@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Enum
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Enum, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -407,8 +407,8 @@ class MySQLService:
                 AnalysisResult.timestamp >= timestamp - tolerance,
                 AnalysisResult.timestamp <= timestamp + tolerance
             ).order_by(
-                # 按时间差排序，取最近的
-                (AnalysisResult.timestamp - timestamp).abs()
+                # 按时间差排序，取最近的 (使用 func.abs 而非 .abs())
+                func.abs(AnalysisResult.timestamp - timestamp)
             ).first()
             
             if not result:

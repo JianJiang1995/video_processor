@@ -495,12 +495,15 @@ const startLoopPlayback = () => {
   // Load frames for this window
   loadLoopWindowFrames()
   
-  // Update frame every 200ms (5 fps for smoother playback)
+  // Track if we're currently fetching a frame to prevent concurrent requests
+  let isFetchingFrame = false
+  
+  // Update frame every 100ms (10 fps for smoother playback)
   loopPlaybackTimer = setInterval(async () => {
     if (!props.loopWindow || !props.isPlaying) return
     
-    // Advance time by 0.2 seconds
-    loopPlaybackTime.value += 0.2
+    // Advance time by 0.1 seconds (matching 100ms interval)
+    loopPlaybackTime.value += 0.1
     
     // Check if we need to loop
     if (loopPlaybackTime.value >= props.loopWindow.end_time) {
@@ -511,12 +514,22 @@ const startLoopPlayback = () => {
     // Emit time update to parent
     emit('timeupdate', loopPlaybackTime.value)
     
-    // Get and display current frame
-    const frame = await getCurrentLoopFrame()
-    if (frame && frame.image_base64) {
-      loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
+    // Get and display current frame - only if not already fetching
+    // This prevents overlapping requests that could cause flickering
+    if (!isFetchingFrame) {
+      isFetchingFrame = true
+      try {
+        const frame = await getCurrentLoopFrame()
+        // Only update if we got a valid frame - keep previous frame otherwise
+        if (frame && frame.image_base64) {
+          loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
+        }
+        // If frame fetch failed but we have a previous frame, keep it (don't set to null)
+      } finally {
+        isFetchingFrame = false
+      }
     }
-  }, 200)
+  }, 100)  // 100ms = 10fps for smoother playback
   
   // Immediately show first frame
   getCurrentLoopFrame().then(frame => {

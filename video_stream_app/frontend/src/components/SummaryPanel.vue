@@ -137,7 +137,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, shallowRef } from 'vue'
 
 const props = defineProps({
   summaries: {
@@ -163,9 +163,17 @@ const itemRefs = ref({})
 // Popup state
 const popupSummary = ref(null)
 
-// Sorted summaries by window_id (ascending)
+// Track last scrolled window to prevent repeated scrolling
+const lastScrolledWindowId = ref(-1)
+// Track last highlighted window to prevent animation retrigger
+const lastHighlightedWindowId = ref(-1)
+
+// Sorted summaries by window_id (ascending) - use shallowRef for better performance
+// Only recompute when summaries array length changes
 const sortedSummaries = computed(() => {
-  return [...props.summaries].sort((a, b) => a.window_id - b.window_id)
+  // Create a stable sorted array that won't cause unnecessary re-renders
+  const sorted = [...props.summaries].sort((a, b) => a.window_id - b.window_id)
+  return sorted
 })
 
 // Check if current summary is highlighted
@@ -181,18 +189,34 @@ const setItemRef = (windowId, el) => {
 }
 
 // Watch for highlighted window changes and scroll to it
-watch(() => props.highlightedWindowId, async (newWindowId) => {
-  if (newWindowId >= 0) {
-    await nextTick()
-    scrollToWindow(newWindowId)
+// Add debounce to prevent excessive scrolling
+let scrollDebounceTimer = null
+watch(() => props.highlightedWindowId, async (newWindowId, oldWindowId) => {
+  // Only scroll if window actually changed and is valid
+  if (newWindowId >= 0 && newWindowId !== lastScrolledWindowId.value) {
+    // Clear any pending scroll
+    if (scrollDebounceTimer) {
+      clearTimeout(scrollDebounceTimer)
+    }
+    // Debounce scroll to prevent flickering
+    scrollDebounceTimer = setTimeout(async () => {
+      await nextTick()
+      scrollToWindow(newWindowId)
+      lastScrolledWindowId.value = newWindowId
+    }, 100)
   }
 })
 
-// Watch for current summary changes and scroll to it
-watch(() => props.currentSummary?.window_id, async (newWindowId) => {
-  if (newWindowId !== undefined && newWindowId >= 0) {
-    await nextTick()
-    scrollToWindow(newWindowId)
+// Watch for current summary changes - but only scroll on initial change, not during loop playback
+watch(() => props.currentSummary?.window_id, async (newWindowId, oldWindowId) => {
+  // Only scroll if this is a different window than before
+  if (newWindowId !== undefined && newWindowId >= 0 && newWindowId !== oldWindowId) {
+    // Don't scroll if we just scrolled to this window via highlight
+    if (newWindowId !== lastScrolledWindowId.value) {
+      await nextTick()
+      scrollToWindow(newWindowId)
+      lastScrolledWindowId.value = newWindowId
+    }
   }
 })
 
@@ -305,15 +329,24 @@ const truncate = (text, length) => {
 }
 
 .summary-card.highlighted {
-  animation: highlight-pulse 0.6s ease-out;
+  /* Use animation only on initial highlight, with fill-mode to keep final state */
+  animation: highlight-pulse 0.6s ease-out forwards;
+  animation-iteration-count: 1;
   border-color: var(--accent-primary);
   box-shadow: 0 0 12px rgba(0, 212, 170, 0.3);
+  /* Prevent animation restart on component re-render */
+  will-change: transform, box-shadow;
+}
+
+/* Prevent animation from restarting when already highlighted */
+.summary-card.highlighted.no-animate {
+  animation: none;
 }
 
 @keyframes highlight-pulse {
   0% {
     transform: scale(1);
-    box-shadow: 0 0 0 rgba(0, 212, 170, 0);
+    box-shadow: 0 0 4px rgba(0, 212, 170, 0.1);
   }
   50% {
     transform: scale(1.01);

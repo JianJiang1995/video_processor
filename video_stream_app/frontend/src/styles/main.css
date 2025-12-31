@@ -483,22 +483,19 @@ body {
   height: 8px;
   border-radius: 50%;
   background: var(--text-tertiary);
+  transition: background 0.3s ease;
 }
 
 .status-dot.active {
   background: var(--success);
   box-shadow: 0 0 8px var(--success);
-  animation: pulse 2s infinite;
+  /* Remove infinite animation to prevent flickering */
 }
 
 .status-dot.processing {
   background: var(--warning);
-  animation: pulse 1s infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  box-shadow: 0 0 6px var(--warning);
+  /* Subtle glow instead of pulse animation */
 }
 
 .loading-overlay {
