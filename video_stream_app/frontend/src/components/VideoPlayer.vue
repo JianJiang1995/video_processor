@@ -149,13 +149,16 @@
         </template>
       </div>
       
-      <!-- Loop Playback Indicator -->
-      <div v-if="loopWindow" class="loop-indicator">
-        <span class="loop-icon">🔄</span>
-        <span class="loop-text">循环播放窗口 {{ loopWindow.window_id + 1 }}</span>
-        <span class="loop-time">{{ formatTime(loopWindow.start_time) }} - {{ formatTime(loopWindow.end_time) }}</span>
-        <span class="loop-hint">点击视频退出循环</span>
-      </div>
+    </div>
+    
+    <!-- Loop Playback Indicator - Outside video container to avoid blocking video -->
+    <div v-if="loopWindow" class="loop-indicator-bar">
+      <span class="loop-icon">🔄</span>
+      <span class="loop-text">循环播放窗口 {{ loopWindow.window_id + 1 }}</span>
+      <span class="loop-separator">|</span>
+      <span class="loop-time">{{ formatTime(loopWindow.start_time) }} - {{ formatTime(loopWindow.end_time) }}</span>
+      <span class="loop-separator">|</span>
+      <span class="loop-hint">点击视频退出循环</span>
     </div>
   </div>
 </template>
@@ -1004,59 +1007,50 @@ onUnmounted(() => {
 }
 
 /* Loop Playback Indicator */
-.loop-indicator {
-  position: absolute;
-  bottom: 1rem;
-  left: 50%;
-  transform: translateX(-50%);
+/* Loop indicator bar - placed below video container */
+.loop-indicator-bar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 0.25rem;
-  background: rgba(0, 0, 0, 0.85);
-  border: 2px solid var(--accent-secondary, #00bcd4);
-  border-radius: var(--radius-md, 8px);
-  padding: 0.75rem 1.25rem;
-  z-index: 20;
-  animation: loop-pulse 2s ease-in-out infinite;
-  box-shadow: 0 0 20px rgba(0, 188, 212, 0.4);
+  justify-content: center;
+  gap: 0.75rem;
+  background: linear-gradient(135deg, rgba(0, 150, 136, 0.95), rgba(0, 188, 212, 0.95));
+  border-radius: var(--radius-sm, 4px);
+  padding: 0.5rem 1.5rem;
+  margin-top: 0.5rem;
+  box-shadow: 0 2px 8px rgba(0, 188, 212, 0.3);
 }
 
-@keyframes loop-pulse {
-  0%, 100% {
-    box-shadow: 0 0 20px rgba(0, 188, 212, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 30px rgba(0, 188, 212, 0.6);
-  }
+.loop-indicator-bar .loop-icon {
+  font-size: 1rem;
 }
 
-.loop-icon {
-  font-size: 1.5rem;
-  animation: loop-spin 2s linear infinite;
-}
-
-@keyframes loop-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.loop-text {
-  font-size: 0.9rem;
+.loop-indicator-bar .loop-text {
+  font-size: 0.85rem;
   font-weight: 600;
-  color: var(--accent-secondary, #00bcd4);
+  color: white;
 }
 
-.loop-time {
-  font-family: var(--font-mono, monospace);
+.loop-indicator-bar .loop-separator {
+  color: rgba(255, 255, 255, 0.5);
   font-size: 0.8rem;
-  color: var(--text-secondary, #aaa);
 }
 
-.loop-hint {
-  font-size: 0.7rem;
-  color: var(--text-tertiary, #666);
-  margin-top: 0.25rem;
+.loop-indicator-bar .loop-time {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.loop-indicator-bar .loop-hint {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+
+.loop-indicator-bar .loop-hint:hover {
+  color: white;
+  text-decoration: underline;
 }
 
 /* Loop Playback Frame */

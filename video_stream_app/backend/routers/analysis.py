@@ -1191,7 +1191,8 @@ async def surgr1_continuous_task(
                     last_tool_localization = result.get("tools", "")
                     last_bboxes = parse_bboxes_from_surgr1(last_tool_localization)
                     
-                    logger.debug(f"SurgR1 analyzed frame {frame_idx} at {current_time:.1f}s, found {len(last_bboxes)} bboxes")
+                    # 使用 INFO 级别以确保能看到日志
+                    logger.info(f"[SurgR1] Frame {frame_idx} at {current_time:.1f}s, found {len(last_bboxes)} bboxes: {last_bboxes}")
                     
                 except Exception as e:
                     logger.warning(f"SurgR1 analysis failed for frame {frame_idx}: {e}")
@@ -1211,6 +1212,9 @@ async def surgr1_continuous_task(
                     for bbox in last_bboxes:
                         label = bbox.get("label", "unknown")
                         current_instruments.add(label)
+                    
+                    # 调试：输出 SAM3 处理状态
+                    logger.info(f"[SAM3] Processing: initialized={sam3_initialized}, bboxes={len(last_bboxes)}, instruments={current_instruments}")
                     
                     # Check if we need to reinitialize SAM3
                     if not sam3_initialized and last_bboxes:
