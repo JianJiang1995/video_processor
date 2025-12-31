@@ -3,11 +3,29 @@
     <div class="video-container" ref="containerRef">
       <!-- Video Content Area -->
       <template v-if="session">
-        <!-- MJPEG Stream (for live streams) -->
+        <!-- Loop Playback Frame (when in loop mode for streams) -->
+        <img
+          v-if="isLoopPlaybackMode && loopPlaybackFrame"
+          :src="loopPlaybackFrame"
+          class="stream-image loop-playback"
+          :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
+          @click="togglePlay"
+        />
+        <!-- Loop Playback Loading (when loading frames) -->
+        <div 
+          v-else-if="isLoopPlaybackMode && !loopPlaybackFrame"
+          class="loop-loading-overlay"
+          @click="togglePlay"
+        >
+          <div class="loop-loading-spinner"></div>
+          <div class="loop-loading-text">加载回放帧...</div>
+        </div>
+        
+        <!-- MJPEG Stream (for live streams, hidden when in loop playback mode) -->
         <!-- When paused with a frozen frame, hide this and show frozen frame -->
         <!-- When paused without frozen frame, keep showing this (stream will just not update) -->
         <img
-          v-if="mode === 'stream' && isHttpStream"
+          v-else-if="mode === 'stream' && isHttpStream"
           ref="streamImgRef"
           :src="streamUrl"
           class="stream-image"
@@ -20,14 +38,14 @@
         />
         <!-- Frozen frame when paused (captured from stream or from backend) -->
         <img
-          v-if="mode === 'stream' && isHttpStream && isPaused && frozenFrame"
+          v-if="mode === 'stream' && isHttpStream && !isLoopPlaybackMode && isPaused && frozenFrame"
           :src="frozenFrame"
           class="stream-image frozen"
           :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
         />
         <!-- Pause overlay when stream is paused but no frozen frame available -->
         <div 
-          v-if="mode === 'stream' && isHttpStream && isPaused && !frozenFrame"
+          v-if="mode === 'stream' && isHttpStream && !isLoopPlaybackMode && isPaused && !frozenFrame"
           class="pause-overlay"
         >
           <div class="pause-icon">⏸</div>
@@ -180,6 +198,13 @@ const sam3Error = ref(null)  // Track SAM3 errors
 const sam3Loading = ref(false)  // Track SAM3 loading state
 const sam3FrameTime = ref(null)  // Actual timestamp of the SAM3 frame being displayed
 const sam3FetchInProgress = ref(false)  // Prevent concurrent SAM3 requests
+
+// Loop playback state for stream mode
+const loopPlaybackFrame = ref(null)  // Current frame being displayed during loop playback
+const loopPlaybackTime = ref(0)  // Current playback time within the loop window
+let loopPlaybackTimer = null  // Timer for simulating playback
+const loopFrameCache = ref([])  // Cached frames for the loop window
+const loopCacheLoading = ref(false)  // Whether we're loading the frame cache
 
 // Computed: check if it's an HTTP stream URL
 const isHttpStream = computed(() => {
@@ -361,6 +386,181 @@ const formatTime = (seconds) => {
   const secs = Math.floor(seconds % 60)
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
+
+// ============================================================================
+// Loop Playback for Stream Mode
+// When in stream mode with loopWindow active, we fetch saved frames and play them
+// ============================================================================
+
+// Check if we're in loop playback mode (stream mode with loopWindow)
+const isLoopPlaybackMode = computed(() => {
+  return props.mode === 'stream' && isHttpStream.value && props.loopWindow !== null
+})
+
+// Load frames for the loop window from backend
+const loadLoopWindowFrames = async () => {
+  if (!props.session || !props.loopWindow) return
+  
+  loopCacheLoading.value = true
+  loopFrameCache.value = []
+  
+  try {
+    // Fetch available frames in the time range
+    const response = await fetch(
+      `/api/analysis/frames-in-range/${props.session.session_id}?start=${props.loopWindow.start_time}&end=${props.loopWindow.end_time}`
+    )
+    
+    if (response.ok) {
+      const data = await response.json()
+      if (data.frames && data.frames.length > 0) {
+        loopFrameCache.value = data.frames
+        console.log(`[LoopPlayback] Loaded ${data.frames.length} frames for window ${props.loopWindow.window_id}`)
+      }
+    }
+  } catch (e) {
+    console.error('[LoopPlayback] Failed to load frames:', e)
+  } finally {
+    loopCacheLoading.value = false
+  }
+}
+
+// Get the frame closest to the current playback time
+const getCurrentLoopFrame = async () => {
+  if (!props.session || !props.loopWindow) return null
+  
+  const targetTime = loopPlaybackTime.value
+  
+  // If we have cached frames, find the closest one
+  if (loopFrameCache.value.length > 0) {
+    let closestFrame = loopFrameCache.value[0]
+    let minDiff = Math.abs(closestFrame.timestamp - targetTime)
+    
+    for (const frame of loopFrameCache.value) {
+      const diff = Math.abs(frame.timestamp - targetTime)
+      if (diff < minDiff) {
+        minDiff = diff
+        closestFrame = frame
+      }
+    }
+    
+    // Fetch the actual frame image if not cached
+    if (!closestFrame.image_base64) {
+      try {
+        const response = await fetch(
+          `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${closestFrame.timestamp}&tolerance=0.5`
+        )
+        if (response.ok) {
+          const data = await response.json()
+          if (data.image_base64) {
+            closestFrame.image_base64 = data.image_base64
+          }
+        }
+      } catch (e) {
+        console.warn('[LoopPlayback] Failed to fetch frame image:', e)
+      }
+    }
+    
+    return closestFrame
+  }
+  
+  // Fallback: fetch directly from backend
+  try {
+    const response = await fetch(
+      `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${targetTime}&tolerance=1.0`
+    )
+    if (response.ok) {
+      const data = await response.json()
+      if (data.image_base64) {
+        return { timestamp: data.actual_timestamp || targetTime, image_base64: data.image_base64 }
+      }
+    }
+  } catch (e) {
+    console.warn('[LoopPlayback] Failed to fetch frame:', e)
+  }
+  
+  return null
+}
+
+// Start loop playback timer
+const startLoopPlayback = () => {
+  if (loopPlaybackTimer) {
+    clearInterval(loopPlaybackTimer)
+  }
+  
+  if (!props.loopWindow) return
+  
+  // Initialize playback time to start of window
+  loopPlaybackTime.value = props.loopWindow.start_time
+  
+  // Load frames for this window
+  loadLoopWindowFrames()
+  
+  // Update frame every 200ms (5 fps for smoother playback)
+  loopPlaybackTimer = setInterval(async () => {
+    if (!props.loopWindow || !props.isPlaying) return
+    
+    // Advance time by 0.2 seconds
+    loopPlaybackTime.value += 0.2
+    
+    // Check if we need to loop
+    if (loopPlaybackTime.value >= props.loopWindow.end_time) {
+      loopPlaybackTime.value = props.loopWindow.start_time
+      console.log('[LoopPlayback] Looping back to start')
+    }
+    
+    // Emit time update to parent
+    emit('timeupdate', loopPlaybackTime.value)
+    
+    // Get and display current frame
+    const frame = await getCurrentLoopFrame()
+    if (frame && frame.image_base64) {
+      loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
+    }
+  }, 200)
+  
+  // Immediately show first frame
+  getCurrentLoopFrame().then(frame => {
+    if (frame && frame.image_base64) {
+      loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
+    }
+  })
+}
+
+// Stop loop playback
+const stopLoopPlayback = () => {
+  if (loopPlaybackTimer) {
+    clearInterval(loopPlaybackTimer)
+    loopPlaybackTimer = null
+  }
+  loopPlaybackFrame.value = null
+  loopPlaybackTime.value = 0
+  loopFrameCache.value = []
+}
+
+// Watch for loopWindow changes to start/stop loop playback
+watch(() => props.loopWindow, (newVal, oldVal) => {
+  if (props.mode === 'stream' && isHttpStream.value) {
+    if (newVal) {
+      console.log('[LoopPlayback] Starting loop playback for window', newVal.window_id)
+      startLoopPlayback()
+    } else if (oldVal && !newVal) {
+      console.log('[LoopPlayback] Stopping loop playback')
+      stopLoopPlayback()
+    }
+  }
+}, { immediate: true })
+
+// Watch for isPlaying changes during loop playback
+watch(() => props.isPlaying, (playing) => {
+  if (isLoopPlaybackMode.value) {
+    if (playing && !loopPlaybackTimer) {
+      startLoopPlayback()
+    } else if (!playing && loopPlaybackTimer) {
+      clearInterval(loopPlaybackTimer)
+      loopPlaybackTimer = null
+    }
+  }
+})
 
 // Fetch SAM3 segmented frame - uses streaming endpoint for efficiency
 // The backend continuously processes frames, we just fetch the latest cached result
@@ -545,6 +745,9 @@ onUnmounted(() => {
   if (sam3LoadingTimer.value) {
     clearInterval(sam3LoadingTimer.value)
   }
+  
+  // Stop loop playback
+  stopLoopPlayback()
   
   // IMPORTANT: Clear MJPEG stream img src to stop loading
   // This helps free up the HTTP connection to the stream
@@ -804,6 +1007,49 @@ onUnmounted(() => {
   font-size: 0.7rem;
   color: var(--text-tertiary, #666);
   margin-top: 0.25rem;
+}
+
+/* Loop Playback Frame */
+.stream-image.loop-playback {
+  cursor: pointer;
+  border: 2px solid var(--accent-secondary, #00bcd4);
+  box-shadow: 0 0 15px rgba(0, 188, 212, 0.3);
+}
+
+/* Loop Loading Overlay */
+.loop-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.8);
+  z-index: 5;
+  cursor: pointer;
+}
+
+.loop-loading-spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid rgba(0, 188, 212, 0.2);
+  border-top-color: var(--accent-secondary, #00bcd4);
+  border-radius: 50%;
+  animation: loop-loading-spin 0.8s linear infinite;
+}
+
+@keyframes loop-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+.loop-loading-text {
+  margin-top: 1rem;
+  color: var(--accent-secondary, #00bcd4);
+  font-size: 1rem;
+  font-weight: 500;
 }
 </style>
 

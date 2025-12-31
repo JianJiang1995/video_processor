@@ -260,6 +260,65 @@ class FrameStorageService:
             })
         
         return frames
+    
+    def list_frames_in_range(
+        self,
+        storage_path: str,
+        start_time: float,
+        end_time: float,
+        subfolder: str = "frames"
+    ) -> list:
+        """
+        List frames within a time range.
+        
+        Frame filenames are expected to be in format: frame_XXXXX_TIMESTAMP.jpg
+        where TIMESTAMP is the time in seconds (float format with underscore for decimal).
+        """
+        if not storage_path:
+            return []
+        
+        folder = Path(storage_path) / subfolder
+        if not folder.exists():
+            return []
+        
+        frames = []
+        for frame_path in sorted(folder.glob("*.jpg")):
+            # Try to extract timestamp from filename
+            # Expected format: frame_00001_12.500.jpg or frame_00001_12_500.jpg
+            filename = frame_path.stem  # e.g., "frame_00001_12.500" or "frame_00001_12_500"
+            parts = filename.split("_")
+            
+            timestamp = None
+            if len(parts) >= 3:
+                try:
+                    # Try format: frame_XXXXX_TIMESTAMP (e.g., frame_00001_12.500)
+                    timestamp = float(parts[2])
+                except ValueError:
+                    # Try format with underscore as decimal: frame_XXXXX_12_500 -> 12.500
+                    if len(parts) >= 4:
+                        try:
+                            timestamp = float(f"{parts[2]}.{parts[3]}")
+                        except ValueError:
+                            pass
+            
+            # If couldn't parse from filename, try frame index * estimated fps
+            if timestamp is None and len(parts) >= 2:
+                try:
+                    frame_idx = int(parts[1])
+                    # Assume ~1 fps for SurgR1 processed frames
+                    timestamp = float(frame_idx)
+                except ValueError:
+                    continue
+            
+            if timestamp is not None and start_time <= timestamp <= end_time:
+                frames.append({
+                    "filename": frame_path.name,
+                    "path": f"{subfolder}/{frame_path.name}",
+                    "timestamp": timestamp,
+                    "frame_idx": int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else -1
+                })
+        
+        return sorted(frames, key=lambda x: x.get("timestamp", 0))
 
 
 # Global instance

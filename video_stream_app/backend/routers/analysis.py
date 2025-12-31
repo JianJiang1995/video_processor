@@ -1188,11 +1188,19 @@ async def surgr1_continuous_task(
         logger.info(f"SurgR1 continuous task started for {session_id} (SAM3: {sam3_session_id is not None})")
         
         while surgr1_continuous_flags.get(session_id, False):
+            # Check stop flag at the start of each iteration
+            if not surgr1_continuous_flags.get(session_id, False):
+                logger.info(f"[SurgR1 V1] Stop flag detected for {session_id}")
+                break
+            
             ret, bgr_frame = cap.read()
             
             if not ret:
                 # For streams, wait and retry; for files, loop
                 if video_path.startswith('http'):
+                    # Check stop flag during wait
+                    if not surgr1_continuous_flags.get(session_id, False):
+                        break
                     await asyncio.sleep(0.1)
                     continue
                 else:
@@ -1215,6 +1223,11 @@ async def surgr1_continuous_task(
             is_surgr1_frame = (current_time - last_surgr1_time >= surgr1_interval)
             
             if is_surgr1_frame:
+                # Check stop flag before making API call
+                if not surgr1_continuous_flags.get(session_id, False):
+                    logger.info(f"[SurgR1 V1] Stop flag detected before analysis for {session_id}")
+                    break
+                
                 last_surgr1_time = current_time
                 
                 try:
@@ -1494,123 +1507,190 @@ async def surgr1_continuous_task_v2(
         last_sample_time = -sample_interval
         frame_idx = 0
         
-        # 批处理状态
-        batch_process_interval = 0.5  # 每 0.5 秒检查一次是否有批次可处理
-        last_batch_check = time_module.time()
+        # 判断是否为实时流
+        is_realtime_stream = video_path.startswith('http') or video_path.startswith('rtsp')
+        
+        # 批处理配置
+        min_batch = frame_buffer.config.min_batch_size
+        max_batch = frame_buffer.config.max_batch_size
         
         logger.info(
             f"[SurgR1 V2] Started for {session_id}, "
-            f"batch_size: {frame_buffer.config.min_batch_size}-{frame_buffer.config.max_batch_size}"
+            f"batch_size: {min_batch}-{max_batch}, "
+            f"realtime: {is_realtime_stream}"
         )
         
-        while surgr1_continuous_flags.get(session_id, False):
-            # ========== 1. 读取视频帧并添加到缓冲区 ==========
-            ret, bgr_frame = cap.read()
+        # 动态批处理：异步收集和处理
+        # - 收集任务：持续读取视频帧添加到 buffer
+        # - 处理任务：当 buffer 中有足够帧时，动态决定 batch size 并处理
+        
+        async def collect_frames():
+            """持续收集帧到缓冲区"""
+            nonlocal frame_idx, last_sample_time
+            frames_added = 0
             
-            if not ret:
-                if video_path.startswith('http'):
+            while surgr1_continuous_flags.get(session_id, False):
+                ret, bgr_frame = cap.read()
+                
+                if not ret:
+                    if is_realtime_stream:
+                        await asyncio.sleep(0.05)
+                        continue
+                    else:
+                        # 视频结束，从头开始
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        frame_idx = 0
+                        last_sample_time = -sample_interval
+                        continue
+                
+                current_time = frame_idx / fps
+                
+                # 按采样间隔添加帧到缓冲区
+                if current_time - last_sample_time >= sample_interval:
+                    last_sample_time = current_time
+                    
+                    # 转换为 PIL Image
+                    rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+                    from PIL import Image
+                    pil_image = Image.fromarray(rgb_frame)
+                    
+                    # 添加到缓冲区
+                    frame_buffer.add_frame(
+                        image=pil_image,
+                        frame_idx=frame_idx,
+                        timestamp=current_time
+                    )
+                    frames_added += 1
+                    
+                    # 每添加一帧日志（调试用）
+                    if frames_added % 10 == 0:
+                        logger.debug(f"[SurgR1 V2] Collected {frames_added} frames, buffer: {frame_buffer.stats.pending_count}")
+                
+                frame_idx += 1
+                
+                # 让出控制权
+                if frame_idx % 10 == 0:
+                    await asyncio.sleep(0.001)
+            
+            logger.info(f"[SurgR1 V2] Collection stopped, total frames added: {frames_added}")
+        
+        async def process_batches():
+            """动态处理批次"""
+            while surgr1_continuous_flags.get(session_id, False):
+                pending = frame_buffer.stats.pending_count
+                
+                # 等待最少 min_batch 帧
+                if pending < min_batch:
                     await asyncio.sleep(0.1)
                     continue
+                
+                # 动态决定 batch size：
+                # - 积压少：用 min_batch（保持实时性）
+                # - 积压多：用更大的 batch（追赶延迟）
+                if pending >= max_batch:
+                    # 积压严重，用最大 batch
+                    dynamic_batch_size = max_batch
+                elif pending >= min_batch * 2:
+                    # 有一定积压，增大 batch
+                    dynamic_batch_size = min(pending, max_batch)
                 else:
-                    # 视频结束，从头开始
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    frame_idx = 0
-                    last_sample_time = -sample_interval
+                    # 正常情况，用 min_batch
+                    dynamic_batch_size = min_batch
+                
+                # 从 buffer 获取指定数量的帧
+                batch = []
+                async with frame_buffer._lock:
+                    actual_size = min(dynamic_batch_size, len(frame_buffer._frames))
+                    for _ in range(actual_size):
+                        if frame_buffer._frames:
+                            frame = frame_buffer._frames.popleft()
+                            batch.append({
+                                "image": frame.image,
+                                "frame_idx": frame.frame_idx,
+                                "timestamp": frame.timestamp
+                            })
+                
+                if not batch:
+                    await asyncio.sleep(0.1)
                     continue
-            
-            current_time = frame_idx / fps
-            
-            # 按采样间隔添加帧到缓冲区
-            if current_time - last_sample_time >= sample_interval:
-                last_sample_time = current_time
                 
-                # 转换为 PIL Image
-                rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-                from PIL import Image
-                pil_image = Image.fromarray(rgb_frame)
+                # Check stop flag before making API call
+                if not surgr1_continuous_flags.get(session_id, False):
+                    logger.info(f"[SurgR1 V2] Stop flag detected, skipping batch for {session_id}")
+                    break
                 
-                # 添加到缓冲区
-                frame_buffer.add_frame(
-                    image=pil_image,
-                    frame_idx=frame_idx,
-                    timestamp=current_time
+                batch_start = time_module.time()
+                
+                logger.info(
+                    f"[SurgR1 V2] Processing batch: {batch_size} frames (dynamic), "
+                    f"pending: {frame_buffer.stats.pending_count}, "
+                    f"latency: {frame_buffer.stats.current_latency:.1f}s"
                 )
-            
-            frame_idx += 1
-            
-            # ========== 2. 检查是否有批次需要处理 ==========
-            now = time_module.time()
-            if now - last_batch_check >= batch_process_interval:
-                last_batch_check = now
                 
-                # 获取批次
-                batch = await frame_buffer.get_batch(wait=True)
-                
-                if batch:
-                    batch_start = time_module.time()
-                    batch_size = len(batch)
-                    
-                    logger.info(
-                        f"[SurgR1 V2] Processing batch: {batch_size} frames, "
-                        f"pending: {frame_buffer.stats.pending_count}, "
-                        f"latency: {frame_buffer.stats.current_latency:.1f}s"
+                try:
+                    # 批量分析
+                    results = await surgr1_client.analyze_frames_batch(
+                        frames=batch,
+                        analysis_type="all",
+                        session_id=session_id,
+                        save_to_mysql=True
                     )
                     
-                    try:
-                        # 批量分析
-                        results = await surgr1_client.analyze_frames_batch(
-                            frames=batch,
-                            analysis_type="all",
+                    # 获取存储路径
+                    mysql_service = get_mysql_service()
+                    video_session = mysql_service.get_video_session(session_id)
+                    storage_path = video_session.get("storage_path") if video_session else None
+                    
+                    # 保存结果到数据库
+                    for i, result in enumerate(results):
+                        frame_data = batch[i]
+                        
+                        # 保存到 MySQL
+                        mysql_service.save_analysis(
                             session_id=session_id,
-                            save_to_mysql=True
+                            frame_idx=frame_data["frame_idx"],
+                            timestamp=frame_data["timestamp"],
+                            analysis_type="frame",
+                            tool_localization=result.get("tools", ""),
+                            surgical_action=result.get("action", ""),
+                            surgical_phase=result.get("phase", ""),
+                            image_path=None,
+                            image_saved=0
                         )
                         
-                        # 获取存储路径
-                        mysql_service = get_mysql_service()
-                        video_session = mysql_service.get_video_session(session_id)
-                        storage_path = video_session.get("storage_path") if video_session else None
-                        
-                        # 保存结果到数据库
-                        for i, result in enumerate(results):
-                            frame_data = batch[i]
-                            
-                            # 保存到 MySQL
-                            mysql_service.save_analysis(
-                                session_id=session_id,
-                                frame_idx=frame_data["frame_idx"],
-                                timestamp=frame_data["timestamp"],
-                                analysis_type="frame",
-                                tool_localization=result.get("tools", ""),
-                                surgical_action=result.get("action", ""),
-                                surgical_phase=result.get("phase", ""),
-                                image_path=None,
-                                image_saved=0
-                            )
-                            
-                            # 保存到内存数据库（兼容）
-                            create_frame_analysis(
-                                db=db,
-                                session_id=db_session_id,
-                                frame_idx=frame_data["frame_idx"],
-                                timestamp=frame_data["timestamp"],
-                                tool_localization=result.get("tools", ""),
-                                surgical_action=result.get("action", ""),
-                                surgical_phase=result.get("phase", "")
-                            )
-                        
-                        batch_elapsed = time_module.time() - batch_start
-                        frame_buffer.record_processing_time(batch_elapsed, batch_size)
-                        
-                        logger.info(
-                            f"[SurgR1 V2] Batch completed: {batch_size} frames in {batch_elapsed:.2f}s "
-                            f"({batch_size/batch_elapsed:.1f} fps)"
+                        # 保存到内存数据库（兼容）
+                        create_frame_analysis(
+                            db=db,
+                            session_id=db_session_id,
+                            frame_idx=frame_data["frame_idx"],
+                            timestamp=frame_data["timestamp"],
+                            tool_localization=result.get("tools", ""),
+                            surgical_action=result.get("action", ""),
+                            surgical_phase=result.get("phase", "")
                         )
-                        
-                    except Exception as e:
-                        logger.error(f"[SurgR1 V2] Batch processing failed: {e}")
+                    
+                    batch_elapsed = time_module.time() - batch_start
+                    frame_buffer.record_processing_time(batch_elapsed, batch_size)
+                    
+                    logger.info(
+                        f"[SurgR1 V2] Batch completed: {batch_size} frames in {batch_elapsed:.2f}s "
+                        f"({batch_size/batch_elapsed:.1f} fps)"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"[SurgR1 V2] Batch processing failed: {e}")
+                
+                # 小延迟防止 CPU 过载
+                await asyncio.sleep(0.01)
             
-            # 小延迟防止 CPU 过载
-            await asyncio.sleep(0.01)
+            logger.info(f"[SurgR1 V2] Processing stopped for {session_id}")
+        
+        # 启动并行任务：收集 + 处理
+        collect_task = asyncio.create_task(collect_frames())
+        process_task = asyncio.create_task(process_batches())
+        
+        # 等待两个任务完成（当 stop flag 设置时会退出）
+        await asyncio.gather(collect_task, process_task, return_exceptions=True)
         
         cap.release()
         logger.info(f"[SurgR1 V2] Stopped for {session_id}")
@@ -1988,10 +2068,11 @@ async def glm_summarization_task(
             # ========== 使用 GLM 并发摘要 ==========
             if windows_to_process:
                 try:
-                    # 并发处理所有窗口（最多同时处理 3 个）
+                    # 并发处理所有窗口（使用配置的并发数，默认 6）
+                    glm_max_concurrent = settings.GLM_MAX_CONCURRENT if hasattr(settings, 'GLM_MAX_CONCURRENT') else 6
                     glm_results = await glm_client.summarize_windows_concurrent(
                         windows=windows_to_process,
-                        max_concurrent=3
+                        max_concurrent=glm_max_concurrent
                     )
                     
                     # 保存结果到数据库
@@ -3226,6 +3307,65 @@ async def get_frame_at_timestamp(
             "surgical_action": frame_data.get("surgical_action"),
             "surgical_phase": frame_data.get("surgical_phase")
         }
+    }
+
+
+@router.get("/frames-in-range/{session_id}")
+async def get_frames_in_range(
+    session_id: str,
+    start: float = Query(..., description="Start timestamp in seconds"),
+    end: float = Query(..., description="End timestamp in seconds"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all saved frames within a time range.
+    
+    Used for loop playback - returns a list of frame timestamps and metadata
+    (without image data to keep response small). Client can then fetch individual
+    frames as needed during playback.
+    """
+    mysql_service = get_mysql_service()
+    
+    # Get video session info
+    video_session = mysql_service.get_video_session(session_id)
+    if not video_session:
+        raise HTTPException(404, "Session not found")
+    
+    storage_path = video_session.get("storage_path")
+    
+    # Get frames from database in the time range
+    frames = get_frames_by_session(db, session_id, start, end)
+    
+    # Build response with frame metadata (no images to keep it fast)
+    frame_list = []
+    for frame in frames:
+        frame_list.append({
+            "frame_idx": frame.frame_idx,
+            "timestamp": frame.timestamp,
+            "has_analysis": bool(frame.tool_localization or frame.surgical_action),
+            "surgical_phase": frame.surgical_phase,
+            "surgical_action": frame.surgical_action
+        })
+    
+    # If no frames in database, try to get from file storage
+    if not frame_list and storage_path:
+        frame_storage = get_frame_storage_service()
+        storage_frames = frame_storage.list_frames_in_range(storage_path, start, end)
+        for sf in storage_frames:
+            frame_list.append({
+                "frame_idx": sf.get("frame_idx", -1),
+                "timestamp": sf.get("timestamp", 0),
+                "has_analysis": False,
+                "path": sf.get("path")
+            })
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "start": start,
+        "end": end,
+        "count": len(frame_list),
+        "frames": sorted(frame_list, key=lambda x: x.get("timestamp", 0))
     }
 
 
