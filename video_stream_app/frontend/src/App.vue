@@ -507,6 +507,9 @@ const startSurgR1Continuous = async (sessionId) => {
   analysisQueue.init(sessionId)
   
   try {
+    // Record time before request for synchronization
+    const requestStartTime = Date.now()
+    
     const response = await axios.post(`/api/analysis/start-surgr1-continuous/${sessionId}`, null, {
       signal: getSessionSignal()
     })
@@ -514,6 +517,19 @@ const startSurgR1Continuous = async (sessionId) => {
     
     if (response.data.status === 'started' || response.data.status === 'running') {
       surgr1ProcessingStatus.value.running = true
+      
+      // Synchronize stream start time with backend for accurate timestamps
+      // The backend returns server_time which is when it started processing
+      // We adjust our streamStartTime to match, accounting for network latency
+      if (response.data.server_time && mode.value === 'stream') {
+        const networkLatency = (Date.now() - requestStartTime) / 2  // Estimate one-way latency
+        const serverTimeMs = response.data.server_time * 1000  // Convert to milliseconds
+        // Reset streamStartTime to match backend's start time
+        streamStartTime.value = serverTimeMs + networkLatency
+        currentTime.value = 0  // Reset current time
+        console.log(`[TimeSync] Synchronized with backend. streamStartTime=${streamStartTime.value}, latency=${networkLatency}ms`)
+      }
+      
       // Start polling for status updates
       startSurgR1StatusPolling(sessionId)
     }

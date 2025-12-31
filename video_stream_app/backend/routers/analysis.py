@@ -31,13 +31,6 @@ from ..services.glm_client import get_glm_client, ensure_glm_available
 from ..services.tts_cosyvoice_client import get_tts_client, ensure_tts_available
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
-from ..services.async_task_queue import (
-    get_surgr1_queue, get_glm_queue, shutdown_queues,
-    TaskPriority
-)
-from ..services.frame_buffer_service import (
-    get_frame_buffer, get_frame_buffer_service, BufferConfig
-)
 from ..config import settings, ANALYSIS_SYSTEM_PROMPT
 
 import logging
@@ -64,6 +57,10 @@ analysis_cancellation_flags: dict = {}
 # Global flags for continuous SurgR1 processing
 # Key: session_id, Value: bool (True = running)
 surgr1_continuous_flags: dict = {}
+
+# Global stream start times for time synchronization
+# Key: session_id, Value: float (unix timestamp when processing started)
+stream_start_times: dict = {}
 
 # Global SAM3 streaming sessions
 # Key: session_id, Value: dict with sam3_session_id, last_frame, consistency_checker, etc.
@@ -277,201 +274,6 @@ async def analyze_frames_batch(
     except Exception as e:
         logger.error(f"Batch frame analysis failed: {e}")
         raise HTTPException(500, f"Batch analysis failed: {str(e)}")
-
-
-class AnalyzeFramesConcurrentRequest(BaseModel):
-    """Request for concurrent frame analysis"""
-    session_id: str
-    frames: List[FrameData]
-    max_concurrent: int = 3  # 最大并发数
-
-
-@router.post("/analyze-frames-concurrent")
-async def analyze_frames_concurrent(
-    request: AnalyzeFramesConcurrentRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    并发分析帧 - 高性能版本
-    
-    使用 asyncio.gather + Semaphore 并发处理多个帧，
-    比串行处理快 N 倍（N = 并发数）
-    
-    适用场景:
-    - 批量分析大量帧
-    - 实时流处理需要高吞吐量
-    - 回放分析需要快速处理
-    """
-    session = get_video_session(db, request.session_id)
-    if not session:
-        raise HTTPException(404, "Session not found")
-    
-    if not request.frames:
-        return {"success": True, "results": [], "message": "No frames to analyze"}
-    
-    start_time = time.time()
-    
-    try:
-        surgr1_client = await ensure_surgr1_available()
-        
-        # Prepare frames for concurrent processing
-        batch_frames = []
-        
-        for frame_data in request.frames:
-            if frame_data.image_base64:
-                # Decode base64 image
-                image_bytes = base64.b64decode(frame_data.image_base64)
-                image = Image.open(BytesIO(image_bytes))
-                batch_frames.append({
-                    "image": image,
-                    "frame_idx": frame_data.frame_idx,
-                    "timestamp": frame_data.timestamp
-                })
-            else:
-                # Extract frame from video file
-                processor = VideoProcessor(
-                    video_path=session["video_path"],
-                    window_duration=settings.WINDOW_DURATION,
-                    sample_interval=settings.SAMPLE_INTERVAL
-                )
-                frame = processor.extract_frame(frame_data.timestamp)
-                if frame:
-                    batch_frames.append({
-                        "image": frame.image,
-                        "frame_idx": frame_data.frame_idx,
-                        "timestamp": frame_data.timestamp
-                    })
-        
-        if not batch_frames:
-            return {"success": True, "results": [], "message": "No valid frames"}
-        
-        # 使用并发分析
-        results = await surgr1_client.analyze_frames_concurrent(
-            frames=batch_frames,
-            analysis_type="all",
-            session_id=request.session_id,
-            save_to_mysql=True,
-            max_concurrent=request.max_concurrent
-        )
-        
-        # Save to SQLite database
-        for result in results:
-            if result.get("success", True):  # 只保存成功的结果
-                create_frame_analysis(
-                    db=db,
-                    session_id=session["session_id"],
-                    frame_idx=result.get("frame_idx"),
-                    timestamp=result.get("timestamp"),
-                    tool_localization=result.get("tools", ""),
-                    surgical_action=result.get("action", ""),
-                    surgical_phase=result.get("phase", "")
-                )
-        
-        elapsed = time.time() - start_time
-        success_count = sum(1 for r in results if r.get("success", True))
-        
-        logger.info(
-            f"Concurrent analyzed {success_count}/{len(results)} frames "
-            f"for session {request.session_id} in {elapsed:.2f}s "
-            f"({len(results)/elapsed:.1f} fps)"
-        )
-        
-        return {
-            "success": True,
-            "results": [
-                {
-                    "frame_idx": r.get("frame_idx"),
-                    "timestamp": r.get("timestamp"),
-                    "tool_localization": r.get("tools", ""),
-                    "surgical_action": r.get("action", ""),
-                    "surgical_phase": r.get("phase", ""),
-                    "window_id": int(r.get("timestamp", 0) / settings.WINDOW_DURATION),
-                    "success": r.get("success", True)
-                }
-                for r in results
-            ],
-            "batch_size": len(results),
-            "success_count": success_count,
-            "elapsed_seconds": round(elapsed, 2),
-            "fps": round(len(results) / elapsed, 1) if elapsed > 0 else 0,
-            "max_concurrent": request.max_concurrent
-        }
-        
-    except Exception as e:
-        logger.error(f"Concurrent frame analysis failed: {e}")
-        raise HTTPException(500, f"Concurrent analysis failed: {str(e)}")
-
-
-# ==================== 任务队列状态接口 ====================
-
-@router.get("/queue-status")
-async def get_queue_status():
-    """
-    获取 SurgR1 和 GLM 任务队列状态
-    
-    返回:
-    - 队列统计信息
-    - 并发配置
-    - 工作者状态
-    """
-    try:
-        surgr1_queue = await get_surgr1_queue()
-        glm_queue = await get_glm_queue()
-        
-        return {
-            "success": True,
-            "surgr1_queue": surgr1_queue.get_stats(),
-            "glm_queue": glm_queue.get_stats(),
-            "message": "Queue status retrieved successfully"
-        }
-    except Exception as e:
-        logger.error(f"Failed to get queue status: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "Queues may not be initialized yet"
-        }
-
-
-class QueueConfigRequest(BaseModel):
-    """Request to configure queue settings"""
-    surgr1_max_concurrent: Optional[int] = None
-    glm_max_concurrent: Optional[int] = None
-
-
-@router.post("/queue-config")
-async def configure_queue(request: QueueConfigRequest):
-    """
-    配置任务队列并发数
-    
-    Args:
-        surgr1_max_concurrent: SurgR1 最大并发数
-        glm_max_concurrent: GLM 最大并发数
-    """
-    try:
-        result = {}
-        
-        if request.surgr1_max_concurrent:
-            surgr1_queue = await get_surgr1_queue(request.surgr1_max_concurrent)
-            # 更新信号量（需要重启队列）
-            surgr1_queue._semaphore = asyncio.Semaphore(request.surgr1_max_concurrent)
-            surgr1_queue.concurrent_config.max_concurrent = request.surgr1_max_concurrent
-            result["surgr1"] = f"Updated to {request.surgr1_max_concurrent} concurrent"
-        
-        if request.glm_max_concurrent:
-            glm_queue = await get_glm_queue(request.glm_max_concurrent)
-            glm_queue._semaphore = asyncio.Semaphore(request.glm_max_concurrent)
-            glm_queue.concurrent_config.max_concurrent = request.glm_max_concurrent
-            result["glm"] = f"Updated to {request.glm_max_concurrent} concurrent"
-        
-        return {
-            "success": True,
-            "updates": result,
-            "message": "Queue configuration updated"
-        }
-    except Exception as e:
-        logger.error(f"Failed to configure queue: {e}")
-        raise HTTPException(500, f"Queue configuration failed: {str(e)}")
 
 
 @router.post("/analyze-window")
@@ -764,7 +566,6 @@ async def start_surgr1_continuous(
     session_id: str,
     background_tasks: BackgroundTasks,
     enable_sam3: bool = True,
-    use_dynamic_batch: bool = True,  # 使用动态批处理 V2 版本
     db: Session = Depends(get_db)
 ):
     """
@@ -773,12 +574,8 @@ async def start_surgr1_continuous(
     This runs in the background and continuously analyzes frames with SurgR1.
     Results are stored in the database and can be used by GLM summarization later.
     
-    Args:
-        session_id: 会话 ID
-        enable_sam3: 是否启用 SAM3 分割
-        use_dynamic_batch: 是否使用动态批处理 V2 版本
-            - True: 使用帧缓冲区 + 动态 batch size（推荐，高吞吐量）
-            - False: 使用原始逐帧处理（兼容模式）
+    If enable_sam3 is True, also creates a SAM3 streaming session for
+    real-time segmentation with mask propagation.
     
     Called automatically when entering stream mode.
     """
@@ -835,37 +632,32 @@ async def start_surgr1_continuous(
         # Mark as running
         surgr1_continuous_flags[session_id] = True
         
-        # 选择任务版本
-        if use_dynamic_batch:
-            # V2: 动态批处理版本（高吞吐量）
-            task_func = surgr1_continuous_task_v2
-            task_version = "v2_dynamic_batch"
-            logger.info(f"Using SurgR1 V2 (dynamic batch) for session {session_id}")
-        else:
-            # V1: 原始逐帧处理（兼容模式）
-            task_func = surgr1_continuous_task
-            task_version = "v1_sequential"
-            logger.info(f"Using SurgR1 V1 (sequential) for session {session_id}")
-        
-        # Add background task
-        background_tasks.add_task(
-            task_func,
-            session_id=session_id,
-            video_path=session["video_path"],
-            db_session_id=session["session_id"],
-            sam3_session_id=sam3_session_id
+        # Create background task using asyncio.create_task so it can be cancelled
+        # (FastAPI background_tasks cannot be cancelled)
+        task = asyncio.create_task(
+            surgr1_continuous_task(
+                session_id=session_id,
+                video_path=session["video_path"],
+                db_session_id=session["session_id"],
+                sam3_session_id=sam3_session_id
+            )
         )
+        
+        # Store task reference for cancellation
+        active_surgr1_tasks[session_id] = [task]
         
         logger.info(f"Started SurgR1 continuous processing for session {session_id}")
         
+        import time as time_module
         return {
             "success": True,
             "message": "SurgR1 continuous processing started",
             "session_id": session_id,
             "status": "started",
-            "version": task_version,
             "sam3_enabled": sam3_session_id is not None,
-            "sam3_session_id": sam3_session_id
+            "sam3_session_id": sam3_session_id,
+            # Server timestamp for time synchronization with frontend
+            "server_time": time_module.time()
         }
         
     except Exception as e:
@@ -895,6 +687,10 @@ async def stop_surgr1_continuous(
     # Mark as stopped - do this first even if session doesn't exist
     was_running = surgr1_continuous_flags.get(session_id, False)
     surgr1_continuous_flags[session_id] = False
+    
+    # Clean up stream start time
+    if session_id in stream_start_times:
+        del stream_start_times[session_id]
     
     # Also try to close SAM3 session if still active
     sam3_info = sam3_streaming_sessions.get(session_id)
@@ -1171,6 +967,18 @@ async def surgr1_continuous_task(
             return
         
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        is_realtime_stream = video_path.startswith('http')
+        
+        # For realtime streams, use wall clock time instead of frame-based time
+        # This ensures timestamps match the frontend's elapsed time
+        import time as time_module
+        stream_start_time = time_module.time() if is_realtime_stream else None
+        
+        # Store the start time for synchronization with frontend
+        if is_realtime_stream:
+            stream_start_times[session_id] = stream_start_time
+            logger.info(f"Stream start time recorded for {session_id}: {stream_start_time}")
+        
         surgr1_interval = 1.0  # SurgR1 analyzes one frame per second
         sam3_interval = 0.1  # SAM3 propagates masks at 10 FPS (propagation is very fast)
         last_surgr1_time = -surgr1_interval  # Ensure first frame is analyzed
@@ -1185,22 +993,14 @@ async def surgr1_continuous_task(
         sam3_initialized = False
         sam3_tracked_instruments = set()  # Set of instrument labels being tracked
         
-        logger.info(f"SurgR1 continuous task started for {session_id} (SAM3: {sam3_session_id is not None})")
+        logger.info(f"SurgR1 continuous task started for {session_id} (SAM3: {sam3_session_id is not None}, realtime_stream: {is_realtime_stream})")
         
         while surgr1_continuous_flags.get(session_id, False):
-            # Check stop flag at the start of each iteration
-            if not surgr1_continuous_flags.get(session_id, False):
-                logger.info(f"[SurgR1 V1] Stop flag detected for {session_id}")
-                break
-            
             ret, bgr_frame = cap.read()
             
             if not ret:
                 # For streams, wait and retry; for files, loop
-                if video_path.startswith('http'):
-                    # Check stop flag during wait
-                    if not surgr1_continuous_flags.get(session_id, False):
-                        break
+                if is_realtime_stream:
                     await asyncio.sleep(0.1)
                     continue
                 else:
@@ -1212,7 +1012,12 @@ async def surgr1_continuous_task(
                         consistency_checker.reset()
                     continue
             
-            current_time = frame_idx / fps
+            # For realtime streams, use actual elapsed time (wall clock)
+            # For local videos, use frame-based time calculation
+            if is_realtime_stream:
+                current_time = time_module.time() - stream_start_time
+            else:
+                current_time = frame_idx / fps
             
             # Convert to PIL Image
             rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
@@ -1223,11 +1028,6 @@ async def surgr1_continuous_task(
             is_surgr1_frame = (current_time - last_surgr1_time >= surgr1_interval)
             
             if is_surgr1_frame:
-                # Check stop flag before making API call
-                if not surgr1_continuous_flags.get(session_id, False):
-                    logger.info(f"[SurgR1 V1] Stop flag detected before analysis for {session_id}")
-                    break
-                
                 last_surgr1_time = current_time
                 
                 try:
@@ -1427,6 +1227,10 @@ async def surgr1_continuous_task(
         
         cap.release()
         logger.info(f"SurgR1 continuous task stopped for {session_id}")
+    
+    except asyncio.CancelledError:
+        logger.info(f"SurgR1 continuous task cancelled for {session_id}")
+        # Let the finally block handle cleanup
         
     except Exception as e:
         logger.error(f"SurgR1 continuous task error: {e}")
@@ -1434,6 +1238,9 @@ async def surgr1_continuous_task(
         traceback.print_exc()
     finally:
         surgr1_continuous_flags[session_id] = False
+        
+        # Clean up task reference
+        active_surgr1_tasks.pop(session_id, None)
         
         # CRITICAL: Release video capture to free stream connection
         if cap is not None:
@@ -1455,324 +1262,6 @@ async def surgr1_continuous_task(
         sam3_latest_frames.pop(session_id, None)
         
         db.close()
-
-
-# ==============================================================================
-# Dynamic Batch Processing - 动态批处理版本
-# ==============================================================================
-
-async def surgr1_continuous_task_v2(
-    session_id: str,
-    video_path: str,
-    db_session_id: int,
-    sam3_session_id: Optional[str] = None
-):
-    """
-    SurgR1 持续分析任务 V2 - 动态批处理版本
-    
-    改进点：
-    1. 使用帧缓冲区收集待处理帧
-    2. 动态调整 batch size（根据积压情况）
-    3. 批量发送到 SurgR1 处理，大幅提升吞吐量
-    4. 与视频流速度保持同步，避免延迟积累
-    
-    配置参数（从 config.json 读取）:
-    - min_batch_size: 最小批处理大小（默认 1）
-    - max_batch_size: 最大批处理大小（默认 10）
-    - batch_timeout: 超时后即使未满也处理（默认 2 秒）
-    - target_latency: 目标延迟，超过则增大 batch（默认 5 秒）
-    """
-    import cv2
-    import time as time_module
-    
-    db = next(get_db())
-    cap = None
-    frame_buffer = None
-    
-    try:
-        surgr1_client = await ensure_surgr1_available()
-        
-        # 获取帧缓冲区
-        frame_buffer = get_frame_buffer(session_id)
-        
-        # Open video/stream
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            logger.error(f"Cannot open video: {video_path}")
-            surgr1_continuous_flags[session_id] = False
-            return
-        
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        sample_interval = 1.0  # 每秒采样 1 帧
-        last_sample_time = -sample_interval
-        frame_idx = 0
-        
-        # 判断是否为实时流
-        is_realtime_stream = video_path.startswith('http') or video_path.startswith('rtsp')
-        
-        # 批处理配置
-        min_batch = frame_buffer.config.min_batch_size
-        max_batch = frame_buffer.config.max_batch_size
-        
-        logger.info(
-            f"[SurgR1 V2] Started for {session_id}, "
-            f"batch_size: {min_batch}-{max_batch}, "
-            f"realtime: {is_realtime_stream}"
-        )
-        
-        # 动态批处理：异步收集和处理
-        # - 收集任务：持续读取视频帧添加到 buffer
-        # - 处理任务：当 buffer 中有足够帧时，动态决定 batch size 并处理
-        
-        async def collect_frames():
-            """持续收集帧到缓冲区"""
-            nonlocal frame_idx, last_sample_time
-            frames_added = 0
-            
-            while surgr1_continuous_flags.get(session_id, False):
-                ret, bgr_frame = cap.read()
-                
-                if not ret:
-                    if is_realtime_stream:
-                        await asyncio.sleep(0.05)
-                        continue
-                    else:
-                        # 视频结束，从头开始
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        frame_idx = 0
-                        last_sample_time = -sample_interval
-                        continue
-                
-                current_time = frame_idx / fps
-                
-                # 按采样间隔添加帧到缓冲区
-                if current_time - last_sample_time >= sample_interval:
-                    last_sample_time = current_time
-                    
-                    # 转换为 PIL Image
-                    rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-                    from PIL import Image
-                    pil_image = Image.fromarray(rgb_frame)
-                    
-                    # 添加到缓冲区
-                    frame_buffer.add_frame(
-                        image=pil_image,
-                        frame_idx=frame_idx,
-                        timestamp=current_time
-                    )
-                    frames_added += 1
-                    
-                    # 每添加一帧日志（调试用）
-                    if frames_added % 10 == 0:
-                        logger.debug(f"[SurgR1 V2] Collected {frames_added} frames, buffer: {frame_buffer.stats.pending_count}")
-                
-                frame_idx += 1
-                
-                # 让出控制权
-                if frame_idx % 10 == 0:
-                    await asyncio.sleep(0.001)
-            
-            logger.info(f"[SurgR1 V2] Collection stopped, total frames added: {frames_added}")
-        
-        async def process_batches():
-            """动态处理批次"""
-            while surgr1_continuous_flags.get(session_id, False):
-                pending = frame_buffer.stats.pending_count
-                
-                # 等待最少 min_batch 帧
-                if pending < min_batch:
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # 动态决定 batch size：
-                # - 积压少：用 min_batch（保持实时性）
-                # - 积压多：用更大的 batch（追赶延迟）
-                if pending >= max_batch:
-                    # 积压严重，用最大 batch
-                    dynamic_batch_size = max_batch
-                elif pending >= min_batch * 2:
-                    # 有一定积压，增大 batch
-                    dynamic_batch_size = min(pending, max_batch)
-                else:
-                    # 正常情况，用 min_batch
-                    dynamic_batch_size = min_batch
-                
-                # 从 buffer 获取指定数量的帧
-                batch = []
-                async with frame_buffer._lock:
-                    actual_size = min(dynamic_batch_size, len(frame_buffer._frames))
-                    for _ in range(actual_size):
-                        if frame_buffer._frames:
-                            frame = frame_buffer._frames.popleft()
-                            batch.append({
-                                "image": frame.image,
-                                "frame_idx": frame.frame_idx,
-                                "timestamp": frame.timestamp
-                            })
-                
-                if not batch:
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # Check stop flag before making API call
-                if not surgr1_continuous_flags.get(session_id, False):
-                    logger.info(f"[SurgR1 V2] Stop flag detected, skipping batch for {session_id}")
-                    break
-                
-                batch_start = time_module.time()
-                
-                logger.info(
-                    f"[SurgR1 V2] Processing batch: {batch_size} frames (dynamic), "
-                    f"pending: {frame_buffer.stats.pending_count}, "
-                    f"latency: {frame_buffer.stats.current_latency:.1f}s"
-                )
-                
-                try:
-                    # 批量分析
-                    results = await surgr1_client.analyze_frames_batch(
-                        frames=batch,
-                        analysis_type="all",
-                        session_id=session_id,
-                        save_to_mysql=True
-                    )
-                    
-                    # 获取存储路径
-                    mysql_service = get_mysql_service()
-                    video_session = mysql_service.get_video_session(session_id)
-                    storage_path = video_session.get("storage_path") if video_session else None
-                    
-                    # 保存结果到数据库
-                    for i, result in enumerate(results):
-                        frame_data = batch[i]
-                        
-                        # 保存到 MySQL
-                        mysql_service.save_analysis(
-                            session_id=session_id,
-                            frame_idx=frame_data["frame_idx"],
-                            timestamp=frame_data["timestamp"],
-                            analysis_type="frame",
-                            tool_localization=result.get("tools", ""),
-                            surgical_action=result.get("action", ""),
-                            surgical_phase=result.get("phase", ""),
-                            image_path=None,
-                            image_saved=0
-                        )
-                        
-                        # 保存到内存数据库（兼容）
-                        create_frame_analysis(
-                            db=db,
-                            session_id=db_session_id,
-                            frame_idx=frame_data["frame_idx"],
-                            timestamp=frame_data["timestamp"],
-                            tool_localization=result.get("tools", ""),
-                            surgical_action=result.get("action", ""),
-                            surgical_phase=result.get("phase", "")
-                        )
-                    
-                    batch_elapsed = time_module.time() - batch_start
-                    frame_buffer.record_processing_time(batch_elapsed, batch_size)
-                    
-                    logger.info(
-                        f"[SurgR1 V2] Batch completed: {batch_size} frames in {batch_elapsed:.2f}s "
-                        f"({batch_size/batch_elapsed:.1f} fps)"
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"[SurgR1 V2] Batch processing failed: {e}")
-                
-                # 小延迟防止 CPU 过载
-                await asyncio.sleep(0.01)
-            
-            logger.info(f"[SurgR1 V2] Processing stopped for {session_id}")
-        
-        # 启动并行任务：收集 + 处理
-        collect_task = asyncio.create_task(collect_frames())
-        process_task = asyncio.create_task(process_batches())
-        
-        # 等待两个任务完成（当 stop flag 设置时会退出）
-        await asyncio.gather(collect_task, process_task, return_exceptions=True)
-        
-        cap.release()
-        logger.info(f"[SurgR1 V2] Stopped for {session_id}")
-        
-    except Exception as e:
-        logger.error(f"[SurgR1 V2] Error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        surgr1_continuous_flags[session_id] = False
-        
-        if cap is not None:
-            try:
-                cap.release()
-            except:
-                pass
-        
-        # 清理帧缓冲区
-        if frame_buffer:
-            get_frame_buffer_service().remove_buffer(session_id)
-        
-        db.close()
-
-
-@router.get("/buffer-status")
-async def get_buffer_status():
-    """
-    获取所有帧缓冲区状态
-    
-    返回每个会话的：
-    - 待处理帧数
-    - 已处理帧数
-    - 当前批处理大小
-    - 当前延迟
-    - 状态
-    """
-    service = get_frame_buffer_service()
-    stats = service.get_all_stats()
-    
-    return {
-        "success": True,
-        "buffers": stats,
-        "total_sessions": len(stats)
-    }
-
-
-@router.post("/buffer-config")
-async def update_buffer_config(
-    min_batch_size: Optional[int] = None,
-    max_batch_size: Optional[int] = None,
-    batch_timeout: Optional[float] = None,
-    target_latency: Optional[float] = None
-):
-    """
-    更新帧缓冲区配置
-    
-    Args:
-        min_batch_size: 最小批处理大小
-        max_batch_size: 最大批处理大小
-        batch_timeout: 批处理超时（秒）
-        target_latency: 目标延迟（秒）
-    """
-    service = get_frame_buffer_service()
-    updates = {}
-    
-    if min_batch_size is not None:
-        updates["min_batch_size"] = min_batch_size
-    if max_batch_size is not None:
-        updates["max_batch_size"] = max_batch_size
-    if batch_timeout is not None:
-        updates["batch_timeout"] = batch_timeout
-    if target_latency is not None:
-        updates["target_latency"] = target_latency
-    
-    if updates:
-        service.update_config(**updates)
-    
-    return {
-        "success": True,
-        "updates": updates,
-        "message": "Configuration updated (applies to new buffers)"
-    }
 
 
 # ==============================================================================
@@ -2004,12 +1493,19 @@ async def glm_summarization_task(
                 continue
             
             no_new_frames_count = 0  # Reset counter when we have new windows
-            logger.info(f"[GLM Task] Processing {len(new_windows)} new windows: {new_windows}")
             
-            # ========== 并发处理多个窗口 ==========
-            # 准备所有窗口的数据
+            # ========== 动态批处理：根据积压窗口数调整并发数 ==========
+            # 积压多 → 并发数大；积压少 → 并发数小
+            glm_max_concurrent = min(len(new_windows), settings.GLM_MAX_CONCURRENT if hasattr(settings, 'GLM_MAX_CONCURRENT') else 16)
+            glm_max_concurrent = max(1, glm_max_concurrent)  # 至少 1
+            
+            logger.info(f"[GLM Task] Processing {len(new_windows)} new windows with {glm_max_concurrent} concurrent: {new_windows}")
+            
+            # ========== 1. 准备所有窗口数据 ==========
             windows_to_process = []
-            window_metadata = {}  # 存储每个窗口的元数据
+            window_metadata = {}
+            
+            from ..services.temporal_analyze import process_window_for_glm
             
             for window_id in new_windows:
                 if analysis_cancellation_flags.get(session_id, False):
@@ -2039,8 +1535,7 @@ async def glm_summarization_task(
                             "tools": getattr(f, "tool_localization", "") or ""
                         })
                 
-                # ========== Temporal Analysis ==========
-                from ..services.temporal_analyze import process_window_for_glm
+                # Temporal Analysis
                 temporal_result = process_window_for_glm(
                     frame_analyses=frame_analyses,
                     window_id=window_id,
@@ -2065,15 +1560,19 @@ async def glm_summarization_task(
                     "consistency": consistency
                 }
             
-            # ========== 使用 GLM 并发摘要 ==========
+            # ========== 2. 并发处理所有窗口 ==========
             if windows_to_process:
                 try:
-                    # 并发处理所有窗口（使用配置的并发数，默认 6）
-                    glm_max_concurrent = settings.GLM_MAX_CONCURRENT if hasattr(settings, 'GLM_MAX_CONCURRENT') else 6
+                    import time as time_module
+                    batch_start = time_module.time()
+                    
+                    # 使用 GLM 并发摘要
                     glm_results = await glm_client.summarize_windows_concurrent(
                         windows=windows_to_process,
                         max_concurrent=glm_max_concurrent
                     )
+                    
+                    batch_elapsed = time_module.time() - batch_start
                     
                     # 保存结果到数据库
                     for result in glm_results:
@@ -2105,8 +1604,12 @@ async def glm_summarization_task(
                         )
                         
                         processed_windows.add(window_id)
-                        logger.info(f"GLM summarized window {window_id} for session {session_id}: {summary_text[:50]}...")
-                        
+                    
+                    logger.info(
+                        f"[GLM Task] Batch completed: {len(glm_results)} windows in {batch_elapsed:.2f}s "
+                        f"({len(glm_results)/batch_elapsed:.1f} windows/s, concurrent={glm_max_concurrent})"
+                    )
+                    
                 except Exception as e:
                     logger.error(f"GLM concurrent summarization failed: {e}")
                     # 回退到串行处理
@@ -2119,7 +1622,7 @@ async def glm_summarization_task(
                                 frame_analyses=window_data["frame_analyses"],
                                 images=None
                             )
-                            summary_text = result.get("summary", "") if result.get("success") else f"[分析出错]"
+                            summary_text = result.get("summary", "") if result.get("success") else "[分析出错]"
                         except Exception as inner_e:
                             summary_text = f"[分析出错: {str(inner_e)}]"
                         
@@ -2151,6 +1654,8 @@ async def glm_summarization_task(
     finally:
         # Clean up cancellation flag
         analysis_cancellation_flags.pop(session_id, None)
+        # Clean up session history and conflict resolver resources
+        cleanup_session_resources(session_id)
         db.close()
 
 
@@ -3307,65 +2812,6 @@ async def get_frame_at_timestamp(
             "surgical_action": frame_data.get("surgical_action"),
             "surgical_phase": frame_data.get("surgical_phase")
         }
-    }
-
-
-@router.get("/frames-in-range/{session_id}")
-async def get_frames_in_range(
-    session_id: str,
-    start: float = Query(..., description="Start timestamp in seconds"),
-    end: float = Query(..., description="End timestamp in seconds"),
-    db: Session = Depends(get_db)
-):
-    """
-    Get all saved frames within a time range.
-    
-    Used for loop playback - returns a list of frame timestamps and metadata
-    (without image data to keep response small). Client can then fetch individual
-    frames as needed during playback.
-    """
-    mysql_service = get_mysql_service()
-    
-    # Get video session info
-    video_session = mysql_service.get_video_session(session_id)
-    if not video_session:
-        raise HTTPException(404, "Session not found")
-    
-    storage_path = video_session.get("storage_path")
-    
-    # Get frames from database in the time range
-    frames = get_frames_by_session(db, session_id, start, end)
-    
-    # Build response with frame metadata (no images to keep it fast)
-    frame_list = []
-    for frame in frames:
-        frame_list.append({
-            "frame_idx": frame.frame_idx,
-            "timestamp": frame.timestamp,
-            "has_analysis": bool(frame.tool_localization or frame.surgical_action),
-            "surgical_phase": frame.surgical_phase,
-            "surgical_action": frame.surgical_action
-        })
-    
-    # If no frames in database, try to get from file storage
-    if not frame_list and storage_path:
-        frame_storage = get_frame_storage_service()
-        storage_frames = frame_storage.list_frames_in_range(storage_path, start, end)
-        for sf in storage_frames:
-            frame_list.append({
-                "frame_idx": sf.get("frame_idx", -1),
-                "timestamp": sf.get("timestamp", 0),
-                "has_analysis": False,
-                "path": sf.get("path")
-            })
-    
-    return {
-        "success": True,
-        "session_id": session_id,
-        "start": start,
-        "end": end,
-        "count": len(frame_list),
-        "frames": sorted(frame_list, key=lambda x: x.get("timestamp", 0))
     }
 
 
