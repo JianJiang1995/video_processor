@@ -1006,7 +1006,7 @@ onUnmounted(() => {
 /* Loop Playback Indicator */
 .loop-indicator {
   position: absolute;
-  top: 1rem;
+  bottom: 1rem;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
