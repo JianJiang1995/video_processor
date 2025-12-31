@@ -64,7 +64,8 @@
         class="summary-card"
         :class="{ 
           active: summary.window_id === currentSummary?.window_id,
-          highlighted: summary.window_id === highlightedWindowId
+          highlighted: summary.window_id === highlightedWindowId,
+          'already-animated': animatedWindows.has(summary.window_id)
         }"
         @click="handleCardClick(summary)"
       >
@@ -137,7 +138,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, shallowRef } from 'vue'
+import { ref, reactive, computed, watch, nextTick, shallowRef } from 'vue'
 
 const props = defineProps({
   summaries: {
@@ -167,6 +168,9 @@ const popupSummary = ref(null)
 const lastScrolledWindowId = ref(-1)
 // Track last highlighted window to prevent animation retrigger
 const lastHighlightedWindowId = ref(-1)
+// Track windows that have already been animated (to prevent re-animation)
+// Using reactive Set for template access
+const animatedWindows = reactive(new Set())
 
 // Sorted summaries by window_id (ascending) - use shallowRef for better performance
 // Only recompute when summaries array length changes
@@ -204,6 +208,14 @@ watch(() => props.highlightedWindowId, async (newWindowId, oldWindowId) => {
       scrollToWindow(newWindowId)
       lastScrolledWindowId.value = newWindowId
     }, 100)
+  }
+  
+  // Track animated windows to prevent re-animation on same window
+  // Only mark as animated after a short delay (so animation can play first)
+  if (newWindowId >= 0 && !animatedWindows.has(newWindowId)) {
+    setTimeout(() => {
+      animatedWindows.add(newWindowId)
+    }, 700)  // Slightly longer than animation duration (0.6s)
   }
 })
 
@@ -338,9 +350,12 @@ const truncate = (text, length) => {
   will-change: transform, box-shadow;
 }
 
-/* Prevent animation from restarting when already highlighted */
-.summary-card.highlighted.no-animate {
+/* Prevent animation from restarting when window has already been animated */
+.summary-card.highlighted.already-animated {
   animation: none;
+  /* Keep the highlighted style without animation */
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 12px rgba(0, 212, 170, 0.3);
 }
 
 @keyframes highlight-pulse {

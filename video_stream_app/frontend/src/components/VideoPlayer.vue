@@ -430,7 +430,7 @@ const getCurrentLoopFrame = async () => {
   
   const targetTime = loopPlaybackTime.value
   
-  // If we have cached frames, find the closest one
+  // If we have cached frames with saved images, find the closest one
   if (loopFrameCache.value.length > 0) {
     let closestFrame = loopFrameCache.value[0]
     let minDiff = Math.abs(closestFrame.timestamp - targetTime)
@@ -443,27 +443,35 @@ const getCurrentLoopFrame = async () => {
       }
     }
     
-    // Fetch the actual frame image if not cached
-    if (!closestFrame.image_base64) {
-      try {
-        const response = await fetch(
-          `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${closestFrame.timestamp}&tolerance=0.5`
-        )
-        if (response.ok) {
-          const data = await response.json()
-          if (data.image_base64) {
-            closestFrame.image_base64 = data.image_base64
+    // Only use cache if frame has saved image (has_image: true)
+    // Otherwise fall through to live stream fallback
+    if (closestFrame.has_image) {
+      // Fetch the actual frame image if not already loaded
+      if (!closestFrame.image_base64) {
+        try {
+          const response = await fetch(
+            `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${closestFrame.timestamp}&tolerance=0.5`
+          )
+          if (response.ok) {
+            const data = await response.json()
+            if (data.image_base64) {
+              closestFrame.image_base64 = data.image_base64
+            }
           }
+        } catch (e) {
+          console.warn('[LoopPlayback] Failed to fetch frame image:', e)
         }
-      } catch (e) {
-        console.warn('[LoopPlayback] Failed to fetch frame image:', e)
+      }
+      
+      if (closestFrame.image_base64) {
+        return closestFrame
       }
     }
-    
-    return closestFrame
+    // If no saved images, fall through to live stream
   }
   
-  // Fallback: fetch directly from backend
+  // Fallback: fetch live frame from backend (for streams without saved frames)
+  // Always fetch fresh frame - don't cache for live streams
   try {
     const response = await fetch(
       `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${targetTime}&tolerance=1.0`
@@ -471,7 +479,8 @@ const getCurrentLoopFrame = async () => {
     if (response.ok) {
       const data = await response.json()
       if (data.image_base64) {
-        return { timestamp: data.actual_timestamp || targetTime, image_base64: data.image_base64 }
+        // Return without caching for live streams
+        return { timestamp: data.actual_timestamp || targetTime, image_base64: data.image_base64, is_live: data.is_live_frame }
       }
     }
   } catch (e) {
@@ -495,15 +504,20 @@ const startLoopPlayback = () => {
   // Load frames for this window
   loadLoopWindowFrames()
   
-  // Track if we're currently fetching a frame to prevent concurrent requests
-  let isFetchingFrame = false
+  // Update frame with requestAnimationFrame-like approach
+  // Fetch frames continuously without waiting for previous request
+  let lastFrameTime = Date.now()
+  const frameInterval = 150  // 150ms = ~6.6 fps, gives API time to respond
   
-  // Update frame every 100ms (10 fps for smoother playback)
   loopPlaybackTimer = setInterval(async () => {
     if (!props.loopWindow || !props.isPlaying) return
     
-    // Advance time by 0.1 seconds (matching 100ms interval)
-    loopPlaybackTime.value += 0.1
+    const now = Date.now()
+    const elapsed = (now - lastFrameTime) / 1000  // seconds
+    lastFrameTime = now
+    
+    // Advance time based on actual elapsed time
+    loopPlaybackTime.value += elapsed
     
     // Check if we need to loop
     if (loopPlaybackTime.value >= props.loopWindow.end_time) {
@@ -514,22 +528,15 @@ const startLoopPlayback = () => {
     // Emit time update to parent
     emit('timeupdate', loopPlaybackTime.value)
     
-    // Get and display current frame - only if not already fetching
-    // This prevents overlapping requests that could cause flickering
-    if (!isFetchingFrame) {
-      isFetchingFrame = true
-      try {
-        const frame = await getCurrentLoopFrame()
-        // Only update if we got a valid frame - keep previous frame otherwise
-        if (frame && frame.image_base64) {
-          loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
-        }
-        // If frame fetch failed but we have a previous frame, keep it (don't set to null)
-      } finally {
-        isFetchingFrame = false
+    // Fetch and display frame (fire-and-forget, don't block next iteration)
+    getCurrentLoopFrame().then(frame => {
+      if (frame && frame.image_base64) {
+        loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
       }
-    }
-  }, 100)  // 100ms = 10fps for smoother playback
+    }).catch(e => {
+      console.warn('[LoopPlayback] Frame fetch error:', e)
+    })
+  }, frameInterval)
   
   // Immediately show first frame
   getCurrentLoopFrame().then(frame => {
@@ -554,8 +561,23 @@ const stopLoopPlayback = () => {
 watch(() => props.loopWindow, (newVal, oldVal) => {
   if (props.mode === 'stream' && isHttpStream.value) {
     if (newVal) {
-      console.log('[LoopPlayback] Starting loop playback for window', newVal.window_id)
-      startLoopPlayback()
+      console.log('[LoopPlayback] Loop window set for', newVal.window_id)
+      // Only start playback if already playing, otherwise wait for isPlaying to become true
+      if (props.isPlaying) {
+        console.log('[LoopPlayback] Starting loop playback immediately (already playing)')
+        startLoopPlayback()
+      } else {
+        // Load frames in advance but don't start timer until playing
+        console.log('[LoopPlayback] Loading frames, waiting for play state...')
+        loadLoopWindowFrames()
+        // Show first frame immediately so user sees something
+        loopPlaybackTime.value = newVal.start_time
+        getCurrentLoopFrame().then(frame => {
+          if (frame && frame.image_base64) {
+            loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
+          }
+        })
+      }
     } else if (oldVal && !newVal) {
       console.log('[LoopPlayback] Stopping loop playback')
       stopLoopPlayback()
@@ -566,7 +588,13 @@ watch(() => props.loopWindow, (newVal, oldVal) => {
 // Watch for isPlaying changes during loop playback
 watch(() => props.isPlaying, (playing) => {
   if (isLoopPlaybackMode.value) {
-    if (playing && !loopPlaybackTimer) {
+    if (playing) {
+      // If playing and timer exists but was paused, restart it to reset timing
+      // This ensures frames start updating immediately without time jumps
+      if (loopPlaybackTimer) {
+        clearInterval(loopPlaybackTimer)
+        loopPlaybackTimer = null
+      }
       startLoopPlayback()
     } else if (!playing && loopPlaybackTimer) {
       clearInterval(loopPlaybackTimer)

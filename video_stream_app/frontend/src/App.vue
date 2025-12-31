@@ -225,8 +225,15 @@ const abortAllSessionRequests = () => {
 const WINDOW_DURATION = 5
 
 // Computed: current summary based on time
+// When in loop playback mode, always show the loop window's summary to avoid flickering
 const currentSummary = computed(() => {
   if (!summaries.value.length) return null
+  
+  // If in loop playback mode, use the fixed loop window ID
+  // This prevents flickering caused by currentTime constantly changing
+  if (loopWindow.value) {
+    return summaries.value.find(s => s.window_id === loopWindow.value.window_id) || null
+  }
   
   const windowId = Math.floor(currentTime.value / WINDOW_DURATION)
   return summaries.value.find(s => s.window_id === windowId) || null
@@ -642,6 +649,9 @@ const startAnalysis = async () => {
         s => s.window_id === data.window_id
       )
       
+      // Track if this is a new window (not just an update)
+      const isNewWindow = existingIndex < 0
+      
       if (existingIndex >= 0) {
         summaries.value[existingIndex] = data
       } else {
@@ -649,8 +659,10 @@ const startAnalysis = async () => {
         summaries.value.sort((a, b) => a.start_time - b.start_time)
       }
       
-      // Highlight new window briefly (only if user hasn't manually selected a window)
-      if (!userSelectedWindow.value) {
+      // Highlight new window briefly - only for NEW windows, not updates
+      // Also skip if user is in loop playback mode (userSelectedWindow is true)
+      // Also skip if we're in loop playback mode
+      if (isNewWindow && !userSelectedWindow.value && !loopWindow.value) {
         highlightedWindowId.value = data.window_id
         setTimeout(() => {
           if (highlightedWindowId.value === data.window_id && !userSelectedWindow.value) {
