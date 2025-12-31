@@ -294,10 +294,20 @@ class FrameStorageService:
                     # Try format: frame_XXXXX_TIMESTAMP (e.g., frame_00001_12.500)
                     timestamp = float(parts[2])
                 except ValueError:
-                    # Try format with underscore as decimal: frame_XXXXX_12_500 -> 12.500
+                    # Try format with "ts" prefix: frame_XXXXX_ts12_500 -> 12.500
+                    ts_part = parts[2]
+                    if ts_part.startswith("ts"):
+                        ts_part = ts_part[2:]  # Remove "ts" prefix
+                    
                     if len(parts) >= 4:
                         try:
-                            timestamp = float(f"{parts[2]}.{parts[3]}")
+                            # Format: frame_XXXXX_ts12_500 or frame_XXXXX_12_500 -> 12.500
+                            timestamp = float(f"{ts_part}.{parts[3]}")
+                        except ValueError:
+                            pass
+                    else:
+                        try:
+                            timestamp = float(ts_part)
                         except ValueError:
                             pass
             

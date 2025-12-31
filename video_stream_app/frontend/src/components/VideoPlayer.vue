@@ -135,8 +135,12 @@
       </div>
       
       <!-- Current Time Overlay -->
-      <div v-if="session" class="time-overlay" :class="{ 'sam3-mode': showSam3 && sam3FrameTime !== null }">
-        <template v-if="showSam3 && sam3FrameTime !== null && Math.abs(sam3FrameTime - currentTime) > 0.5">
+      <div v-if="session" class="time-overlay" :class="{ 'sam3-mode': showSam3 && sam3FrameTime !== null, 'loop-mode': isLoopPlaybackMode }">
+        <template v-if="isLoopPlaybackMode">
+          <!-- In loop playback mode, show the loop playback time -->
+          {{ formatTime(loopPlaybackTime) }}
+        </template>
+        <template v-else-if="showSam3 && sam3FrameTime !== null && Math.abs(sam3FrameTime - currentTime) > 0.5">
           <span class="sam3-time-label">🔬</span>
           {{ formatTime(sam3FrameTime) }}
         </template>
@@ -382,6 +386,10 @@ const loadFromPath = () => {
 }
 
 const formatTime = (seconds) => {
+  // Handle negative or invalid values
+  if (seconds < 0 || isNaN(seconds) || !isFinite(seconds)) {
+    seconds = 0
+  }
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
@@ -397,101 +405,107 @@ const isLoopPlaybackMode = computed(() => {
   return props.mode === 'stream' && isHttpStream.value && props.loopWindow !== null
 })
 
-// Load frames for the loop window from backend
+// Load frames for the loop window from backend - preload all saved frames
 const loadLoopWindowFrames = async () => {
   if (!props.session || !props.loopWindow) return
   
   loopCacheLoading.value = true
   loopFrameCache.value = []
   
+  console.log(`[LoopPlayback] Loading saved frames for window ${props.loopWindow.window_id} (${props.loopWindow.start_time}-${props.loopWindow.end_time}s)`)
+  
   try {
-    // Fetch available frames in the time range
-    const response = await fetch(
+    // First, get the list of actually saved frames in this time range
+    const listResponse = await fetch(
       `/api/analysis/frames-in-range/${props.session.session_id}?start=${props.loopWindow.start_time}&end=${props.loopWindow.end_time}`
     )
     
-    if (response.ok) {
-      const data = await response.json()
-      if (data.frames && data.frames.length > 0) {
-        loopFrameCache.value = data.frames
-        console.log(`[LoopPlayback] Loaded ${data.frames.length} frames for window ${props.loopWindow.window_id}`)
+    if (!listResponse.ok) {
+      console.warn('[LoopPlayback] Failed to get frames list')
+      return
+    }
+    
+    const listData = await listResponse.json()
+    const savedFrames = listData.frames || []
+    
+    console.log(`[LoopPlayback] Found ${savedFrames.length} saved frames in range`)
+    
+    if (savedFrames.length === 0) {
+      console.log('[LoopPlayback] No saved frames - will show loading state')
+      return
+    }
+    
+    // Load frame images in batches
+    const batchSize = 10
+    const loadedFrames = []
+    
+    for (let i = 0; i < savedFrames.length; i += batchSize) {
+      const batch = savedFrames.slice(i, i + batchSize)
+      const promises = batch.map(async (frameInfo) => {
+        try {
+          const response = await fetch(
+            `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${frameInfo.timestamp}&tolerance=0.2`
+          )
+          if (response.ok) {
+            const data = await response.json()
+            if (data.image_base64 && data.has_saved_frame) {
+              return { 
+                timestamp: frameInfo.timestamp, 
+                image_base64: data.image_base64,
+                is_saved: true
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`[LoopPlayback] Failed to load frame at ${frameInfo.timestamp}:`, e)
+        }
+        return null
+      })
+      
+      const results = await Promise.all(promises)
+      loadedFrames.push(...results.filter(f => f !== null))
+      
+      // Show progress by displaying first loaded frame
+      if (i === 0 && loadedFrames.length > 0) {
+        loopPlaybackFrame.value = `data:image/jpeg;base64,${loadedFrames[0].image_base64}`
       }
     }
+    
+    // Sort by timestamp
+    loadedFrames.sort((a, b) => a.timestamp - b.timestamp)
+    loopFrameCache.value = loadedFrames
+    
+    console.log(`[LoopPlayback] Loaded ${loadedFrames.length} saved frames for playback`)
   } catch (e) {
-    console.error('[LoopPlayback] Failed to load frames:', e)
+    console.error('[LoopPlayback] Failed to preload frames:', e)
   } finally {
     loopCacheLoading.value = false
   }
 }
 
-// Get the frame closest to the current playback time
-const getCurrentLoopFrame = async () => {
-  if (!props.session || !props.loopWindow) return null
+// Get the frame closest to the current playback time from preloaded cache
+const getCurrentLoopFrame = () => {
+  if (!props.loopWindow || loopFrameCache.value.length === 0) return null
   
   const targetTime = loopPlaybackTime.value
   
-  // If we have cached frames with saved images, find the closest one
-  if (loopFrameCache.value.length > 0) {
-    let closestFrame = loopFrameCache.value[0]
-    let minDiff = Math.abs(closestFrame.timestamp - targetTime)
-    
-    for (const frame of loopFrameCache.value) {
-      const diff = Math.abs(frame.timestamp - targetTime)
-      if (diff < minDiff) {
-        minDiff = diff
-        closestFrame = frame
-      }
+  // Find the closest frame from preloaded cache
+  let closestFrame = loopFrameCache.value[0]
+  let minDiff = Math.abs(closestFrame.timestamp - targetTime)
+  
+  for (const frame of loopFrameCache.value) {
+    const diff = Math.abs(frame.timestamp - targetTime)
+    if (diff < minDiff) {
+      minDiff = diff
+      closestFrame = frame
     }
-    
-    // Only use cache if frame has saved image (has_image: true)
-    // Otherwise fall through to live stream fallback
-    if (closestFrame.has_image) {
-      // Fetch the actual frame image if not already loaded
-      if (!closestFrame.image_base64) {
-        try {
-          const response = await fetch(
-            `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${closestFrame.timestamp}&tolerance=0.5`
-          )
-          if (response.ok) {
-            const data = await response.json()
-            if (data.image_base64) {
-              closestFrame.image_base64 = data.image_base64
-            }
-          }
-        } catch (e) {
-          console.warn('[LoopPlayback] Failed to fetch frame image:', e)
-        }
-      }
-      
-      if (closestFrame.image_base64) {
-        return closestFrame
-      }
-    }
-    // If no saved images, fall through to live stream
   }
   
-  // Fallback: fetch live frame from backend (for streams without saved frames)
-  // Always fetch fresh frame - don't cache for live streams
-  try {
-    const response = await fetch(
-      `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${targetTime}&tolerance=1.0`
-    )
-    if (response.ok) {
-      const data = await response.json()
-      if (data.image_base64) {
-        // Return without caching for live streams
-        return { timestamp: data.actual_timestamp || targetTime, image_base64: data.image_base64, is_live: data.is_live_frame }
-      }
-    }
-  } catch (e) {
-    console.warn('[LoopPlayback] Failed to fetch frame:', e)
-  }
-  
-  return null
+  return closestFrame
 }
 
 // Start loop playback timer
-const startLoopPlayback = () => {
+const startLoopPlayback = async () => {
   if (loopPlaybackTimer) {
     clearInterval(loopPlaybackTimer)
   }
@@ -501,15 +515,15 @@ const startLoopPlayback = () => {
   // Initialize playback time to start of window
   loopPlaybackTime.value = props.loopWindow.start_time
   
-  // Load frames for this window
-  loadLoopWindowFrames()
+  // Preload all frames for this window first
+  await loadLoopWindowFrames()
   
-  // Update frame with requestAnimationFrame-like approach
-  // Fetch frames continuously without waiting for previous request
+  // After preloading, start the playback timer
+  // Using higher framerate since frames are preloaded (no network delay)
   let lastFrameTime = Date.now()
-  const frameInterval = 150  // 150ms = ~6.6 fps, gives API time to respond
+  const frameInterval = 100  // 100ms = 10 fps, matches preload target
   
-  loopPlaybackTimer = setInterval(async () => {
+  loopPlaybackTimer = setInterval(() => {
     if (!props.loopWindow || !props.isPlaying) return
     
     const now = Date.now()
@@ -522,28 +536,23 @@ const startLoopPlayback = () => {
     // Check if we need to loop
     if (loopPlaybackTime.value >= props.loopWindow.end_time) {
       loopPlaybackTime.value = props.loopWindow.start_time
-      console.log('[LoopPlayback] Looping back to start')
     }
     
     // Emit time update to parent
     emit('timeupdate', loopPlaybackTime.value)
     
-    // Fetch and display frame (fire-and-forget, don't block next iteration)
-    getCurrentLoopFrame().then(frame => {
-      if (frame && frame.image_base64) {
-        loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
-      }
-    }).catch(e => {
-      console.warn('[LoopPlayback] Frame fetch error:', e)
-    })
-  }, frameInterval)
-  
-  // Immediately show first frame
-  getCurrentLoopFrame().then(frame => {
+    // Get frame from preloaded cache (synchronous, no network delay)
+    const frame = getCurrentLoopFrame()
     if (frame && frame.image_base64) {
       loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
     }
-  })
+  }, frameInterval)
+  
+  // Show first frame immediately
+  const firstFrame = getCurrentLoopFrame()
+  if (firstFrame && firstFrame.image_base64) {
+    loopPlaybackFrame.value = `data:image/jpeg;base64,${firstFrame.image_base64}`
+  }
 }
 
 // Stop loop playback

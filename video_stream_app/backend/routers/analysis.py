@@ -58,6 +58,10 @@ analysis_cancellation_flags: dict = {}
 # Key: session_id, Value: bool (True = running)
 surgr1_continuous_flags: dict = {}
 
+# Active SurgR1 task references for cancellation
+# Key: session_id, Value: list of tasks
+active_surgr1_tasks: dict = {}
+
 # Global stream start times for time synchronization
 # Key: session_id, Value: float (unix timestamp when processing started)
 stream_start_times: dict = {}
@@ -77,6 +81,107 @@ from ..services.sam3_consistency import (
     ConsistencyConfig,
     parse_bboxes_from_surgr1
 )
+
+# Frame capture flags for playback
+# Key: session_id, Value: bool (True = running)
+frame_capture_flags: dict = {}
+
+
+async def frame_capture_for_playback(
+    session_id: str,
+    video_source: str,
+    is_realtime_stream: bool,
+    stream_start_time: float
+):
+    """
+    Independent frame capture task that runs at 5 FPS for smooth loop playback.
+    This runs in parallel with SurgR1 analysis which is slower (~1 fps).
+    """
+    import cv2
+    import time as time_module
+    
+    FRAME_SAVE_INTERVAL = 0.2  # 5 FPS
+    
+    # Mark as running
+    frame_capture_flags[session_id] = True
+    
+    # Open a separate video capture
+    cap = cv2.VideoCapture(video_source)
+    if not cap.isOpened():
+        logger.warning(f"[FrameCapture] Could not open video source for session {session_id}")
+        return
+    
+    logger.info(f"[FrameCapture] Started frame capture task for session {session_id} at 5 FPS")
+    
+    saved_frame_idx = 0
+    last_save_time = -FRAME_SAVE_INTERVAL
+    
+    try:
+        # Get or create storage path once
+        mysql_service = get_mysql_service()
+        video_session = mysql_service.get_video_session(session_id)
+        storage_path = video_session.get("storage_path") if video_session else None
+        
+        if not storage_path:
+            frame_storage = get_frame_storage_service()
+            video_name = video_session.get("video_name", "stream") if video_session else "stream"
+            storage_path = frame_storage.create_session_folder(session_id, video_name)
+            mysql_service.update_video_session(session_id, storage_path=storage_path)
+            logger.info(f"[FrameCapture] Created storage folder: {storage_path}")
+        
+        frame_storage = get_frame_storage_service()
+        
+        while frame_capture_flags.get(session_id, False) and surgr1_continuous_flags.get(session_id, False):
+            ret, bgr_frame = cap.read()
+            
+            if not ret:
+                if is_realtime_stream:
+                    await asyncio.sleep(0.05)
+                    continue
+                else:
+                    # End of file - restart
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
+            
+            # Calculate current time
+            if is_realtime_stream:
+                current_time = time_module.time() - stream_start_time
+            else:
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                frame_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                current_time = frame_pos / fps
+            
+            # Check if we should save this frame
+            if current_time - last_save_time >= FRAME_SAVE_INTERVAL:
+                last_save_time = current_time
+                
+                try:
+                    frame_storage.save_frame(
+                        storage_path=storage_path,
+                        timestamp=current_time,
+                        frame_data=bgr_frame,
+                        frame_idx=saved_frame_idx,
+                        subfolder="frames"
+                    )
+                    saved_frame_idx += 1
+                    
+                    if saved_frame_idx % 25 == 0:  # Log every 5 seconds
+                        logger.info(f"[FrameCapture] Saved {saved_frame_idx} frames for session {session_id}")
+                except Exception as e:
+                    logger.warning(f"[FrameCapture] Failed to save frame: {e}")
+            
+            # Small sleep to not overwhelm CPU
+            await asyncio.sleep(0.02)  # ~50 fps read rate, save at 5 fps
+    
+    except asyncio.CancelledError:
+        logger.info(f"[FrameCapture] Task cancelled for session {session_id}")
+    except Exception as e:
+        logger.error(f"[FrameCapture] Error: {e}")
+    finally:
+        frame_capture_flags[session_id] = False
+        if cap is not None:
+            cap.release()
+        logger.info(f"[FrameCapture] Stopped for session {session_id}, saved {saved_frame_idx} frames")
 
 
 def get_gpt_summarizer() -> GPTSummarizer:
@@ -946,6 +1051,7 @@ async def surgr1_continuous_task(
     sam3_client = None
     consistency_checker = None
     cap = None  # Initialize cap outside try block for proper cleanup
+    frame_capture_task = None  # Initialize frame capture task for proper cleanup
     
     try:
         surgr1_client = await ensure_surgr1_available()
@@ -984,6 +1090,11 @@ async def surgr1_continuous_task(
         last_surgr1_time = -surgr1_interval  # Ensure first frame is analyzed
         last_sam3_time = 0
         frame_idx = 0
+        
+        # Start a separate frame capture task for high-FPS saving
+        frame_capture_task = asyncio.create_task(
+            frame_capture_for_playback(session_id, video_path, is_realtime_stream, stream_start_time)
+        )
         
         # Store last known bboxes for SAM3 propagation
         last_bboxes = []
@@ -1042,34 +1153,17 @@ async def surgr1_continuous_task(
                     )
                     
                     # Get storage path for this session from MySQL
+                    # (Frames are already saved at higher FPS above, so we just get the path)
                     mysql_service = get_mysql_service()
                     video_session = mysql_service.get_video_session(session_id)
                     storage_path = video_session.get("storage_path") if video_session else None
                     
-                    # If no storage path exists, create one now
-                    frame_storage = get_frame_storage_service()
-                    if not storage_path:
-                        video_name = video_session.get("video_name", "stream") if video_session else "stream"
-                        storage_path = frame_storage.create_session_folder(session_id, video_name)
-                        # Update MySQL with the new storage path
-                        mysql_service.update_video_session(session_id, storage_path=storage_path)
-                        logger.info(f"[SurgR1] Created storage folder for session {session_id}: {storage_path}")
+                    # Frames are already saved by the frame-saving logic above
+                    # Just mark that this analysis has an associated frame
+                    image_saved = 1 if storage_path else 0
+                    image_path = None  # Frame path is derived from timestamp in storage folder
                     
-                    # Save frame image to storage folder
-                    image_path = None
-                    image_saved = 0
-                    if storage_path:
-                        image_path = frame_storage.save_frame(
-                            storage_path=storage_path,
-                            timestamp=current_time,
-                            frame_data=bgr_frame,
-                            frame_idx=frame_idx,
-                            subfolder="frames"
-                        )
-                        if image_path:
-                            image_saved = 1
-                    
-                    # Save to MySQL database with image path
+                    # Save analysis to MySQL database
                     mysql_service.save_analysis(
                         session_id=session_id,
                         frame_idx=frame_idx,
@@ -1246,6 +1340,14 @@ async def surgr1_continuous_task(
         traceback.print_exc()
     finally:
         surgr1_continuous_flags[session_id] = False
+        
+        # Cancel frame capture task
+        if frame_capture_task and not frame_capture_task.done():
+            frame_capture_task.cancel()
+            try:
+                await frame_capture_task
+            except asyncio.CancelledError:
+                logger.info(f"Frame capture task cancelled for session {session_id}")
         
         # Clean up task reference
         active_surgr1_tasks.pop(session_id, None)
@@ -2776,26 +2878,36 @@ async def get_frame_at_timestamp(
     
     storage_path = video_session.get("storage_path")
     
-    # Get frame analysis from database
-    frame_data = mysql_service.get_frame_at_timestamp(session_id, timestamp, tolerance)
-    
-    if not frame_data:
-        # No saved frame found, try to find from file system
-        if storage_path:
-            frame_storage = get_frame_storage_service()
-            nearest = frame_storage.find_nearest_frame(storage_path, timestamp)
-            if nearest:
-                image_base64 = frame_storage.get_frame(storage_path, nearest["path"])
+    # PRIORITY 1: Try to find frame from storage folder (saved at 5fps for smooth playback)
+    if storage_path:
+        frame_storage = get_frame_storage_service()
+        nearest = frame_storage.find_nearest_frame(storage_path, timestamp)
+        if nearest and nearest["timestamp_diff"] <= tolerance:
+            image_base64 = frame_storage.get_frame(storage_path, nearest["path"])
+            if image_base64:
+                # Also try to get analysis data if available
+                frame_data = mysql_service.get_frame_at_timestamp(session_id, timestamp, tolerance)
+                analysis = None
+                if frame_data:
+                    analysis = {
+                        "tool_localization": frame_data.get("tool_localization"),
+                        "surgical_action": frame_data.get("surgical_action"),
+                        "surgical_phase": frame_data.get("surgical_phase")
+                    }
                 return {
                     "success": True,
                     "has_saved_frame": True,
                     "timestamp": timestamp,
                     "actual_timestamp": timestamp - nearest["timestamp_diff"],
                     "image_base64": image_base64,
-                    "analysis": None
+                    "analysis": analysis
                 }
-        
-        # Fallback: Try to get frame from live video stream
+    
+    # PRIORITY 2: Try to get from database (for backward compatibility)
+    frame_data = mysql_service.get_frame_at_timestamp(session_id, timestamp, tolerance)
+    
+    if not frame_data:
+        # PRIORITY 3: Fallback to live video stream
         video_path = video_session.get("video_path")
         if video_path and (video_path.startswith("http://") or video_path.startswith("https://")):
             try:
@@ -2935,19 +3047,35 @@ async def get_frames_in_range(
     
     storage_path = video_session.get("storage_path")
     
-    # Get all frame analyses and filter by time range
-    frames = mysql_service.get_analyses(session_id, limit=10000)
-    frames_in_range = [
-        {
-            "frame_idx": f.get("frame_idx"),
-            "timestamp": f.get("timestamp"),
-            "has_image": f.get("image_saved") == 1,
-        }
-        for f in frames
-        if f.get("analysis_type") == "frame" 
-        and f.get("timestamp") is not None
-        and start <= f.get("timestamp") <= end
-    ]
+    # Get frames from storage folder (these are saved at higher FPS for smooth playback)
+    frames_in_range = []
+    if storage_path:
+        frame_storage = get_frame_storage_service()
+        storage_frames = frame_storage.list_frames_in_range(storage_path, start, end, "frames")
+        frames_in_range = [
+            {
+                "frame_idx": f.get("frame_idx", -1),
+                "timestamp": f.get("timestamp"),
+                "has_image": True,
+                "path": f.get("path")
+            }
+            for f in storage_frames
+        ]
+    
+    # If no frames in storage, fall back to database
+    if not frames_in_range:
+        frames = mysql_service.get_analyses(session_id, limit=10000)
+        frames_in_range = [
+            {
+                "frame_idx": f.get("frame_idx"),
+                "timestamp": f.get("timestamp"),
+                "has_image": f.get("image_saved") == 1,
+            }
+            for f in frames
+            if f.get("analysis_type") == "frame" 
+            and f.get("timestamp") is not None
+            and start <= f.get("timestamp") <= end
+        ]
     
     return {
         "success": True,
