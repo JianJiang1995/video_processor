@@ -3,7 +3,7 @@
 # 服务器配置
 server:
   host: "0.0.0.0"
-  port: 8000
+  port: 9004  # 避免与GLM 8000冲突
 
 # 默认可视化参数
 visualization:

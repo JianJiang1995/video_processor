@@ -354,7 +354,9 @@ Output only the summary, no additional formatting."""
         images: Optional[List[Image.Image]] = None,
         system_prompt: str = None,
         max_tokens: int = None,
-        temperature: float = None
+        temperature: float = None,
+        history_context: Optional[str] = None,
+        conflict_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         整合多帧分析结果为连贯的叙事摘要
@@ -367,6 +369,8 @@ Output only the summary, no additional formatting."""
             system_prompt: 忽略此参数，使用内置提示词
             max_tokens: 最大生成长度
             temperature: 采样温度
+            history_context: 之前窗口的摘要历史（最多10个窗口）
+            conflict_context: 阶段矛盾检测结果和处理说明
             
         返回:
             包含整合摘要的字典
@@ -380,54 +384,43 @@ Output only the summary, no additional formatting."""
         # 构建内部分析上下文
         internal_context = self._build_internal_context(frame_analyses, consistency_analysis)
         
-        # 使用完整的中文叙事提示词（聚焦动作和CVS状态）
-        system_prompt = """你是一名专业的腹腔镜胆囊切除术视频分析专家。根据逐帧标注生成简洁的中文叙事，重点描述手术动作和安全关键视角状态。
+        # 简洁直接的中文叙事提示词
+        system_prompt = """你是腹腔镜胆囊切除术分析专家。直接描述观察到的手术情况。
 
-## 安全关键视角三标准
+输出格式（严格按此结构）：
+【阶段】当前手术阶段名称
+【操作】正在进行的具体动作
+【工具】使用的器械及用途
+【CVS】安全关键视角评估（仅在相关时提及）
 
-CVS确认需同时满足：
-1. 仅两个管状结构连接胆囊（胆囊管和胆囊动脉）
-2. 肝胆三角清理干净，可见底部肝脏
-3. 胆囊下1/3已从肝床分离
+规则：
+- 直接陈述观察结果，禁止任何元描述或说明性文字
+- 每项内容简洁明了，避免重复
+- 使用中文术语：抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
+- 阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
 
-## 输出要求
-
-直接输出一段流畅的中文叙事（2-4句），描述：
-1. 当前手术阶段和主要动作
-2. 使用的工具及操作方式
-3. CVS状态评估（如适用）
-
-## 禁止内容
-
-- 不要输出片段时长、帧数、时间戳
-- 不要输出"这是一段...视频片段"这类开头
-- 不要输出帧编号或分析指标
-- 不要使用英文
-
-## 工具和阶段中文名称
-
-工具：抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
-阶段：准备阶段、肝胆三角解剖阶段、夹闭切断阶段、胆囊分离阶段、胆囊牵拉阶段、清洁凝血阶段、胆囊取出阶段
-
-## 时序处理（内部）
-
-- 工具出现<10%帧视为误检，忽略
-- 以工具定位为权威来源
-- 内部解决矛盾，输出统一叙事
-
-## 示例输出
-
-"当前处于肝胆三角解剖阶段，抓钳牵拉胆囊暴露肝胆三角区域，电钩沿胆囊壁进行精细分离。肝胆三角区域逐步清晰，可见胆囊管和胆囊动脉两个管状结构，CVS第一标准部分达成。"
-
-"胆囊分离阶段，电钩沿胆囊板分离胆囊与肝床连接，抓钳持续牵拉提供张力。分离操作稳定推进，视野清晰。"
-"""
+示例：
+【阶段】肝胆三角解剖
+【操作】分离胆囊壁周围组织，暴露Calot三角
+【工具】抓钳牵拉胆囊，电钩进行精细分离
+【CVS】可见胆囊管和胆囊动脉，第一标准部分达成"""
         
-        # 构建用户消息
-        prompt_text = f"""根据以下逐帧标注，描述当前手术动作和CVS状态：
-
-{internal_context}
-
-直接输出叙事，不要输出时长、帧数或分析过程。"""
+        # 构建简洁的用户消息
+        prompt_parts = []
+        
+        # 添加当前窗口的帧分析数据
+        prompt_parts.append("分析数据：")
+        prompt_parts.append(internal_context)
+        
+        # 如果有历史上下文，简洁添加
+        if history_context:
+            prompt_parts.append("")
+            prompt_parts.append("上一窗口：" + history_context.split("摘要：")[-1].strip()[:100] if "摘要：" in history_context else "")
+        
+        prompt_parts.append("")
+        prompt_parts.append("按格式输出观察结果：")
+        
+        prompt_text = "\n".join(prompt_parts)
         
         # 只使用纯文本
         payload = {

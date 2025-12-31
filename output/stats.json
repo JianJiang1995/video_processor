@@ -1,0 +1,16 @@
+{
+  "start_time": "2025-12-05T14:46:05.612314",
+  "end_time": "2025-12-05T14:46:50.336437",
+  "total_frames": 52,
+  "total_batches": 18,
+  "total_questions": 156,
+  "total_inference_time": 41.938801765441895,
+  "avg_batch_time": 2.33093523979187,
+  "fps": 1.1626835030392884,
+  "config": {
+    "video_path": "/data/gym/chest_anno/videos/Bz5w8c7pqAevXtQj.mp4",
+    "sample_interval": 1.0,
+    "batch_size": 3,
+    "question_count": 3
+  }
+}

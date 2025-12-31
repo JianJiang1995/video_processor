@@ -56,9 +56,335 @@ def load_background_knowledge() -> str:
 @dataclass
 class GLMConcurrentConfig:
     """GLM 并发处理配置"""
-    max_concurrent: int = 3  # 最大并发请求数
+    max_concurrent: int = 16  # 最大并发请求数
     retry_count: int = 2     # 失败重试次数
     retry_delay: float = 0.5 # 重试延迟（秒）
+
+
+@dataclass
+class WindowSummary:
+    """单个窗口的摘要信息"""
+    window_id: int
+    start_time: float
+    end_time: float
+    summary: str
+    dominant_phase: str
+    tools: List[str]
+    cvs_status: str = "未评估"  # "未评估", "未达成", "部分达成", "已达成"
+
+
+class WindowHistoryManager:
+    """
+    窗口历史摘要管理器
+    
+    使用滑动窗口机制保存最近10个窗口的摘要，
+    为GLM分析提供时序上下文。
+    """
+    
+    MAX_HISTORY_SIZE = 10
+    
+    # 手术阶段顺序定义
+    PHASE_ORDER = {
+        "Preparation": 0,
+        "准备阶段": 0,
+        "CalotTriangleDissection": 1,
+        "肝胆三角解剖阶段": 1,
+        "Calot三角分离": 1,
+        "ClippingCutting": 2,
+        "夹闭切断阶段": 2,
+        "GallbladderDissection": 3,
+        "胆囊分离阶段": 3,
+        "GallbladderRetraction": 4,
+        "胆囊牵拉阶段": 4,
+        "CleaningCoagulation": 5,
+        "清洁凝血阶段": 5,
+        "GallbladderPackaging": 6,
+        "胆囊取出阶段": 6,
+    }
+    
+    # 阶段中文名称映射
+    PHASE_CN_NAMES = {
+        "Preparation": "准备阶段",
+        "CalotTriangleDissection": "肝胆三角解剖阶段",
+        "ClippingCutting": "夹闭切断阶段",
+        "GallbladderDissection": "胆囊分离阶段",
+        "GallbladderRetraction": "胆囊牵拉阶段",
+        "CleaningCoagulation": "清洁凝血阶段",
+        "GallbladderPackaging": "胆囊取出阶段",
+        "Unknown": "未知阶段"
+    }
+    
+    def __init__(self):
+        self._history: List[WindowSummary] = []
+        self._lock = asyncio.Lock()
+    
+    async def add_summary(self, summary: WindowSummary) -> None:
+        """
+        添加新的窗口摘要
+        
+        新摘要添加到末尾，如果超过最大数量则移除最旧的
+        """
+        async with self._lock:
+            self._history.append(summary)
+            if len(self._history) > self.MAX_HISTORY_SIZE:
+                self._history.pop(0)  # 移除最旧的
+    
+    async def get_history(self) -> List[WindowSummary]:
+        """获取历史摘要列表"""
+        async with self._lock:
+            return list(self._history)
+    
+    async def clear(self) -> None:
+        """清空历史"""
+        async with self._lock:
+            self._history.clear()
+    
+    def get_phase_order(self, phase: str) -> int:
+        """获取阶段的顺序号"""
+        return self.PHASE_ORDER.get(phase, -1)
+    
+    def get_phase_cn_name(self, phase: str) -> str:
+        """获取阶段的中文名称"""
+        return self.PHASE_CN_NAMES.get(phase, phase)
+    
+    async def build_history_context(self) -> str:
+        """
+        构建历史上下文字符串供GLM使用
+        
+        Returns:
+            格式化的历史摘要上下文
+        """
+        history = await self.get_history()
+        if not history:
+            return ""
+        
+        context_lines = ["## 之前窗口分析历史（按时间顺序）\n"]
+        
+        for i, ws in enumerate(history, 1):
+            phase_cn = self.get_phase_cn_name(ws.dominant_phase)
+            context_lines.append(f"### 窗口 {ws.window_id}（{ws.start_time:.1f}s - {ws.end_time:.1f}s）")
+            context_lines.append(f"- 阶段：{phase_cn}")
+            context_lines.append(f"- CVS状态：{ws.cvs_status}")
+            if ws.tools:
+                context_lines.append(f"- 工具：{', '.join(ws.tools[:5])}")
+            context_lines.append(f"- 摘要：{ws.summary}")
+            context_lines.append("")
+        
+        return "\n".join(context_lines)
+
+
+class PhaseConflictResolver:
+    """
+    手术阶段矛盾检测和解决器
+    
+    根据胆囊切除术的阶段定义和时序规则，
+    检测并处理帧分析中的阶段矛盾。
+    """
+    
+    # 阶段顺序定义
+    PHASE_ORDER = WindowHistoryManager.PHASE_ORDER
+    
+    # 阶段转换规则（允许的转换）
+    ALLOWED_TRANSITIONS = {
+        "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
+        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction", "Preparation"],
+        "ClippingCutting": ["GallbladderDissection", "CalotTriangleDissection"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderRetraction", "ClippingCutting"],
+        "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
+        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderDissection"],
+        "GallbladderPackaging": ["CleaningCoagulation"],
+    }
+    
+    # CVS相关规则
+    CVS_RULES = {
+        "cvs_required_before_clipping": True,  # ClippingCutting前需要CVS确认
+        "cvs_phase": "CalotTriangleDissection",  # CVS在此阶段确认
+    }
+    
+    def __init__(self):
+        self.last_confirmed_phase: Optional[str] = None
+        self.cvs_achieved: bool = False
+    
+    def normalize_phase(self, phase: str) -> str:
+        """将阶段名称标准化"""
+        if not phase:
+            return "Unknown"
+        
+        phase_lower = phase.lower().replace(" ", "").replace("_", "")
+        
+        # 中文到英文映射
+        cn_to_en = {
+            "准备阶段": "Preparation",
+            "肝胆三角解剖阶段": "CalotTriangleDissection",
+            "calot三角分离": "CalotTriangleDissection",
+            "夹闭切断阶段": "ClippingCutting",
+            "胆囊分离阶段": "GallbladderDissection",
+            "胆囊牵拉阶段": "GallbladderRetraction",
+            "清洁凝血阶段": "CleaningCoagulation",
+            "胆囊取出阶段": "GallbladderPackaging",
+        }
+        
+        for cn, en in cn_to_en.items():
+            if cn in phase or cn.replace("阶段", "") in phase:
+                return en
+        
+        # 英文标准化
+        mapping = {
+            "preparation": "Preparation",
+            "calottriangled": "CalotTriangleDissection",
+            "calottriangledissection": "CalotTriangleDissection",
+            "clippingcutting": "ClippingCutting",
+            "gallbladderd": "GallbladderDissection",
+            "gallbladderdissection": "GallbladderDissection",
+            "gallbladderr": "GallbladderRetraction",
+            "gallbladderretraction": "GallbladderRetraction",
+            "cleaningc": "CleaningCoagulation",
+            "cleaningcoagulation": "CleaningCoagulation",
+            "gallbladderp": "GallbladderPackaging",
+            "gallbladderpackaging": "GallbladderPackaging",
+        }
+        
+        for key, value in mapping.items():
+            if key in phase_lower:
+                return value
+        
+        return phase if len(phase) < 50 else "Unknown"
+    
+    def detect_conflicts(
+        self, 
+        frame_analyses: List[Dict[str, Any]],
+        history_phases: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        检测帧分析中的阶段矛盾
+        
+        Args:
+            frame_analyses: 当前窗口的帧分析列表
+            history_phases: 历史窗口的阶段序列
+            
+        Returns:
+            矛盾检测结果字典
+        """
+        conflicts = []
+        warnings = []
+        
+        # 提取当前窗口的阶段
+        current_phases = []
+        for fa in frame_analyses:
+            phase = self.normalize_phase(fa.get("phase", ""))
+            if phase and phase != "Unknown":
+                current_phases.append(phase)
+        
+        if not current_phases:
+            return {"conflicts": [], "warnings": ["当前窗口无有效阶段识别"], "resolved_phase": "Unknown"}
+        
+        # 统计阶段分布
+        phase_counts = {}
+        for p in current_phases:
+            phase_counts[p] = phase_counts.get(p, 0) + 1
+        
+        # 主导阶段
+        dominant_phase = max(phase_counts.keys(), key=lambda x: phase_counts[x])
+        dominant_ratio = phase_counts[dominant_phase] / len(current_phases)
+        
+        # 检测1：窗口内阶段一致性
+        unique_phases = list(phase_counts.keys())
+        if len(unique_phases) > 2:
+            conflicts.append({
+                "type": "window_inconsistency",
+                "message": f"窗口内检测到{len(unique_phases)}个不同阶段",
+                "phases": unique_phases,
+                "dominant": dominant_phase
+            })
+        
+        # 检测2：历史阶段时序矛盾
+        if history_phases:
+            last_history_phase = history_phases[-1] if history_phases else None
+            if last_history_phase and last_history_phase != "Unknown":
+                last_order = self.PHASE_ORDER.get(last_history_phase, -1)
+                current_order = self.PHASE_ORDER.get(dominant_phase, -1)
+                
+                # 检查是否为异常回退（超过2个阶段的回退）
+                if last_order > 0 and current_order > 0 and last_order - current_order > 2:
+                    conflicts.append({
+                        "type": "phase_regression",
+                        "message": f"阶段异常回退：从{last_history_phase}回退到{dominant_phase}",
+                        "from_phase": last_history_phase,
+                        "to_phase": dominant_phase
+                    })
+        
+        # 检测3：CVS相关规则
+        if dominant_phase == "ClippingCutting" and not self.cvs_achieved:
+            warnings.append({
+                "type": "cvs_warning",
+                "message": "检测到夹闭切断阶段，但CVS尚未确认"
+            })
+        
+        # 解决矛盾：使用主导阶段，但考虑时序一致性
+        resolved_phase = dominant_phase
+        
+        # 如果主导比例低于50%，考虑历史阶段
+        if dominant_ratio < 0.5 and history_phases:
+            last_phase = history_phases[-1] if history_phases else None
+            if last_phase in phase_counts:
+                # 历史阶段在当前窗口也存在，可能是过渡期
+                resolved_phase = last_phase
+                warnings.append({
+                    "type": "transition_detected",
+                    "message": f"检测到阶段过渡，维持{last_phase}，准备转入{dominant_phase}"
+                })
+        
+        return {
+            "conflicts": conflicts,
+            "warnings": warnings,
+            "resolved_phase": resolved_phase,
+            "phase_distribution": phase_counts,
+            "dominant_ratio": dominant_ratio
+        }
+    
+    def build_conflict_context(self, conflict_result: Dict[str, Any]) -> str:
+        """
+        构建矛盾处理的上下文说明
+        
+        供GLM在生成摘要时参考
+        """
+        lines = []
+        
+        if conflict_result.get("conflicts"):
+            lines.append("## 阶段矛盾检测")
+            for c in conflict_result["conflicts"]:
+                lines.append(f"- {c.get('type')}: {c.get('message')}")
+            lines.append("")
+        
+        if conflict_result.get("warnings"):
+            lines.append("## 注意事项")
+            for w in conflict_result["warnings"]:
+                if isinstance(w, dict):
+                    lines.append(f"- {w.get('message')}")
+                else:
+                    lines.append(f"- {w}")
+            lines.append("")
+        
+        resolved = conflict_result.get("resolved_phase", "Unknown")
+        ratio = conflict_result.get("dominant_ratio", 0)
+        lines.append(f"## 阶段判定")
+        lines.append(f"- 确定阶段：{resolved}")
+        lines.append(f"- 置信度：{ratio*100:.0f}%")
+        
+        return "\n".join(lines)
+    
+    def update_cvs_status(self, summary_text: str) -> bool:
+        """
+        根据摘要文本更新CVS状态
+        
+        检测摘要中是否提到CVS达成
+        """
+        cvs_keywords = ["CVS达成", "CVS已达成", "安全关键视角确认", "三标准满足", "CVS确认"]
+        for kw in cvs_keywords:
+            if kw in summary_text:
+                self.cvs_achieved = True
+                return True
+        return False
 
 
 # Cache background knowledge at module load time
@@ -100,7 +426,7 @@ class GLMClient:
         max_tokens: int = None,
         timeout: float = 180.0,
         disable_thinking: bool = True,  # 默认禁用思考模式加速
-        max_concurrent: int = 3  # 最大并发数
+        max_concurrent: int = 16  # 最大并发数
     ):
         config = load_config()
         glm_config = config.get("services", {}).get("glm", {})
@@ -671,7 +997,9 @@ Output only the summary, no additional formatting."""
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        include_background: bool = True
+        include_background: bool = True,
+        history_context: Optional[str] = None,
+        conflict_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         整合多帧分析结果为连贯的叙事摘要
@@ -685,6 +1013,8 @@ Output only the summary, no additional formatting."""
             temperature: 采样温度
             max_tokens: 最大生成长度
             include_background: 是否包含领域背景知识
+            history_context: 之前窗口的摘要历史（最多10个窗口）
+            conflict_context: 阶段矛盾检测结果和处理说明
             
         返回:
             包含整合摘要的字典
@@ -695,53 +1025,43 @@ Output only the summary, no additional formatting."""
         # 构建内部分析上下文（供模型理解，但不要求输出）
         internal_context = self._build_internal_context(frame_analyses, consistency_analysis)
         
-        # 使用完整的中文叙事提示词（聚焦动作和CVS状态）
-        system_prompt = """你是一名专业的腹腔镜胆囊切除术视频分析专家。根据逐帧标注生成简洁的中文叙事，重点描述手术动作和安全关键视角状态。
+        # 简洁直接的中文叙事提示词
+        system_prompt = """你是腹腔镜胆囊切除术分析专家。直接描述观察到的手术情况。
 
-## 安全关键视角三标准
+输出格式（严格按此结构）：
+【阶段】当前手术阶段名称
+【操作】正在进行的具体动作
+【工具】使用的器械及用途
+【CVS】安全关键视角评估（仅在相关时提及）
 
-CVS确认需同时满足：
-1. 仅两个管状结构连接胆囊（胆囊管和胆囊动脉）
-2. 肝胆三角清理干净，可见底部肝脏
-3. 胆囊下1/3已从肝床分离
+规则：
+- 直接陈述观察结果，禁止任何元描述或说明性文字
+- 每项内容简洁明了，避免重复
+- 使用中文术语：抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
+- 阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
 
-## 输出要求
-
-直接输出一段流畅的中文叙事（2-4句），描述：
-1. 当前手术阶段和主要动作
-2. 使用的工具及操作方式
-3. CVS状态评估（如适用）
-
-## 禁止内容
-
-- 不要输出片段时长、帧数、时间戳
-- 不要输出"这是一段...视频片段"这类开头
-- 不要输出帧编号或分析指标
-- 不要使用英文
-
-## 工具和阶段中文名称
-
-工具：抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
-阶段：准备阶段、肝胆三角解剖阶段、夹闭切断阶段、胆囊分离阶段、胆囊牵拉阶段、清洁凝血阶段、胆囊取出阶段
-
-## 时序处理（内部）
-
-- 工具出现<10%帧视为误检，忽略
-- 以工具定位为权威来源
-- 内部解决矛盾，输出统一叙事
-
-## 示例输出
-
-"当前处于肝胆三角解剖阶段，抓钳牵拉胆囊暴露肝胆三角区域，电钩沿胆囊壁进行精细分离。肝胆三角区域逐步清晰，可见胆囊管和胆囊动脉两个管状结构，CVS第一标准部分达成。"
-
-"胆囊分离阶段，电钩沿胆囊板分离胆囊与肝床连接，抓钳持续牵拉提供张力。分离操作稳定推进，视野清晰。" """
+示例：
+【阶段】肝胆三角解剖
+【操作】分离胆囊壁周围组织，暴露Calot三角
+【工具】抓钳牵拉胆囊，电钩进行精细分离
+【CVS】可见胆囊管和胆囊动脉，第一标准部分达成"""
         
-        # 构建用户消息（包含帧数据供模型内部分析）
-        prompt_text = f"""根据以下逐帧标注，描述当前手术动作和CVS状态：
-
-{internal_context}
-
-直接输出叙事，不要输出时长、帧数或分析过程。"""
+        # 构建简洁的用户消息
+        prompt_parts = []
+        
+        # 添加当前窗口的帧分析数据
+        prompt_parts.append("分析数据：")
+        prompt_parts.append(internal_context)
+        
+        # 如果有历史上下文，简洁添加
+        if history_context:
+            prompt_parts.append("")
+            prompt_parts.append("上一窗口：" + history_context.split("摘要：")[-1].strip()[:100] if "摘要：" in history_context else "")
+        
+        prompt_parts.append("")
+        prompt_parts.append("按格式输出观察结果：")
+        
+        prompt_text = "\n".join(prompt_parts)
         
         # 只使用纯文本聊天
         result = await self.chat(
@@ -954,6 +1274,12 @@ CVS确认需同时满足：
 # Global client instance
 _glm_client: Optional[GLMClient] = None
 
+# Global history managers per session
+_session_history_managers: Dict[str, WindowHistoryManager] = {}
+
+# Global conflict resolvers per session
+_session_conflict_resolvers: Dict[str, PhaseConflictResolver] = {}
+
 
 def get_glm_client() -> GLMClient:
     """Get the global GLM client instance"""
@@ -961,6 +1287,47 @@ def get_glm_client() -> GLMClient:
     if _glm_client is None:
         _glm_client = GLMClient()
     return _glm_client
+
+
+def get_history_manager(session_id: str) -> WindowHistoryManager:
+    """
+    获取会话对应的历史窗口管理器
+    
+    每个session_id有独立的历史管理器，保存最近10个窗口的摘要
+    """
+    global _session_history_managers
+    if session_id not in _session_history_managers:
+        _session_history_managers[session_id] = WindowHistoryManager()
+        logger.info(f"[GLMClient] Created history manager for session {session_id}")
+    return _session_history_managers[session_id]
+
+
+def get_conflict_resolver(session_id: str) -> PhaseConflictResolver:
+    """
+    获取会话对应的矛盾处理器
+    
+    每个session_id有独立的矛盾处理器，跟踪阶段进展和CVS状态
+    """
+    global _session_conflict_resolvers
+    if session_id not in _session_conflict_resolvers:
+        _session_conflict_resolvers[session_id] = PhaseConflictResolver()
+        logger.info(f"[GLMClient] Created conflict resolver for session {session_id}")
+    return _session_conflict_resolvers[session_id]
+
+
+def cleanup_session_resources(session_id: str) -> None:
+    """
+    清理会话相关资源
+    
+    在会话结束时调用，释放历史管理器和矛盾处理器
+    """
+    global _session_history_managers, _session_conflict_resolvers
+    if session_id in _session_history_managers:
+        del _session_history_managers[session_id]
+        logger.info(f"[GLMClient] Cleaned up history manager for session {session_id}")
+    if session_id in _session_conflict_resolvers:
+        del _session_conflict_resolvers[session_id]
+        logger.info(f"[GLMClient] Cleaned up conflict resolver for session {session_id}")
 
 
 async def ensure_glm_available() -> GLMClient:

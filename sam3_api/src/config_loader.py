@@ -151,3 +151,7 @@ def get_tool_color(label: str, instance_id: int = 0) -> Tuple[int, int, int]:
 # 模块加载时预加载配置
 load_config()
 
+
+
+
+

@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     GLM_MODEL_NAME: str = _json_config.get("services", {}).get("glm", {}).get("model_name", "GLM-4.6V-Flash")
     GLM_TEMPERATURE: float = _json_config.get("services", {}).get("glm", {}).get("temperature", 0.7)
     GLM_MAX_TOKENS: int = _json_config.get("services", {}).get("glm", {}).get("max_tokens", 1000)
-    GLM_MAX_CONCURRENT: int = _json_config.get("services", {}).get("glm", {}).get("max_concurrent", 3)
+    GLM_MAX_CONCURRENT: int = _json_config.get("services", {}).get("glm", {}).get("max_concurrent", 16)
     GLM_RETRY_COUNT: int = _json_config.get("services", {}).get("glm", {}).get("retry_count", 2)
     
     # SAM3 Service (bbox to mask segmentation)

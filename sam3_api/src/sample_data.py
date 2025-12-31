@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 # 配置
-JSONL_PATH = "/data/jj/proj/Laparo/data_json_epoch4_gridposition/cholecinstanceseg/ready/train_vqa_tool_localization.jsonl"
+JSONL_PATH = "/data/jj/proj/Laparo/data_json_epoch4_gridposition/cholecinstanceseg/ready/train_vqa_tool_localization.jsonl"  # External dataset path, not part of video_processor
 OUTPUT_DIR = "./test_data"
 SAMPLE_SIZE = 100
 RANDOM_SEED = 42

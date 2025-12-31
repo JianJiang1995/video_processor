@@ -7,7 +7,19 @@ cd "$(dirname "$0")"
 # 设置环境变量
 export SAM3_CHECKPOINT="${SAM3_CHECKPOINT:-$(pwd)/ckpt/sam3.pt}"
 export HOST="${HOST:-0.0.0.0}"
-export PORT="${PORT:-8000}"
+export PORT="${PORT:-9004}"
+
+# 关闭占用端口的现有服务
+echo "检查端口 $PORT 是否被占用..."
+EXISTING_PID=$(lsof -t -i:$PORT 2>/dev/null)
+if [ -n "$EXISTING_PID" ]; then
+    echo "发现端口 $PORT 被进程 $EXISTING_PID 占用，正在关闭..."
+    kill -9 $EXISTING_PID 2>/dev/null
+    sleep 1
+    echo "已关闭现有服务"
+else
+    echo "端口 $PORT 未被占用"
+fi
 
 echo "=================================================="
 echo "SAM3 FastAPI 服务"

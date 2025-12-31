@@ -1,0 +1,11 @@
+{
+  "image_path": "/data/lcx/xiaxiang/frames_first_1000/2024-12-24_225315_VID001_frame_0043.jpg",
+  "output_image": "/data2/jj/proj/video_processor/tests/surgr1/outputs/2024-12-24_225315_VID001_frame_0043_bbox.jpg",
+  "responses": {
+    "tool_localization": "<think>This is a Level 1 task requiring identification and localization of surgical tools.\n\nLevel 1: Examining the surgical field, I cannot clearly identify any tools.</think>\n<answer>No tools detected</answer>",
+    "surgical_action": "<think>This is a Level 2 task requiring analysis of tool-tissue interaction.\n\nLevel 1: In this surgical scene, I can clearly identify the liver as the primary structure. It appears smooth and shiny with a reddish-brown coloration, consistent with its typical appearance during laparoscopic procedures. The I also observe a grasper, which is metallic silver with a straight design and fine serrations on its jaws. The The grasper is positioned near the liver, with its jaws partially open, indicating readiness for manipulation.\n\nLevel 2: The grasper is actively retracting the liver. The The The retraction is directed cephalad, elevating the liver to expose the underlying structures. This maneuver is typical during the Calot Triangle Dissection phase, where retraction of the liver facilitates better visualization and access to the cystic duct and artery.\n\nThe complete surgical action involves the grasper retracting the liver to facilitate further dissection.</think>\n<answer>grasper retract liver</answer>",
+    "surgical_phase": "<think>This is a Level 3 task requiring procedural understanding.\n\nLevel 1: Examining the surgical image, I can clearly identify the gallbladder with its characteristic pear-shaped form and smooth, shiny surface. It appears to be partially dissected from the liver bed, with visible connective tissue strands. The1\n\nLevel 2: The gallbladder is being manipulated, likely retracted, as evidenced by the tension on the surrounding tissue and the positioning of the instrument. The2\n\nLevel 3: Based on the visible anatomy and the manipulation of the gallbladder, this scene is consistent with the GallbladderDissection phase, where the gallbladder is being separated from the liver bed. The3</think>\n<answer>GallbladderDissection</answer>"
+  },
+  "parsed_bboxes": [],
+  "bbox_count": 0
+}

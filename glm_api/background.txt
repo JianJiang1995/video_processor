@@ -1,0 +1,239 @@
+# Laparoscopic Cholecystectomy Knowledge Base
+# This file provides domain knowledge for surgical analysis tasks:
+# - Phase Recognition
+# - Critical View of Safety (CVS) Assessment
+# - Tissue Recognition
+# - Tool Recognition
+# - Action Recognition
+
+================================================================================
+## 1. SURGERY BACKGROUND
+================================================================================
+
+Laparoscopic Cholecystectomy (LC) is a minimally invasive surgical procedure to 
+remove the gallbladder. It is one of the most commonly performed abdominal surgeries.
+
+Key Anatomical Structures:
+- Gallbladder: Pear-shaped organ that stores bile
+- Cystic Duct: Tubular structure connecting gallbladder to common bile duct
+- Cystic Artery: Blood vessel supplying the gallbladder
+- Hepatocystic Triangle (Calot's Triangle): Triangular anatomical space bounded by:
+  - Cystic duct (inferior)
+  - Common hepatic duct (medial)
+  - Inferior surface of liver (superior)
+- Cystic Plate: Connective tissue layer between gallbladder and liver bed
+
+================================================================================
+## 2. SURGICAL PHASES
+================================================================================
+
+The procedure consists of 7 main phases:
+
+1. **Preparation**
+   - Setup, trocar insertion, patient positioning
+   - Initial visualization of surgical field
+
+2. **Calot Triangle Dissection**
+   - Critical phase for identifying key structures
+   - Careful dissection to expose cystic duct and artery
+   - Goal: Achieve Critical View of Safety (CVS)
+
+3. **Clipping and Cutting**
+   - Application of clips to cystic duct and artery
+   - Division of these structures
+   - Requires confirmed CVS before proceeding
+
+4. **Gallbladder Dissection**
+   - Separation of gallbladder from liver bed
+   - Progressive detachment using electrocautery
+   - Control of bleeding from cystic plate
+
+5. **Gallbladder Retraction**
+   - Manipulation and positioning of gallbladder
+   - Provides optimal exposure during dissection
+
+6. **Cleaning and Coagulation**
+   - Hemostasis of bleeding points
+   - Irrigation and aspiration
+   - Final inspection of surgical field
+
+7. **Gallbladder Packaging**
+   - Placement in retrieval bag
+   - Extraction through trocar site
+
+================================================================================
+## 3. CRITICAL VIEW OF SAFETY (CVS)
+================================================================================
+
+CVS is a technique to prevent bile duct injuries. ALL THREE criteria must be met:
+
+**CVS Criteria (all must be YES for CVS = TRUE):**
+
+1. **Two Tubular Structures**
+   - Only two tubular structures (cystic duct and cystic artery) should connect 
+     to the gallbladder
+   - No additional structures should be visible entering the gallbladder
+
+2. **Hepatocystic Triangle Cleared**
+   - The hepatocystic triangle (Calot's triangle) must be cleared of fat and 
+     fibrous tissue
+   - The underlying liver should be visible through the cleared triangle
+   - Provides clear visualization of the structures
+
+3. **Lower Gallbladder Detached**
+   - The lower third of the gallbladder must be detached from the liver bed
+   - Confirms the structures being clipped are truly the cystic duct and artery
+   - Not the common bile duct or hepatic duct
+
+**CVS Status:**
+- CVS = TRUE only when ALL THREE criteria are satisfied
+- CVS = FALSE if ANY criterion is not met
+
+================================================================================
+## 4. TISSUE RECOGNITION
+================================================================================
+
+### Cystic Duct
+- Location: Biliary system, connects gallbladder to common bile duct
+- Appearance: Tubular, smooth, membranous
+- Characteristics: Well-defined boundaries, minimal vasculature
+- Color: Pale/white, semi-translucent
+
+### Cystic Artery
+- Location: Supplies blood to gallbladder, typically runs parallel to cystic duct
+- Appearance: Slender, smooth, tubular
+- Characteristics: Distinct boundaries, prominent pulsatile vasculature
+- Color: Reddish due to blood content
+
+### Cystic Plate
+- Location: Gallbladder bed (interface between gallbladder and liver)
+- Appearance: Flat, membranous, slightly granular
+- Characteristics: Broad boundaries, less distinct edges
+- Color: Brownish-red, similar to liver surface
+
+### Calot's Triangle (Hepatocystic Triangle)
+- Location: Biliary region, bounded by key structures
+- Appearance: Triangular area with visible underlying structures when cleared
+- Characteristics: Contains cystic artery, lymph nodes, and connective tissue
+- When cleared: Liver surface visible, triangle appears semi-opaque
+
+### Gallbladder
+- Location: Attached to inferior surface of liver
+- Appearance: Pear-shaped, smooth, shiny surface
+- Characteristics: Well-defined boundaries, thin wall
+- Color: Blue-green (bile content), may appear distended or contracted
+
+================================================================================
+## 5. TOOL RECOGNITION
+================================================================================
+
+### Laparoscopic Grasper
+- Purpose: Grasping, retracting, and manipulating tissues
+- Color: Metallic silver jaws/tips, metallic shaft
+- Shape: Straight design with jaws, slight inward curve at tips
+- Features: Fine serrations on jaws, central pivot joint, oval-shaped jaw openings
+
+### Irrigation/Suction Tool (Irrigator)
+- Purpose: Irrigation and suction of surgical field
+- Color: Metallic silver throughout
+- Shape: Cylindrical shaft with tapered, rounded tip
+- Features: Three circular fenestrations near tip, no jaws or grasping mechanism
+
+### Laparoscopic Clip Applier (Clipper)
+- Purpose: Applying metal clips to cystic duct and artery
+- Color: Metallic silver jaws, metallic main body
+- Shape: Slightly curved profile with beveled tips
+- Features: Clamping surface without teeth/serrations, pivot joint for control
+
+### Laparoscopic Scissors
+- Purpose: Cutting tissue after clip application
+- Color: Metallic silver blades and body
+- Shape: Straight, elongated with pointed tips
+- Features: Two crossing blades, sharp beveled edges, pivot joint at midpoint
+
+### Laparoscopic Hook (Electrocautery Hook)
+- Purpose: Dissection using electrocautery
+- Color: White/light insulated tip (may appear reddish from blood), metallic shaft
+- Shape: Hook-shaped with 45-degree curved tip, tapering to fine point
+- Features: Single-ended, cylindrical shaft, no jaws or fenestrations
+
+### Bipolar Forceps
+- Purpose: Hemostasis through bipolar coagulation
+- Color: Metallic silver jaws, blue insulated section, metallic body
+- Shape: Flat, elongated jaws with fine serrations
+- Features: Oval-shaped jaw openings, gentle curved tips, central pivot joint
+
+================================================================================
+## 6. ACTION RECOGNITION
+================================================================================
+
+Common surgical actions during laparoscopic cholecystectomy:
+
+### Dissection Actions
+- **Hooking**: Using electrocautery hook to separate tissues
+- **Cutting**: Dividing structures with scissors
+- **Dissecting**: Separating tissue planes
+
+### Manipulation Actions
+- **Grasping**: Holding tissue with grasper
+- **Retracting**: Pulling tissue to expose surgical field
+- **Lifting**: Elevating gallbladder or tissue
+
+### Hemostasis Actions
+- **Coagulating**: Applying electrical current for hemostasis
+- **Clipping**: Applying metal clips to vessels/ducts
+
+### Irrigation Actions
+- **Irrigating**: Flushing surgical field with saline
+- **Suctioning**: Removing fluid/blood from field
+
+### Assessment Actions
+- **Inspecting**: Visual examination of structures
+- **Identifying**: Confirming anatomical structures
+
+================================================================================
+## 7. TEMPORAL CONSISTENCY RULES
+================================================================================
+
+For frame-by-frame analysis, maintain temporal consistency:
+
+1. **Phase Progression**: Phases generally progress forward (Preparation → 
+   CalotTriangleDissection → ClippingCutting → etc.)
+   - Phase regression is rare but can occur (e.g., returning to dissection 
+     if complications arise)
+
+2. **CVS Temporal Logic**:
+   - CVS typically achieved during CalotTriangleDissection phase
+   - Once CVS is TRUE, it remains TRUE unless view is obscured
+   - ClippingCutting should only occur AFTER CVS is TRUE
+
+3. **Tool Consistency**:
+   - Tools don't suddenly appear/disappear between consecutive frames
+   - Tool transitions should be gradual
+   - Multiple tools can be present simultaneously
+
+4. **Action Continuity**:
+   - Actions typically span multiple frames
+   - Abrupt action changes should be verified
+   - Concurrent actions are possible (e.g., grasping + coagulating)
+
+================================================================================
+## 8. QUALITY INDICATORS
+================================================================================
+
+Signs of good surgical technique:
+- Clear identification of CVS before clipping
+- Minimal bleeding
+- Precise tissue handling
+- Appropriate use of electrocautery
+- Clear visualization throughout
+
+Warning signs:
+- Excessive bleeding
+- Unclear anatomy
+- Proceeding without clear CVS
+- Tissue damage from excessive cautery
+- Poor visualization due to smoke/blood
+
+================================================================================
+

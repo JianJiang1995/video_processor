@@ -1,0 +1,29 @@
+{
+  "video_path": "/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4",
+  "loop": true,
+  "streams": {
+    "rtsp": {
+      "enabled": true,
+      "port": 8554,
+      "path": "/stream"
+    },
+    "http": {
+      "enabled": true,
+      "port": 8080,
+      "endpoints": {
+        "mjpeg": "/stream",
+        "flv": "/stream.flv",
+        "hls": "/stream.m3u8"
+      }
+    },
+    "webrtc": {
+      "enabled": true,
+      "port": 8088
+    }
+  }
+}
+
+
+
+
+

@@ -1,0 +1,67 @@
+# GLM-4.6V-Flash vLLM API 服务配置
+# ============================================
+
+# 模型配置
+model:
+  # 模型权重路径
+  path: "/data2/ckpt/GLM-4.6V-Flash"
+  # API中显示的模型名称
+  served_model_name: "GLM-4.6V-Flash"
+  # 是否信任远程代码（GLM模型需要）
+  trust_remote_code: true
+
+# GPU配置
+gpu:
+  # 使用的GPU设备ID
+  # 单卡: "0" 或 "1"
+  # 多卡: "0,1" 或 "2,3"
+  device_ids: "1"
+
+# 服务器配置
+server:
+  # 监听地址（0.0.0.0 表示允许外部访问）
+  host: "0.0.0.0"
+  # 服务端口
+  port: 8000
+
+# vLLM引擎配置
+vllm:
+  # GPU显存利用率 (0.0-1.0)
+  # 建议: 单模型部署用0.9，多模型共享GPU用0.5-0.7
+  gpu_memory_utilization: 0.9
+  
+  # 最大模型上下文长度 (tokens)
+  # GLM-4.6V-Flash 支持最大128K
+  # 注意：vLLM需要足够长度进行视频profiling，即使只用文本模式
+  max_model_len: 32768
+  
+  # 最大并发序列数
+  max_num_seqs: 64
+  
+  # 张量并行度（多卡时使用）
+  # 例如: 2张卡用tensor_parallel_size=2
+  tensor_parallel_size: 1
+  
+  # 数据类型: "auto", "float16", "bfloat16"
+  dtype: "auto"
+  
+  # 是否启用前缀缓存（加速相似prompt）
+  enable_prefix_caching: false
+  
+  # 是否强制eager模式（调试用，会禁用CUDA graph）
+  enforce_eager: false
+
+# 推理默认参数（官方推荐）
+inference:
+  temperature: 0.8
+  top_p: 0.6
+  top_k: 2
+  repetition_penalty: 1.1
+  max_tokens: 4096
+
+# 日志配置
+logging:
+  level: "INFO"
+  # 日志文件路径（相对于glm_api目录）
+  file: "logs/glm_server.log"
+

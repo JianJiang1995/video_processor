@@ -1,0 +1,44 @@
+# TTS API 配置文件
+# CosyVoice + vLLM 服务配置
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 50000
+
+# vLLM 引擎配置
+vllm:
+  # GPU 显存利用率 (0.0 - 1.0)
+  gpu_memory_utilization: 0.4
+  # 使用的 GPU 设备 ID
+  gpu_device: 0
+  # 是否跳过 tokenizer 初始化
+  skip_tokenizer_init: true
+  # 是否启用 prompt embeds
+  enable_prompt_embeds: true
+
+# 模型配置
+model:
+  # 模型目录路径 (相对于 tts_api 目录或绝对路径)
+  # 方案1: CosyVoice-300M-SFT - 支持预训练音色，无需 vLLM，更稳定
+  model_dir: "pretrained_models/CosyVoice-300M-SFT"
+  # 方案2: Fun-CosyVoice3-0.5B - 需要 vLLM，当前性能有问题
+  # model_dir: "pretrained_models/FunAudioLLM/Fun-CosyVoice3-0___5B-2512"
+  # 是否启用 vLLM 加速 (仅 CosyVoice3 支持)
+  load_vllm: false
+  # 是否启用 TensorRT
+  load_trt: false
+  # 是否使用 FP16
+  fp16: false
+
+# 音频处理配置
+audio:
+  # 采样率
+  sample_rate: 22050
+  # 最大音量归一化值
+  max_val: 0.8
+
+# 日志配置
+logging:
+  level: "INFO"
+

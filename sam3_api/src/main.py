@@ -1,7 +1,11 @@
 """
 SAM3 FastAPI 服务 - 独立的图像分割API服务
+支持单图分割和流式视频分割
 """
 import os
+import base64
+import numpy as np
+import cv2
 from pathlib import Path
 from typing import List, Optional
 from contextlib import asynccontextmanager
@@ -13,6 +17,7 @@ from pydantic import BaseModel, Field
 
 # 导入模型和配置
 from sam3_model import get_model, SAM3Model
+from sam3_streaming import get_streaming_model, SAM3StreamingModel
 from config_loader import get_visualization_config, get_server_config
 
 
@@ -128,10 +133,14 @@ def root():
     """服务信息"""
     return {
         "service": "SAM3 Segmentation API",
-        "version": "1.1.0",
+        "version": "2.0.0",
         "status": "running",
         "endpoints": {
             "POST /sam3": "使用 bounding boxes 进行图像分割",
+            "POST /stream/create": "创建流式视频分割会话",
+            "POST /stream/process": "处理单帧（添加prompt或传播mask）",
+            "GET /stream/status/{session_id}": "获取会话状态",
+            "DELETE /stream/{session_id}": "关闭会话",
             "GET /config": "获取当前配置",
             "GET /download/{filename}": "下载结果图片"
         }
@@ -272,6 +281,179 @@ def segment_image(request: SegmentRequest):
             status_code=500,
             detail=f"分割失败: {str(e)}"
         )
+
+
+# ============================================================================
+# 流式视频分割 API
+# ============================================================================
+
+class StreamCreateRequest(BaseModel):
+    """创建流式会话请求"""
+    stream_id: str = Field(..., description="视频流标识符")
+
+
+class StreamCreateResponse(BaseModel):
+    """创建流式会话响应"""
+    success: bool
+    session_id: str
+    message: str = ""
+
+
+class StreamProcessRequest(BaseModel):
+    """处理帧请求"""
+    session_id: str = Field(..., description="会话ID")
+    frame_base64: str = Field(..., description="Base64编码的帧图像 (BGR格式的JPEG)")
+    frame_idx: int = Field(..., ge=0, description="帧索引")
+    timestamp: float = Field(0.0, ge=0, description="时间戳（秒）")
+    bboxes: Optional[List[BBox]] = Field(None, description="来自SurgR1的bbox列表（可选）")
+
+
+class TrackedObjectInfo(BaseModel):
+    """跟踪物体信息"""
+    obj_id: int
+    label: str
+
+
+class StreamProcessResponse(BaseModel):
+    """处理帧响应"""
+    success: bool
+    frame_idx: int
+    num_objects: int
+    tracked_objects: List[TrackedObjectInfo] = []
+    propagated: bool = False
+    image_base64: Optional[str] = Field(None, description="带mask的结果帧 (Base64 JPEG)")
+    message: str = ""
+
+
+class StreamStatusResponse(BaseModel):
+    """会话状态响应"""
+    exists: bool
+    session_id: Optional[str] = None
+    stream_id: Optional[str] = None
+    frame_count: int = 0
+    tracked_objects: int = 0
+    is_active: bool = False
+
+
+@app.post("/stream/create", response_model=StreamCreateResponse)
+def create_stream_session(request: StreamCreateRequest):
+    """
+    创建流式视频分割会话
+    
+    在开始处理视频流之前调用此接口创建会话。
+    会话会维护跟踪状态，支持mask传播。
+    """
+    try:
+        model = get_streaming_model()
+        session_id = model.create_session(request.stream_id)
+        return StreamCreateResponse(
+            success=True,
+            session_id=session_id,
+            message="流式会话创建成功"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"创建会话失败: {str(e)}")
+
+
+@app.post("/stream/process", response_model=StreamProcessResponse)
+def process_stream_frame(request: StreamProcessRequest):
+    """
+    处理视频流中的一帧
+    
+    工作流程:
+    1. 如果提供了bboxes（来自SurgR1的分析结果），会在该帧上添加prompt并生成新mask
+    2. 如果没有bboxes，会使用之前的mask进行传播（SAM3的propagation功能）
+    
+    这样可以实现:
+    - SurgR1 每1秒分析一帧 → 提供bbox → SAM3生成精确mask
+    - 中间帧 → SAM3传播mask → 保持视觉连续性
+    
+    Args:
+        session_id: 会话ID
+        frame_base64: Base64编码的帧图像
+        frame_idx: 帧索引
+        timestamp: 时间戳
+        bboxes: 可选的bbox列表
+    """
+    try:
+        model = get_streaming_model()
+        
+        # 解码帧
+        frame_bytes = base64.b64decode(request.frame_base64)
+        frame_array = np.frombuffer(frame_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+        
+        if frame is None:
+            raise HTTPException(status_code=400, detail="无法解码帧图像")
+        
+        # 转换bboxes格式
+        bboxes = None
+        if request.bboxes:
+            bboxes = [
+                {
+                    "x1": bbox.x1,
+                    "y1": bbox.y1,
+                    "x2": bbox.x2,
+                    "y2": bbox.y2,
+                    "label": bbox.label
+                }
+                for bbox in request.bboxes
+            ]
+        
+        # 处理帧
+        result = model.process_frame(
+            session_id=request.session_id,
+            frame=frame,
+            frame_idx=request.frame_idx,
+            timestamp=request.timestamp,
+            bboxes=bboxes
+        )
+        
+        # 编码结果帧
+        image_base64 = None
+        if result.get("visualization") is not None:
+            image_base64 = model.frame_to_base64(result["visualization"])
+        
+        return StreamProcessResponse(
+            success=result.get("success", False),
+            frame_idx=result.get("frame_idx", request.frame_idx),
+            num_objects=result.get("num_objects", 0),
+            tracked_objects=[
+                TrackedObjectInfo(**obj) for obj in result.get("tracked_objects", [])
+            ],
+            propagated=result.get("propagated", False),
+            image_base64=image_base64,
+            message="帧处理成功"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"处理帧失败: {str(e)}")
+
+
+@app.get("/stream/status/{session_id}", response_model=StreamStatusResponse)
+def get_stream_status(session_id: str):
+    """获取流式会话状态"""
+    try:
+        model = get_streaming_model()
+        status = model.get_session_status(session_id)
+        return StreamStatusResponse(**status)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/stream/{session_id}")
+def close_stream_session(session_id: str):
+    """关闭流式会话"""
+    try:
+        model = get_streaming_model()
+        model.close_session(session_id)
+        return {"success": True, "message": f"会话 {session_id} 已关闭"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

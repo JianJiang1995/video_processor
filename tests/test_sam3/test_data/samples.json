@@ -1,0 +1,1799 @@
+[
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0000_t50_VID25_001816.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_001816.png",
+    "bboxes": [
+      {
+        "x1": 402,
+        "y1": 103,
+        "x2": 757,
+        "y2": 327,
+        "label": "irrigator"
+      },
+      {
+        "x1": 463,
+        "y1": 0,
+        "x2": 545,
+        "y2": 181,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0001_t50_VID25_001076.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_001076.png",
+    "bboxes": [
+      {
+        "x1": 345,
+        "y1": 0,
+        "x2": 669,
+        "y2": 227,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0002_t50_VID18_001896.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_001896.png",
+    "bboxes": [
+      {
+        "x1": 155,
+        "y1": 173,
+        "x2": 491,
+        "y2": 454,
+        "label": "bipolar"
+      },
+      {
+        "x1": 206,
+        "y1": 145,
+        "x2": 535,
+        "y2": 397,
+        "label": "bipolar"
+      },
+      {
+        "x1": 627,
+        "y1": 404,
+        "x2": 766,
+        "y2": 478,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0003_t50_VID23_000780.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID23_t50_full/img_dir/t50_VID23_000780.png",
+    "bboxes": [
+      {
+        "x1": 435,
+        "y1": 34,
+        "x2": 738,
+        "y2": 205,
+        "label": "hook"
+      },
+      {
+        "x1": 459,
+        "y1": 0,
+        "x2": 518,
+        "y2": 19,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0004_t50_VID23_000644.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID23_t50_full/img_dir/t50_VID23_000644.png",
+    "bboxes": [
+      {
+        "x1": 384,
+        "y1": 291,
+        "x2": 720,
+        "y2": 474,
+        "label": "clipper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0005_t50_VID48_000977.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000977.png",
+    "bboxes": [
+      {
+        "x1": 236,
+        "y1": 329,
+        "x2": 579,
+        "y2": 475,
+        "label": "grasper"
+      },
+      {
+        "x1": 386,
+        "y1": 57,
+        "x2": 674,
+        "y2": 168,
+        "label": "grasper"
+      },
+      {
+        "x1": 459,
+        "y1": 70,
+        "x2": 551,
+        "y2": 119,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0006_seg8k_video25_000418.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_seg8k/img_dir/seg8k_video25_000418.png",
+    "bboxes": [
+      {
+        "x1": 409,
+        "y1": 1,
+        "x2": 473,
+        "y2": 101,
+        "label": "grasper"
+      },
+      {
+        "x1": 175,
+        "y1": 9,
+        "x2": 589,
+        "y2": 334,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0007_seg8k_video52_002760.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_seg8k/img_dir/seg8k_video52_002760.png",
+    "bboxes": [
+      {
+        "x1": 410,
+        "y1": 76,
+        "x2": 748,
+        "y2": 202,
+        "label": "grasper"
+      },
+      {
+        "x1": 370,
+        "y1": 184,
+        "x2": 780,
+        "y2": 334,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0008_t50_VID26_000793.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_000793.png",
+    "bboxes": [
+      {
+        "x1": 328,
+        "y1": 52,
+        "x2": 734,
+        "y2": 275,
+        "label": "clipper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0009_t50_VID48_000671.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000671.png",
+    "bboxes": [
+      {
+        "x1": 547,
+        "y1": 234,
+        "x2": 727,
+        "y2": 326,
+        "label": "hook"
+      },
+      {
+        "x1": 133,
+        "y1": 260,
+        "x2": 465,
+        "y2": 332,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0010_seg8k_video01_028591.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_seg8k/img_dir/seg8k_video01_028591.png",
+    "bboxes": [
+      {
+        "x1": 483,
+        "y1": 4,
+        "x2": 753,
+        "y2": 169,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0011_t80_VID44_002940.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID44_t80_sparse/img_dir/t80_VID44_002940.png",
+    "bboxes": [
+      {
+        "x1": 540,
+        "y1": 354,
+        "x2": 839,
+        "y2": 476,
+        "label": "irrigator"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0012_t50_VID27_001642.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_t50_full/img_dir/t50_VID27_001642.png",
+    "bboxes": [
+      {
+        "x1": 479,
+        "y1": 135,
+        "x2": 781,
+        "y2": 315,
+        "label": "grasper"
+      },
+      {
+        "x1": 78,
+        "y1": 221,
+        "x2": 335,
+        "y2": 260,
+        "label": "grasper"
+      },
+      {
+        "x1": 291,
+        "y1": 0,
+        "x2": 473,
+        "y2": 90,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0013_t50_VID52_001504.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_t50_full/img_dir/t50_VID52_001504.png",
+    "bboxes": [
+      {
+        "x1": 395,
+        "y1": 64,
+        "x2": 740,
+        "y2": 259,
+        "label": "grasper"
+      },
+      {
+        "x1": 561,
+        "y1": 175,
+        "x2": 783,
+        "y2": 270,
+        "label": "irrigator"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0014_t50_VID48_000922.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000922.png",
+    "bboxes": [
+      {
+        "x1": 139,
+        "y1": 268,
+        "x2": 449,
+        "y2": 372,
+        "label": "grasper"
+      },
+      {
+        "x1": 503,
+        "y1": 299,
+        "x2": 722,
+        "y2": 371,
+        "label": "hook"
+      },
+      {
+        "x1": 477,
+        "y1": 0,
+        "x2": 558,
+        "y2": 31,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0015_t50_VID35_001705.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID35_t50_full/img_dir/t50_VID35_001705.png",
+    "bboxes": [
+      {
+        "x1": 413,
+        "y1": 45,
+        "x2": 532,
+        "y2": 112,
+        "label": "grasper"
+      },
+      {
+        "x1": 369,
+        "y1": 15,
+        "x2": 807,
+        "y2": 245,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0016_t50_VID18_001535.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_001535.png",
+    "bboxes": [
+      {
+        "x1": 483,
+        "y1": 11,
+        "x2": 838,
+        "y2": 217,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0017_t50_VID25_001386.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_001386.png",
+    "bboxes": [
+      {
+        "x1": 513,
+        "y1": 124,
+        "x2": 760,
+        "y2": 274,
+        "label": "hook"
+      },
+      {
+        "x1": 615,
+        "y1": 265,
+        "x2": 761,
+        "y2": 462,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0018_t50_VID48_001540.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_001540.png",
+    "bboxes": [
+      {
+        "x1": 431,
+        "y1": 321,
+        "x2": 694,
+        "y2": 448,
+        "label": "hook"
+      },
+      {
+        "x1": 468,
+        "y1": 75,
+        "x2": 653,
+        "y2": 134,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0019_t50_VID35_000035.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID35_t50_full/img_dir/t50_VID35_000035.png",
+    "bboxes": [
+      {
+        "x1": 0,
+        "y1": 18,
+        "x2": 471,
+        "y2": 303,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0020_t50_VID26_001691.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_001691.png",
+    "bboxes": [
+      {
+        "x1": 202,
+        "y1": 0,
+        "x2": 425,
+        "y2": 91,
+        "label": "grasper"
+      },
+      {
+        "x1": 604,
+        "y1": 21,
+        "x2": 767,
+        "y2": 111,
+        "label": "irrigator"
+      },
+      {
+        "x1": 396,
+        "y1": 0,
+        "x2": 522,
+        "y2": 312,
+        "label": "bipolar"
+      },
+      {
+        "x1": 502,
+        "y1": 0,
+        "x2": 627,
+        "y2": 222,
+        "label": "bipolar"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0021_seg8k_video12_015847.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID12_seg8k/img_dir/seg8k_video12_015847.png",
+    "bboxes": [
+      {
+        "x1": 456,
+        "y1": 5,
+        "x2": 679,
+        "y2": 197,
+        "label": "hook"
+      },
+      {
+        "x1": 237,
+        "y1": 0,
+        "x2": 492,
+        "y2": 46,
+        "label": "grasper"
+      },
+      {
+        "x1": 440,
+        "y1": 0,
+        "x2": 504,
+        "y2": 13,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0022_t50_VID26_001669.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_001669.png",
+    "bboxes": [
+      {
+        "x1": 404,
+        "y1": 0,
+        "x2": 697,
+        "y2": 84,
+        "label": "grasper"
+      },
+      {
+        "x1": 184,
+        "y1": 0,
+        "x2": 366,
+        "y2": 275,
+        "label": "bipolar"
+      },
+      {
+        "x1": 531,
+        "y1": 378,
+        "x2": 756,
+        "y2": 474,
+        "label": "irrigator"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0023_t50_VID52_000579.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_t50_full/img_dir/t50_VID52_000579.png",
+    "bboxes": [
+      {
+        "x1": 97,
+        "y1": 173,
+        "x2": 295,
+        "y2": 281,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0024_t50_VID18_001350.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_001350.png",
+    "bboxes": [
+      {
+        "x1": 299,
+        "y1": 0,
+        "x2": 800,
+        "y2": 234,
+        "label": "hook"
+      },
+      {
+        "x1": 736,
+        "y1": 73,
+        "x2": 829,
+        "y2": 160,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0025_t50_VID01_000062.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_t50_full/img_dir/t50_VID01_000062.png",
+    "bboxes": [
+      {
+        "x1": 392,
+        "y1": 0,
+        "x2": 696,
+        "y2": 190,
+        "label": "hook"
+      },
+      {
+        "x1": 74,
+        "y1": 36,
+        "x2": 333,
+        "y2": 129,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0026_seg8k_video43_000720.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_seg8k/img_dir/seg8k_video43_000720.png",
+    "bboxes": [
+      {
+        "x1": 421,
+        "y1": 117,
+        "x2": 756,
+        "y2": 320,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0027_t50_VID52_001070.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_t50_full/img_dir/t50_VID52_001070.png",
+    "bboxes": [
+      {
+        "x1": 688,
+        "y1": 78,
+        "x2": 734,
+        "y2": 105,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0028_t50_VID42_001890.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID42_t50_sparse/img_dir/t50_VID42_001890.png",
+    "bboxes": [
+      {
+        "x1": 549,
+        "y1": 3,
+        "x2": 815,
+        "y2": 272,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0029_seg8k_video52_002972.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_seg8k/img_dir/seg8k_video52_002972.png",
+    "bboxes": [
+      {
+        "x1": 459,
+        "y1": 3,
+        "x2": 679,
+        "y2": 139,
+        "label": "grasper"
+      },
+      {
+        "x1": 100,
+        "y1": 224,
+        "x2": 382,
+        "y2": 326,
+        "label": "grasper"
+      },
+      {
+        "x1": 422,
+        "y1": 54,
+        "x2": 751,
+        "y2": 258,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0030_seg8k_video52_000096.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_seg8k/img_dir/seg8k_video52_000096.png",
+    "bboxes": [
+      {
+        "x1": 494,
+        "y1": 162,
+        "x2": 772,
+        "y2": 247,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0031_seg8k_video27_000256.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_seg8k/img_dir/seg8k_video27_000256.png",
+    "bboxes": [
+      {
+        "x1": 77,
+        "y1": 232,
+        "x2": 114,
+        "y2": 263,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0032_t50_VID48_000805.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000805.png",
+    "bboxes": [
+      {
+        "x1": 460,
+        "y1": 147,
+        "x2": 731,
+        "y2": 314,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0033_t80_VID59_000030.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID59_t80_sparse/img_dir/t80_VID59_000030.png",
+    "bboxes": [
+      {
+        "x1": 256,
+        "y1": 0,
+        "x2": 284,
+        "y2": 17,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0034_t50_VID52_000637.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_t50_full/img_dir/t50_VID52_000637.png",
+    "bboxes": [
+      {
+        "x1": 95,
+        "y1": 211,
+        "x2": 282,
+        "y2": 310,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0035_t50_VID18_000746.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_000746.png",
+    "bboxes": [
+      {
+        "x1": 495,
+        "y1": 126,
+        "x2": 842,
+        "y2": 370,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0036_t50_VID18_000518.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_000518.png",
+    "bboxes": [
+      {
+        "x1": 573,
+        "y1": 0,
+        "x2": 800,
+        "y2": 186,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0037_t50_VID23_000164.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID23_t50_full/img_dir/t50_VID23_000164.png",
+    "bboxes": [
+      {
+        "x1": 377,
+        "y1": 197,
+        "x2": 757,
+        "y2": 396,
+        "label": "hook"
+      },
+      {
+        "x1": 195,
+        "y1": 399,
+        "x2": 362,
+        "y2": 474,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0038_t50_VID10_000870.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID10_t50_sparse/img_dir/t50_VID10_000870.png",
+    "bboxes": [
+      {
+        "x1": 469,
+        "y1": 98,
+        "x2": 851,
+        "y2": 335,
+        "label": "hook"
+      },
+      {
+        "x1": 3,
+        "y1": 359,
+        "x2": 288,
+        "y2": 430,
+        "label": "grasper"
+      },
+      {
+        "x1": 525,
+        "y1": 0,
+        "x2": 644,
+        "y2": 217,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0039_t50_VID23_000552.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID23_t50_full/img_dir/t50_VID23_000552.png",
+    "bboxes": [
+      {
+        "x1": 141,
+        "y1": 111,
+        "x2": 227,
+        "y2": 176,
+        "label": "grasper"
+      },
+      {
+        "x1": 566,
+        "y1": 335,
+        "x2": 720,
+        "y2": 423,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0040_t50_VID01_001198.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_t50_full/img_dir/t50_VID01_001198.png",
+    "bboxes": [
+      {
+        "x1": 36,
+        "y1": 214,
+        "x2": 75,
+        "y2": 271,
+        "label": "grasper"
+      },
+      {
+        "x1": 565,
+        "y1": 231,
+        "x2": 743,
+        "y2": 259,
+        "label": "grasper"
+      },
+      {
+        "x1": 513,
+        "y1": 144,
+        "x2": 795,
+        "y2": 241,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0041_t50_VID01_000466.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_t50_full/img_dir/t50_VID01_000466.png",
+    "bboxes": [
+      {
+        "x1": 106,
+        "y1": 8,
+        "x2": 217,
+        "y2": 87,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0042_seg8k_video18_001175.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_seg8k/img_dir/seg8k_video18_001175.png",
+    "bboxes": [
+      {
+        "x1": 32,
+        "y1": 1,
+        "x2": 359,
+        "y2": 203,
+        "label": "grasper"
+      },
+      {
+        "x1": 322,
+        "y1": 1,
+        "x2": 814,
+        "y2": 261,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0043_t50_VID18_000260.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_000260.png",
+    "bboxes": [
+      {
+        "x1": 9,
+        "y1": 0,
+        "x2": 357,
+        "y2": 191,
+        "label": "grasper"
+      },
+      {
+        "x1": 562,
+        "y1": 0,
+        "x2": 819,
+        "y2": 166,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0044_t50_VID42_002460.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID42_t50_sparse/img_dir/t50_VID42_002460.png",
+    "bboxes": [
+      {
+        "x1": 464,
+        "y1": 0,
+        "x2": 774,
+        "y2": 270,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0045_t50_VID26_001132.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_001132.png",
+    "bboxes": [
+      {
+        "x1": 28,
+        "y1": 29,
+        "x2": 413,
+        "y2": 374,
+        "label": "grasper"
+      },
+      {
+        "x1": 425,
+        "y1": 14,
+        "x2": 742,
+        "y2": 128,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0046_t50_VID27_000366.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_t50_full/img_dir/t50_VID27_000366.png",
+    "bboxes": [
+      {
+        "x1": 599,
+        "y1": 187,
+        "x2": 785,
+        "y2": 275,
+        "label": "hook"
+      },
+      {
+        "x1": 281,
+        "y1": 0,
+        "x2": 550,
+        "y2": 66,
+        "label": "grasper"
+      },
+      {
+        "x1": 558,
+        "y1": 0,
+        "x2": 593,
+        "y2": 21,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0047_t50_VID36_002310.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID36_t50_sparse/img_dir/t50_VID36_002310.png",
+    "bboxes": [
+      {
+        "x1": 112,
+        "y1": 2,
+        "x2": 466,
+        "y2": 237,
+        "label": "grasper"
+      },
+      {
+        "x1": 650,
+        "y1": 286,
+        "x2": 818,
+        "y2": 347,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0048_t50_VID26_000756.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_000756.png",
+    "bboxes": [
+      {
+        "x1": 291,
+        "y1": 0,
+        "x2": 696,
+        "y2": 226,
+        "label": "clipper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0049_t50_VID25_001242.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_001242.png",
+    "bboxes": [
+      {
+        "x1": 129,
+        "y1": 73,
+        "x2": 341,
+        "y2": 146,
+        "label": "grasper"
+      },
+      {
+        "x1": 452,
+        "y1": 0,
+        "x2": 498,
+        "y2": 180,
+        "label": "grasper"
+      },
+      {
+        "x1": 574,
+        "y1": 247,
+        "x2": 761,
+        "y2": 359,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0050_seg8k_video52_000331.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_seg8k/img_dir/seg8k_video52_000331.png",
+    "bboxes": [
+      {
+        "x1": 560,
+        "y1": 122,
+        "x2": 758,
+        "y2": 188,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0051_t50_VID35_000923.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID35_t50_full/img_dir/t50_VID35_000923.png",
+    "bboxes": [
+      {
+        "x1": 397,
+        "y1": 17,
+        "x2": 765,
+        "y2": 234,
+        "label": "irrigator"
+      },
+      {
+        "x1": 314,
+        "y1": 0,
+        "x2": 529,
+        "y2": 120,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0052_t50_VID18_001683.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_001683.png",
+    "bboxes": [
+      {
+        "x1": 485,
+        "y1": 13,
+        "x2": 805,
+        "y2": 169,
+        "label": "grasper"
+      },
+      {
+        "x1": 451,
+        "y1": 0,
+        "x2": 645,
+        "y2": 112,
+        "label": "grasper"
+      },
+      {
+        "x1": 0,
+        "y1": 248,
+        "x2": 121,
+        "y2": 326,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0053_t50_VID27_001831.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_t50_full/img_dir/t50_VID27_001831.png",
+    "bboxes": [
+      {
+        "x1": 99,
+        "y1": 368,
+        "x2": 469,
+        "y2": 403,
+        "label": "grasper"
+      },
+      {
+        "x1": 472,
+        "y1": 413,
+        "x2": 619,
+        "y2": 477,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0054_t50_VID49_001020.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID49_t50_sparse/img_dir/t50_VID49_001020.png",
+    "bboxes": [
+      {
+        "x1": 412,
+        "y1": 251,
+        "x2": 712,
+        "y2": 462,
+        "label": "hook"
+      },
+      {
+        "x1": 502,
+        "y1": 27,
+        "x2": 631,
+        "y2": 130,
+        "label": "grasper"
+      },
+      {
+        "x1": 442,
+        "y1": 0,
+        "x2": 563,
+        "y2": 50,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0055_t50_VID27_000618.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_t50_full/img_dir/t50_VID27_000618.png",
+    "bboxes": [
+      {
+        "x1": 688,
+        "y1": 166,
+        "x2": 781,
+        "y2": 236,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0056_t50_VID25_001461.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_001461.png",
+    "bboxes": [
+      {
+        "x1": 533,
+        "y1": 122,
+        "x2": 760,
+        "y2": 257,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0057_seg8k_video43_000516.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_seg8k/img_dir/seg8k_video43_000516.png",
+    "bboxes": [
+      {
+        "x1": 297,
+        "y1": 38,
+        "x2": 727,
+        "y2": 345,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0058_t50_VID43_000338.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_t50_full/img_dir/t50_VID43_000338.png",
+    "bboxes": [
+      {
+        "x1": 374,
+        "y1": 80,
+        "x2": 769,
+        "y2": 392,
+        "label": "bipolar"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0059_t50_VID25_001848.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_001848.png",
+    "bboxes": [
+      {
+        "x1": 539,
+        "y1": 256,
+        "x2": 758,
+        "y2": 348,
+        "label": "irrigator"
+      },
+      {
+        "x1": 431,
+        "y1": 0,
+        "x2": 632,
+        "y2": 314,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0060_t50_VID27_001921.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_t50_full/img_dir/t50_VID27_001921.png",
+    "bboxes": [
+      {
+        "x1": 555,
+        "y1": 263,
+        "x2": 787,
+        "y2": 425,
+        "label": "grasper"
+      },
+      {
+        "x1": 89,
+        "y1": 341,
+        "x2": 384,
+        "y2": 385,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0061_t50_VID48_000364.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000364.png",
+    "bboxes": [
+      {
+        "x1": 586,
+        "y1": 102,
+        "x2": 704,
+        "y2": 156,
+        "label": "hook"
+      },
+      {
+        "x1": 237,
+        "y1": 0,
+        "x2": 412,
+        "y2": 91,
+        "label": "grasper"
+      },
+      {
+        "x1": 156,
+        "y1": 200,
+        "x2": 493,
+        "y2": 397,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0062_t50_VID25_000153.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_000153.png",
+    "bboxes": [
+      {
+        "x1": 251,
+        "y1": 0,
+        "x2": 528,
+        "y2": 142,
+        "label": "grasper"
+      },
+      {
+        "x1": 506,
+        "y1": 189,
+        "x2": 749,
+        "y2": 316,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0063_t50_VID48_000372.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000372.png",
+    "bboxes": [
+      {
+        "x1": 405,
+        "y1": 164,
+        "x2": 723,
+        "y2": 360,
+        "label": "hook"
+      },
+      {
+        "x1": 132,
+        "y1": 205,
+        "x2": 355,
+        "y2": 315,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0064_t50_VID18_000653.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_000653.png",
+    "bboxes": [
+      {
+        "x1": 176,
+        "y1": 0,
+        "x2": 384,
+        "y2": 92,
+        "label": "grasper"
+      },
+      {
+        "x1": 657,
+        "y1": 0,
+        "x2": 801,
+        "y2": 101,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0065_t50_VID23_000431.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID23_t50_full/img_dir/t50_VID23_000431.png",
+    "bboxes": [
+      {
+        "x1": 531,
+        "y1": 72,
+        "x2": 749,
+        "y2": 200,
+        "label": "hook"
+      },
+      {
+        "x1": 145,
+        "y1": 265,
+        "x2": 292,
+        "y2": 339,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0066_t50_VID01_000910.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_t50_full/img_dir/t50_VID01_000910.png",
+    "bboxes": [
+      {
+        "x1": 462,
+        "y1": 102,
+        "x2": 796,
+        "y2": 274,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0067_t50_VID26_000550.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_000550.png",
+    "bboxes": [
+      {
+        "x1": 382,
+        "y1": 169,
+        "x2": 744,
+        "y2": 309,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0068_t50_VID25_001791.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_t50_full/img_dir/t50_VID25_001791.png",
+    "bboxes": [
+      {
+        "x1": 358,
+        "y1": 92,
+        "x2": 748,
+        "y2": 347,
+        "label": "irrigator"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0069_seg8k_video25_000241.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID25_seg8k/img_dir/seg8k_video25_000241.png",
+    "bboxes": [
+      {
+        "x1": 397,
+        "y1": 0,
+        "x2": 500,
+        "y2": 212,
+        "label": "grasper"
+      },
+      {
+        "x1": 495,
+        "y1": 0,
+        "x2": 511,
+        "y2": 9,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0070_seg8k_video43_000556.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_seg8k/img_dir/seg8k_video43_000556.png",
+    "bboxes": [
+      {
+        "x1": 380,
+        "y1": 49,
+        "x2": 729,
+        "y2": 310,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0071_t50_VID01_001342.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_t50_full/img_dir/t50_VID01_001342.png",
+    "bboxes": [
+      {
+        "x1": 363,
+        "y1": 0,
+        "x2": 711,
+        "y2": 181,
+        "label": "hook"
+      },
+      {
+        "x1": 387,
+        "y1": 38,
+        "x2": 766,
+        "y2": 212,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0072_t50_VID48_000115.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000115.png",
+    "bboxes": [
+      {
+        "x1": 366,
+        "y1": 18,
+        "x2": 666,
+        "y2": 115,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0073_t50_VID26_001751.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_001751.png",
+    "bboxes": [
+      {
+        "x1": 712,
+        "y1": 277,
+        "x2": 797,
+        "y2": 421,
+        "label": "irrigator"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0074_t50_VID18_001180.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_001180.png",
+    "bboxes": [
+      {
+        "x1": 594,
+        "y1": 304,
+        "x2": 832,
+        "y2": 427,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0075_t50_VID27_001631.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_t50_full/img_dir/t50_VID27_001631.png",
+    "bboxes": [
+      {
+        "x1": 206,
+        "y1": 0,
+        "x2": 694,
+        "y2": 281,
+        "label": "grasper"
+      },
+      {
+        "x1": 79,
+        "y1": 286,
+        "x2": 315,
+        "y2": 316,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0076_seg8k_video12_019544.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID12_seg8k/img_dir/seg8k_video12_019544.png",
+    "bboxes": [
+      {
+        "x1": 401,
+        "y1": 26,
+        "x2": 485,
+        "y2": 53,
+        "label": "grasper"
+      },
+      {
+        "x1": 330,
+        "y1": 1,
+        "x2": 644,
+        "y2": 188,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0077_t50_VID26_000120.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID26_t50_full/img_dir/t50_VID26_000120.png",
+    "bboxes": [
+      {
+        "x1": 125,
+        "y1": 418,
+        "x2": 258,
+        "y2": 476,
+        "label": "grasper"
+      },
+      {
+        "x1": 305,
+        "y1": 97,
+        "x2": 742,
+        "y2": 264,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0078_t50_VID43_002064.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_t50_full/img_dir/t50_VID43_002064.png",
+    "bboxes": [
+      {
+        "x1": 279,
+        "y1": 0,
+        "x2": 752,
+        "y2": 334,
+        "label": "bipolar"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0079_seg8k_video01_028782.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_seg8k/img_dir/seg8k_video01_028782.png",
+    "bboxes": [
+      {
+        "x1": 493,
+        "y1": 114,
+        "x2": 796,
+        "y2": 243,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0080_t50_VID52_001218.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_t50_full/img_dir/t50_VID52_001218.png",
+    "bboxes": [
+      {
+        "x1": 386,
+        "y1": 256,
+        "x2": 778,
+        "y2": 454,
+        "label": "hook"
+      },
+      {
+        "x1": 552,
+        "y1": 2,
+        "x2": 651,
+        "y2": 42,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0081_t50_VID35_000722.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID35_t50_full/img_dir/t50_VID35_000722.png",
+    "bboxes": [
+      {
+        "x1": 457,
+        "y1": 2,
+        "x2": 772,
+        "y2": 171,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0082_t80_VID44_003030.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID44_t80_sparse/img_dir/t80_VID44_003030.png",
+    "bboxes": [
+      {
+        "x1": 330,
+        "y1": 8,
+        "x2": 848,
+        "y2": 315,
+        "label": "irrigator"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0083_seg8k_video52_002794.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_seg8k/img_dir/seg8k_video52_002794.png",
+    "bboxes": [
+      {
+        "x1": 451,
+        "y1": 28,
+        "x2": 709,
+        "y2": 174,
+        "label": "grasper"
+      },
+      {
+        "x1": 100,
+        "y1": 270,
+        "x2": 438,
+        "y2": 374,
+        "label": "grasper"
+      },
+      {
+        "x1": 462,
+        "y1": 227,
+        "x2": 781,
+        "y2": 365,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0084_t50_VID35_000531.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID35_t50_full/img_dir/t50_VID35_000531.png",
+    "bboxes": [
+      {
+        "x1": 161,
+        "y1": 0,
+        "x2": 384,
+        "y2": 100,
+        "label": "grasper"
+      },
+      {
+        "x1": 484,
+        "y1": 0,
+        "x2": 793,
+        "y2": 209,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0085_t50_VID48_000910.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_000910.png",
+    "bboxes": [
+      {
+        "x1": 138,
+        "y1": 219,
+        "x2": 524,
+        "y2": 326,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0086_seg8k_video48_000584.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_seg8k/img_dir/seg8k_video48_000584.png",
+    "bboxes": [
+      {
+        "x1": 401,
+        "y1": 226,
+        "x2": 612,
+        "y2": 345,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0087_t50_VID52_000609.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_t50_full/img_dir/t50_VID52_000609.png",
+    "bboxes": [
+      {
+        "x1": 184,
+        "y1": 0,
+        "x2": 565,
+        "y2": 181,
+        "label": "grasper"
+      },
+      {
+        "x1": 460,
+        "y1": 202,
+        "x2": 783,
+        "y2": 338,
+        "label": "clipper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0088_t50_VID18_001377.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID18_t50_full/img_dir/t50_VID18_001377.png",
+    "bboxes": [
+      {
+        "x1": 613,
+        "y1": 139,
+        "x2": 840,
+        "y2": 250,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0089_seg8k_video17_001581.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID17_seg8k/img_dir/seg8k_video17_001581.png",
+    "bboxes": [
+      {
+        "x1": 291,
+        "y1": 145,
+        "x2": 416,
+        "y2": 226,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0090_t50_VID48_001760.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID48_t50_full/img_dir/t50_VID48_001760.png",
+    "bboxes": [
+      {
+        "x1": 516,
+        "y1": 156,
+        "x2": 663,
+        "y2": 205,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0091_t50_VID01_001642.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_t50_full/img_dir/t50_VID01_001642.png",
+    "bboxes": [
+      {
+        "x1": 41,
+        "y1": 252,
+        "x2": 541,
+        "y2": 421,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0092_t50_VID43_000652.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_t50_full/img_dir/t50_VID43_000652.png",
+    "bboxes": [
+      {
+        "x1": 448,
+        "y1": 0,
+        "x2": 768,
+        "y2": 257,
+        "label": "bipolar"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0093_t50_VID27_000126.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID27_t50_full/img_dir/t50_VID27_000126.png",
+    "bboxes": [
+      {
+        "x1": 76,
+        "y1": 143,
+        "x2": 378,
+        "y2": 235,
+        "label": "grasper"
+      },
+      {
+        "x1": 344,
+        "y1": 208,
+        "x2": 785,
+        "y2": 465,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0094_t50_VID01_001424.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID01_t50_full/img_dir/t50_VID01_001424.png",
+    "bboxes": [
+      {
+        "x1": 431,
+        "y1": 13,
+        "x2": 782,
+        "y2": 225,
+        "label": "hook"
+      },
+      {
+        "x1": 574,
+        "y1": 152,
+        "x2": 798,
+        "y2": 256,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0095_seg8k_video43_000865.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_seg8k/img_dir/seg8k_video43_000865.png",
+    "bboxes": [
+      {
+        "x1": 428,
+        "y1": 1,
+        "x2": 696,
+        "y2": 127,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0096_t50_VID23_001251.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/val/VID23_t50_full/img_dir/t50_VID23_001251.png",
+    "bboxes": [
+      {
+        "x1": 497,
+        "y1": 0,
+        "x2": 568,
+        "y2": 49,
+        "label": "grasper"
+      },
+      {
+        "x1": 520,
+        "y1": 442,
+        "x2": 614,
+        "y2": 476,
+        "label": "irrigator"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0097_t50_VID12_000623.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID12_t50_full/img_dir/t50_VID12_000623.png",
+    "bboxes": [
+      {
+        "x1": 443,
+        "y1": 5,
+        "x2": 615,
+        "y2": 166,
+        "label": "hook"
+      },
+      {
+        "x1": 452,
+        "y1": 0,
+        "x2": 499,
+        "y2": 12,
+        "label": "grasper"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0098_t50_VID43_001639.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID43_t50_full/img_dir/t50_VID43_001639.png",
+    "bboxes": [
+      {
+        "x1": 461,
+        "y1": 205,
+        "x2": 821,
+        "y2": 328,
+        "label": "hook"
+      }
+    ]
+  },
+  {
+    "image_input_path": "/data/jj/proj/sam3_web/fastapi/test_data/0099_t50_VID52_001883.png",
+    "original_path": "/data/tos_copy/cholecinstanceseg/train/VID52_t50_full/img_dir/t50_VID52_001883.png",
+    "bboxes": [
+      {
+        "x1": 347,
+        "y1": 3,
+        "x2": 684,
+        "y2": 297,
+        "label": "grasper"
+      },
+      {
+        "x1": 609,
+        "y1": 395,
+        "x2": 752,
+        "y2": 426,
+        "label": "irrigator"
+      }
+    ]
+  }
+]
