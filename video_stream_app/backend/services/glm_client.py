@@ -1138,15 +1138,83 @@ Output only the summary, no additional formatting."""
                 max_tokens=max_tokens
             )
         
+        # 后处理：过滤思考过程，只提取结构化输出
+        raw_text = result.get("text", "")
+        cleaned_text = self._extract_structured_output(raw_text)
+        
         return {
             "success": result.get("success", False),
-            "summary": result.get("text", ""),
+            "summary": cleaned_text,
             "model": self.model_name,
             "tokens_used": result.get("tokens_used", 0),
             "frame_count": len(frame_analyses),
             "consistency_analysis": consistency_analysis,
             "error": result.get("error")
         }
+    
+    def _extract_structured_output(self, text: str) -> str:
+        """
+        从GLM输出中提取结构化内容，过滤掉思考过程
+        
+        期望格式：
+        【阶段】xxx
+        【操作】xxx
+        【工具】xxx
+        【CVS】xxx
+        """
+        import re
+        
+        if not text:
+            return text
+        
+        # 尝试提取【阶段】【操作】【工具】【CVS】四个字段
+        patterns = {
+            "阶段": r"【阶段】\s*(.+?)(?=【|$)",
+            "操作": r"【操作】\s*(.+?)(?=【|$)",
+            "工具": r"【工具】\s*(.+?)(?=【|$)",
+            "CVS": r"【CVS】\s*(.+?)(?=【|$)"
+        }
+        
+        extracted = {}
+        for key, pattern in patterns.items():
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                # 清理提取的内容，去除多余空白
+                content = match.group(1).strip()
+                # 只取第一行（避免混入其他内容）
+                content = content.split('\n')[0].strip()
+                extracted[key] = content
+        
+        # 如果成功提取了至少阶段和操作，构建干净的输出
+        if "阶段" in extracted and "操作" in extracted:
+            clean_output = f"【阶段】{extracted.get('阶段', '')}\n"
+            clean_output += f"【操作】{extracted.get('操作', '')}\n"
+            clean_output += f"【工具】{extracted.get('工具', '未识别')}\n"
+            clean_output += f"【CVS】{extracted.get('CVS', '无')}"
+            
+            logger.debug(f"[GLMClient] Extracted structured output from {len(text)} chars")
+            return clean_output
+        
+        # 如果无法提取结构化内容，检查是否以思考过程开头
+        thinking_prefixes = [
+            "用户现在需要", "首先", "根据", "我需要", "让我", 
+            "观察图片", "分析", "现在", "接下来"
+        ]
+        
+        for prefix in thinking_prefixes:
+            if text.strip().startswith(prefix):
+                # 尝试找到【阶段】开始的位置
+                stage_start = text.find("【阶段】")
+                if stage_start != -1:
+                    # 从【阶段】开始截取
+                    return self._extract_structured_output(text[stage_start:])
+                else:
+                    # 无法找到结构化内容，返回错误提示
+                    logger.warning(f"[GLMClient] Could not extract structured output, text starts with thinking")
+                    return "【阶段】未识别\n【操作】分析输出格式错误\n【工具】未识别\n【CVS】无"
+        
+        # 返回原始文本（可能已经是正确格式）
+        return text
     
     def _build_internal_context(
         self,
