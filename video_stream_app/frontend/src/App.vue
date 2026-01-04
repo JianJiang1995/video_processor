@@ -778,9 +778,9 @@ const startStreamEndCheck = () => {
       
       if (response.ok) {
         const info = await response.json()
-        // If no active streams and we've been playing for a while, video has ended
-        if (info.active_streams === 0 && currentTime.value > 5) {
-          console.log('[Stream] Video stream has ended')
+        // Check if video_ended flag is set by the server
+        if (info.video_ended && currentTime.value > 5) {
+          console.log('[Stream] Video stream has ended (video_ended flag)')
           handleStreamEnded()
         }
       }

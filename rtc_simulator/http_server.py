@@ -69,6 +69,8 @@ class HTTPStreamServer:
         
         # Active stream connections
         self.active_streams = 0
+        # Track if video playback has ended (for non-loop mode)
+        self.video_ended = False
     
     def _setup_routes(self):
         """Setup HTTP routes"""
@@ -635,6 +637,9 @@ class HTTPStreamServer:
         await response.prepare(request)
         
         self.active_streams += 1
+        # Reset video_ended when first stream starts
+        if self.active_streams == 1:
+            self.video_ended = False
         logger.info(f"Stream started (active: {self.active_streams})")
         
         # Create video source for this stream
@@ -656,6 +661,7 @@ class HTTPStreamServer:
             
             # Video ended naturally (not looping)
             video_ended = True
+            self.video_ended = True  # Mark that video has ended for /info endpoint
             logger.info("Video playback completed, sending end frame")
             
             # Create an "end frame" with text - a dark frame indicating video ended
@@ -752,7 +758,10 @@ class HTTPStreamServer:
             "duration": info.duration,
             "total_frames": info.total_frames,
             "active_streams": self.active_streams,
+            "video_ended": self.video_ended,  # True if video playback completed (non-loop mode)
             "stream_url": f"http://localhost:{self.port}/stream"
+        }, headers={
+            "Access-Control-Allow-Origin": "*"
         })
     
     async def health(self, request: web.Request) -> web.Response:
