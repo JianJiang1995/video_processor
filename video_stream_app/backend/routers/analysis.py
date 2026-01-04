@@ -818,15 +818,18 @@ async def analyze_window_with_vlm(
     model_used = "VLM"
     
     try:
-        # Try GLM-4.6V-Flash first (纯文本输入，全中文输出)
+        # Try GLM-4.6V-Flash first (多模态：图片 + R1分析结果)
         glm_summarizer = get_glm_summarizer()
         is_healthy = await glm_summarizer.check_health()
         
         if is_healthy:
-            # Integrate using GLM (按照temporal_analyze.py的逻辑)
+            # 提取窗口帧图片用于GLM多模态验证
+            window_images = [frame.image for frame in window.frames if frame.image is not None]
+            
+            # Integrate using GLM (多模态分析)
             result = await glm_summarizer.integrate_analysis_results(
                 frame_analyses=frame_analyses,
-                images=None,  # GLM只使用文本输入
+                images=window_images,  # 传入图片用于多模态验证
                 system_prompt=None  # 使用内置的全中文提示词
             )
             
@@ -2093,9 +2096,11 @@ async def glm_summarization_task(
                         meta = window_metadata.get(window_id, {})
                         
                         try:
+                            # 尝试获取窗口图片用于多模态验证
+                            window_images = window_data.get("images", None)
                             result = await glm_client.integrate_analysis_results(
                                 frame_analyses=window_data["frame_analyses"],
-                                images=None
+                                images=window_images  # 传入图片（如果有）
                             )
                             summary_text = result.get("summary", "") if result.get("success") else "[分析出错]"
                         except Exception as inner_e:
@@ -2835,11 +2840,13 @@ async def integrate_analysis_results(
             if not is_healthy:
                 raise HTTPException(503, "GLM服务不可用")
             
-            # Integrate using GLM (纯文本输入，全中文输出)
-            # 按照temporal_analyze.py的逻辑
+            # 提取窗口帧图片用于GLM多模态验证
+            window_images = [frame.image for frame in window.frames if frame.image is not None]
+            
+            # Integrate using GLM (多模态：图片 + R1分析结果)
             result = await glm_summarizer.integrate_analysis_results(
                 frame_analyses=frame_analyses,
-                images=None,  # GLM只使用文本输入
+                images=window_images,  # 传入图片用于多模态验证
                 system_prompt=None  # 使用内置的全中文提示词
             )
             
@@ -2847,7 +2854,7 @@ async def integrate_analysis_results(
                 raise HTTPException(500, f"GLM整合失败: {result.get('error', '未知错误')}")
             
             summary_text = result["summary"]
-            model_used = "GLM-4.6V-Flash"
+            model_used = "GLM-4.6V-Flash (多模态)"
             
         except HTTPException:
             raise
