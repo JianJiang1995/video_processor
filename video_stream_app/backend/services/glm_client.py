@@ -1043,12 +1043,11 @@ Output only the summary, no additional formatting."""
     ) -> Dict[str, Any]:
         """
         整合多帧分析结果为连贯的叙事摘要
-        按照temporal_analyze.py和video_analyze_prompt.txt的逻辑
-        只使用文本输入，输出纯中文叙事
+        支持多模态输入：图片 + R1分析结果
         
         参数:
             frame_analyses: 帧分析结果列表，包含阶段、动作、工具
-            images: 忽略此参数，只使用纯文本
+            images: 帧图片列表，用于GLM多模态验证（如果R1分析不准确，以图片实际内容为准）
             system_prompt: 忽略此参数，使用内置提示词
             temperature: 采样温度
             max_tokens: 最大生成长度
@@ -1101,21 +1100,43 @@ Output only the summary, no additional formatting."""
             prompt_parts.append("")
         
         # 添加当前窗口的帧分析数据
-        prompt_parts.append("【当前窗口帧数据】")
+        prompt_parts.append("【R1分析结果】（可能有误，请结合图片验证）")
         prompt_parts.append(internal_context)
         
         prompt_parts.append("")
-        prompt_parts.append("请综合上述信息，按格式输出当前窗口的分析结果：")
+        prompt_parts.append("请观察图片实际内容，如果R1分析与图片不符则以图片为准，按格式输出分析结果：")
         
         prompt_text = "\n".join(prompt_parts)
         
-        # 只使用纯文本聊天
-        result = await self.chat(
-            message=prompt_text,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
+        # 判断是否使用多模态（图片+文本）还是纯文本
+        if images and len(images) > 0:
+            # 使用多模态分析：图片 + R1分析结果
+            # 采样图片，最多使用6张（GLM限制）
+            max_images = 6
+            if len(images) > max_images:
+                step = len(images) // max_images
+                sampled_images = [images[i] for i in range(0, len(images), step)][:max_images]
+            else:
+                sampled_images = images
+            
+            logger.info(f"[GLMClient] Using multimodal analysis with {len(sampled_images)} images")
+            
+            result = await self.analyze_multiple_images(
+                images=sampled_images,
+                question=prompt_text,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+        else:
+            # 纯文本分析（没有图片时的fallback）
+            logger.info("[GLMClient] Using text-only analysis (no images provided)")
+            result = await self.chat(
+                message=prompt_text,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
         
         return {
             "success": result.get("success", False),

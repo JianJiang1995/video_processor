@@ -2214,7 +2214,7 @@ async def process_video_surgr1_glm_task(
                 ]
             
             # ==================================================================
-            # Step 2: GLM - Summarize window (纯文本输入，全中文输出)
+            # Step 2: GLM - Summarize window (多模态：图片 + R1分析结果)
             # ==================================================================
             try:
                 # 获取上一窗口的摘要作为历史上下文，保持阶段连续性
@@ -2222,11 +2222,14 @@ async def process_video_surgr1_glm_task(
                 history_manager = get_history_manager(session_id)
                 history_context = await history_manager.build_history_context()
                 
-                # GLM只使用文本输入，完全按照temporal_analyze.py的逻辑
-                # 输出强制为中文，无需额外处理
+                # 提取窗口帧图片用于GLM多模态验证
+                window_images = [frame.image for frame in window.frames if frame.image is not None]
+                
+                # GLM多模态分析：图片 + R1分析结果
+                # 如果R1分析与图片不符，以图片实际内容为准
                 result = await glm_client.integrate_analysis_results(
                     frame_analyses=frame_analyses,
-                    images=None,  # GLM只使用文本输入
+                    images=window_images,  # 传入图片用于多模态验证
                     system_prompt=None,  # 使用内置的全中文提示词
                     temperature=0.7,
                     max_tokens=1500,
