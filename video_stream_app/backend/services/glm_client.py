@@ -402,13 +402,21 @@ def get_background_knowledge() -> str:
     return _background_knowledge
 
 
-def get_glm_system_prompt() -> str:
+def get_glm_system_prompt(reload: bool = False) -> str:
     """
     从background.txt中提取GLM窗口分析的system prompt
     
     在 [GLM_SYSTEM_PROMPT_START] 和 [GLM_SYSTEM_PROMPT_END] 之间的内容
+    
+    Args:
+        reload: 是否强制重新加载（用于开发调试）
     """
-    global _glm_system_prompt
+    global _glm_system_prompt, _background_knowledge
+    
+    if reload:
+        _glm_system_prompt = None
+        _background_knowledge = None
+    
     if _glm_system_prompt is None:
         background = get_background_knowledge()
         if background:
@@ -1058,10 +1066,11 @@ Output only the summary, no additional formatting."""
         internal_context = self._build_internal_context(frame_analyses, consistency_analysis)
         
         # 从background.txt加载system prompt，确保阶段连续性
-        loaded_prompt = get_glm_system_prompt()
+        # 每次都尝试重新加载以获取最新的prompt（开发阶段方便调试）
+        loaded_prompt = get_glm_system_prompt(reload=True)
         if loaded_prompt:
             system_prompt = loaded_prompt
-            logger.debug(f"[GLMClient] Using loaded system prompt from background.txt")
+            logger.debug(f"[GLMClient] Using loaded system prompt from background.txt ({len(loaded_prompt)} chars)")
         else:
             # 如果加载失败，使用简化的默认prompt
             system_prompt = """你是腹腔镜胆囊切除术分析专家。直接描述观察到的手术情况。
