@@ -627,7 +627,7 @@ const startAnalysis = async () => {
     const response = await axios.post('/api/analysis/start-glm-summarization', {
       session_id: currentSession.value.session_id,
       use_chinese: true,  // Use Chinese for summaries
-      use_glm_multimodal: false  // Text-only mode for faster processing
+      use_glm_multimodal: true  // Multimodal mode: send images to GLM for verification
     }, {
       signal: getSessionSignal()
     })
