@@ -1167,6 +1167,52 @@ Output only the summary, no additional formatting."""
         if not text:
             return text
         
+        # 定义允许的阶段名称
+        valid_phases = ["准备", "肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "清洁凝血", "胆囊取出"]
+        
+        # 思考过程的标志词
+        thinking_markers = [
+            "。现在", "不对", "可能", "应该", "假设", "但", "如果", "那么", 
+            "需要", "考虑", "或者", "这里", "看起来", "所以"
+        ]
+        
+        def clean_content(content: str, field_name: str) -> str:
+            """清理字段内容，去除思考过程"""
+            if not content:
+                return content
+            
+            # 去除首尾空白
+            content = content.strip()
+            
+            # 对于阶段字段，只保留有效阶段名
+            if field_name == "阶段":
+                for phase in valid_phases:
+                    if phase in content:
+                        return phase
+                # 如果找不到有效阶段，检查是否包含思考内容
+                for marker in thinking_markers:
+                    if marker in content:
+                        return "准备"  # 默认返回准备
+                # 只取前10个字符，避免太长
+                return content[:10] if len(content) > 10 else content
+            
+            # 对于其他字段，在思考标志处截断
+            for marker in thinking_markers:
+                if marker in content:
+                    idx = content.find(marker)
+                    if idx > 0:
+                        content = content[:idx].strip()
+                        break
+            
+            # 只取第一行
+            content = content.split('\n')[0].strip()
+            
+            # 去除尾部的标点（如果后面有句子）
+            if content.endswith("，") or content.endswith("。"):
+                content = content[:-1]
+            
+            return content
+        
         # 尝试提取【阶段】【操作】【工具】【CVS】四个字段
         patterns = {
             "阶段": r"【阶段】\s*(.+?)(?=【|$)",
@@ -1179,15 +1225,23 @@ Output only the summary, no additional formatting."""
         for key, pattern in patterns.items():
             match = re.search(pattern, text, re.DOTALL)
             if match:
-                # 清理提取的内容，去除多余空白
                 content = match.group(1).strip()
-                # 只取第一行（避免混入其他内容）
-                content = content.split('\n')[0].strip()
-                extracted[key] = content
+                # 清理内容
+                extracted[key] = clean_content(content, key)
         
         # 如果成功提取了至少阶段和操作，构建干净的输出
         if "阶段" in extracted and "操作" in extracted:
-            clean_output = f"【阶段】{extracted.get('阶段', '')}\n"
+            phase = extracted.get('阶段', '准备')
+            # 确保阶段是有效值
+            if phase not in valid_phases:
+                for p in valid_phases:
+                    if p in phase:
+                        phase = p
+                        break
+                else:
+                    phase = "准备"
+            
+            clean_output = f"【阶段】{phase}\n"
             clean_output += f"【操作】{extracted.get('操作', '')}\n"
             clean_output += f"【工具】{extracted.get('工具', '未识别')}\n"
             clean_output += f"【CVS】{extracted.get('CVS', '无')}"
@@ -1198,7 +1252,7 @@ Output only the summary, no additional formatting."""
         # 如果无法提取结构化内容，检查是否以思考过程开头
         thinking_prefixes = [
             "用户现在需要", "首先", "根据", "我需要", "让我", 
-            "观察图片", "分析", "现在", "接下来"
+            "观察图片", "分析", "现在", "接下来", "好的", "嗯"
         ]
         
         for prefix in thinking_prefixes:
@@ -1211,10 +1265,15 @@ Output only the summary, no additional formatting."""
                 else:
                     # 无法找到结构化内容，返回错误提示
                     logger.warning(f"[GLMClient] Could not extract structured output, text starts with thinking")
-                    return "【阶段】未识别\n【操作】分析输出格式错误\n【工具】未识别\n【CVS】无"
+                    return "【阶段】准备\n【操作】分析中\n【工具】未识别\n【CVS】无"
         
-        # 返回原始文本（可能已经是正确格式）
-        return text
+        # 如果文本包含【阶段】但不在开头，尝试提取
+        stage_start = text.find("【阶段】")
+        if stage_start > 0:
+            return self._extract_structured_output(text[stage_start:])
+        
+        # 返回默认值
+        return "【阶段】准备\n【操作】分析中\n【工具】未识别\n【CVS】无"
     
     def _build_internal_context(
         self,
