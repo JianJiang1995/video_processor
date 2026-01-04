@@ -798,7 +798,17 @@ const handleStreamEnded = () => {
   // Stop the timer
   stopStreamTimer()
   
-  console.log(`[Stream] Stopped at ${currentTime.value.toFixed(1)}s`)
+  // Stop SurgR1 continuous processing
+  if (currentSession.value) {
+    stopSurgR1Continuous(currentSession.value.session_id)
+  }
+  
+  // Stop GLM analysis
+  if (isProcessing.value) {
+    stopAnalysis()
+  }
+  
+  console.log(`[Stream] Stopped at ${currentTime.value.toFixed(1)}s - Analysis stopped`)
 }
 
 const stopStreamTimer = () => {
