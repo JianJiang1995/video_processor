@@ -53,6 +53,7 @@
             :showSam3="showSam3"
             :sam3Available="sam3Status.available"
             :loopWindow="loopWindow"
+            :streamEnded="streamEnded"
             @timeupdate="handleTimeUpdate"
             @play="handlePlay"
             @pause="handlePause"
@@ -191,7 +192,9 @@ const surgr1ProcessingStatus = ref({ running: false, framesAnalyzed: 0 })
 // Stream polling and timing
 let streamPollingInterval = null
 let streamTimerInterval = null
+let streamEndCheckInterval = null  // Check if stream has ended
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
+const streamEnded = ref(false)  // Whether the video stream has ended
 
 // Global AbortController for session-related requests
 // When goHome is called, this will abort all pending requests
@@ -352,6 +355,7 @@ const goHome = () => {
   userSelectedWindow.value = false
   loopWindow.value = null
   frameAnalysisPopup.value = { visible: false, data: null, isLoading: false, position: { x: 0, y: 0 } }
+  streamEnded.value = false
   
   console.log('[goHome] Cleanup complete')
 }
@@ -728,8 +732,11 @@ const startStreamTimer = () => {
   // Clear any existing timer
   stopStreamTimer()
   
+  // Reset stream ended state
+  streamEnded.value = false
+  
   streamTimerInterval = setInterval(() => {
-    if (!isPlaying.value || !streamStartTime.value) return
+    if (!isPlaying.value || !streamStartTime.value || streamEnded.value) return
     
     // Calculate elapsed time since stream started
     const elapsed = (Date.now() - streamStartTime.value) / 1000
@@ -741,6 +748,57 @@ const startStreamTimer = () => {
     // Also update duration for display purposes
     duration.value = safeElapsed
   }, 100)  // Update every 100ms for smooth display
+  
+  // Start checking if stream has ended (check every 2 seconds)
+  startStreamEndCheck()
+}
+
+// Check if the video stream has ended by polling the stream server
+const startStreamEndCheck = () => {
+  if (streamEndCheckInterval) {
+    clearInterval(streamEndCheckInterval)
+  }
+  
+  streamEndCheckInterval = setInterval(async () => {
+    if (!currentSession.value || streamEnded.value) return
+    
+    try {
+      // Get the stream URL from session
+      const streamUrl = currentSession.value.video_path
+      if (!streamUrl || !streamUrl.startsWith('http')) return
+      
+      // Extract base URL (e.g., http://localhost:9001 from http://localhost:9001/stream)
+      const urlObj = new URL(streamUrl)
+      const baseUrl = `${urlObj.protocol}//${urlObj.host}`
+      
+      // Check stream info
+      const response = await fetch(`${baseUrl}/info`, { 
+        signal: AbortSignal.timeout(2000) 
+      })
+      
+      if (response.ok) {
+        const info = await response.json()
+        // If no active streams and we've been playing for a while, video has ended
+        if (info.active_streams === 0 && currentTime.value > 5) {
+          console.log('[Stream] Video stream has ended')
+          handleStreamEnded()
+        }
+      }
+    } catch (e) {
+      // Ignore timeout/network errors, just means stream server may be unavailable
+    }
+  }, 2000)  // Check every 2 seconds
+}
+
+// Handle when stream ends
+const handleStreamEnded = () => {
+  streamEnded.value = true
+  isPlaying.value = false
+  
+  // Stop the timer
+  stopStreamTimer()
+  
+  console.log(`[Stream] Stopped at ${currentTime.value.toFixed(1)}s`)
 }
 
 const stopStreamTimer = () => {
@@ -773,6 +831,10 @@ const stopStreamPolling = () => {
   if (streamPollingInterval) {
     clearInterval(streamPollingInterval)
     streamPollingInterval = null
+  }
+  if (streamEndCheckInterval) {
+    clearInterval(streamEndCheckInterval)
+    streamEndCheckInterval = null
   }
 }
 

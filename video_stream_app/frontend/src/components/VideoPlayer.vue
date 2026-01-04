@@ -128,10 +128,10 @@
         <div class="loading-text">{{ mode === 'stream' ? '连接视频流...' : '加载视频...' }}</div>
       </div>
       
-      <!-- Live Indicator -->
-      <div v-if="session && mode === 'stream'" class="live-indicator">
-        <span class="live-dot"></span>
-        LIVE
+      <!-- Live/Ended Indicator -->
+      <div v-if="session && mode === 'stream'" class="live-indicator" :class="{ 'ended': streamEnded }">
+        <span class="live-dot" :class="{ 'ended': streamEnded }"></span>
+        {{ streamEnded ? 'ENDED' : 'LIVE' }}
       </div>
       
       <!-- Current Time Overlay -->
@@ -186,6 +186,10 @@ const props = defineProps({
   loopWindow: {
     type: Object,
     default: null  // { window_id, start_time, end_time }
+  },
+  streamEnded: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -858,6 +862,15 @@ onUnmounted(() => {
   background: white;
   border-radius: 50%;
   animation: blink 1s ease-in-out infinite;
+}
+
+.live-dot.ended {
+  animation: none;
+  opacity: 0.7;
+}
+
+.live-indicator.ended {
+  background: rgba(100, 100, 100, 0.8);
 }
 
 @keyframes blink {
