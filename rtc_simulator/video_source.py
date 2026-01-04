@@ -42,7 +42,7 @@ class VideoSource:
     def __init__(
         self, 
         video_path: str, 
-        loop: bool = True,
+        loop: bool = False,  # Changed default to False - video should stop at end
         fps_override: Optional[float] = None,
         resize: Optional[Tuple[int, int]] = None
     ):
@@ -111,6 +111,7 @@ class VideoSource:
                         return None
                     logger.debug("Video looped")
                 else:
+                    logger.info("Video reached end, stopping playback")
                     return None
             
             self._frame_idx += 1

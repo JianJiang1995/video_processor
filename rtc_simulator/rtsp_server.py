@@ -38,7 +38,7 @@ class RTSPServer:
         video_path: str,
         port: int = 8554,
         stream_path: str = "/stream",
-        loop: bool = True
+        loop: bool = False  # Default: stop at video end
     ):
         self.video_path = video_path
         self.port = port

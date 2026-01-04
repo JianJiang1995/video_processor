@@ -52,7 +52,7 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
     
     kind = "video"
     
-    def __init__(self, video_path: str, loop: bool = True, fps_override: Optional[float] = None):
+    def __init__(self, video_path: str, loop: bool = False, fps_override: Optional[float] = None):
         if AIORTC_AVAILABLE:
             super().__init__()
         
@@ -718,7 +718,7 @@ async def offer(request: web.Request) -> web.Response:
             pcs.discard(pc)
     
     # Add video track
-    track = VideoFileTrack(video_path, loop=True)
+    track = VideoFileTrack(video_path, loop=False)  # Stop at video end
     pc.addTrack(track)
     
     await pc.setRemoteDescription(offer_sdp)

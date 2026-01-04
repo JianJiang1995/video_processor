@@ -55,7 +55,7 @@ class HTTPStreamServer:
         port: int = 8080,
         host: str = "0.0.0.0",
         jpeg_quality: int = 80,
-        loop: bool = True
+        loop: bool = False  # Default: stop at video end
     ):
         self.video_path = video_path
         self.port = port
@@ -639,6 +639,7 @@ class HTTPStreamServer:
         
         # Create video source for this stream
         source = VideoSource(self.video_path, loop=self.loop)
+        video_ended = False
         
         try:
             async for frame in source.frames_async(realtime=True):
@@ -652,6 +653,29 @@ class HTTPStreamServer:
                     b"Content-Length: " + str(len(jpeg_data)).encode() + b"\r\n"
                     b"\r\n" + jpeg_data + b"\r\n"
                 )
+            
+            # Video ended naturally (not looping)
+            video_ended = True
+            logger.info("Video playback completed, sending end frame")
+            
+            # Create an "end frame" with text - a dark frame indicating video ended
+            end_frame = self._create_end_frame(source.width, source.height)
+            jpeg_data = encode_frame_jpeg(end_frame, self.jpeg_quality)
+            
+            # Send the end frame
+            await response.write(
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(jpeg_data)).encode() + b"\r\n"
+                b"\r\n" + jpeg_data + b"\r\n"
+            )
+            
+            # Send a special header to signal end (some clients may read this)
+            await response.write(
+                b"--frame\r\n"
+                b"X-Stream-Status: ended\r\n"
+                b"\r\n"
+            )
                 
         except asyncio.CancelledError:
             pass
@@ -660,9 +684,36 @@ class HTTPStreamServer:
         finally:
             source.close()
             self.active_streams -= 1
-            logger.info(f"Stream ended (active: {self.active_streams})")
+            status = "completed" if video_ended else "disconnected"
+            logger.info(f"Stream ended ({status}, active: {self.active_streams})")
         
         return response
+    
+    def _create_end_frame(self, width: int, height: int):
+        """Create a dark frame with 'Video Ended' text"""
+        import cv2
+        import numpy as np
+        
+        # Create dark gray background
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        frame[:] = (30, 30, 30)  # Dark gray BGR
+        
+        # Add "Video Ended" text
+        text = "VIDEO ENDED"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1.5
+        thickness = 2
+        
+        # Get text size to center it
+        (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        x = (width - text_width) // 2
+        y = (height + text_height) // 2
+        
+        # Draw text with outline for visibility
+        cv2.putText(frame, text, (x, y), font, font_scale, (100, 100, 100), thickness + 2)  # Outline
+        cv2.putText(frame, text, (x, y), font, font_scale, (200, 200, 200), thickness)  # Text
+        
+        return frame
     
     async def snapshot(self, request: web.Request) -> web.Response:
         """Return a single JPEG frame"""
@@ -865,9 +916,9 @@ def main():
         help="JPEG quality 1-100 (default: 80)"
     )
     parser.add_argument(
-        "--no-loop",
+        "--loop",
         action="store_true",
-        help="Don't loop the video"
+        help="Loop the video (default: stop at end)"
     )
     
     args = parser.parse_args()
@@ -881,7 +932,7 @@ def main():
         port=args.port,
         host=args.host,
         jpeg_quality=args.quality,
-        loop=not args.no_loop
+        loop=args.loop  # Default is False (stop at end), use --loop to enable looping
     )
     
     try:
