@@ -279,6 +279,8 @@ class AnalyzeFramesBatchRequest(BaseModel):
     """Request for batch frame analysis from frontend queue"""
     session_id: str
     frames: List[FrameData]
+    enable_glm_verification: bool = False  # 启用GLM验证R1分析结果
+    glm_verification_async: bool = True    # GLM验证是否异步执行（不阻塞返回）
 
 
 @router.post("/analyze-frames-batch")
@@ -360,25 +362,341 @@ async def analyze_frames_batch(
         
         logger.info(f"Batch analyzed {len(results)} frames for session {request.session_id}")
         
-        return {
+        # 准备返回结果
+        response_results = [
+            {
+                "frame_idx": r.get("frame_idx"),
+                "timestamp": r.get("timestamp"),
+                "tool_localization": r.get("tools", ""),
+                "surgical_action": r.get("action", ""),
+                "surgical_phase": r.get("phase", ""),
+                "window_id": int(r.get("timestamp", 0) / settings.WINDOW_DURATION)
+            }
+            for r in results
+        ]
+        
+        # 如果启用GLM验证，提交验证任务
+        glm_verification_task_ids = None
+        if request.enable_glm_verification and batch_frames:
+            try:
+                from ..services.glm_multimodal_verifier import get_glm_verifier
+                verifier = await get_glm_verifier()
+                
+                # 准备验证数据（将R1结果与图像配对）
+                frames_for_verification = []
+                for i, bf in enumerate(batch_frames):
+                    r1_result = results[i] if i < len(results) else {}
+                    frames_for_verification.append({
+                        "image": bf["image"],
+                        "frame_idx": bf["frame_idx"],
+                        "timestamp": bf["timestamp"],
+                        "r1_analysis": {
+                            "phase": r1_result.get("phase", ""),
+                            "action": r1_result.get("action", ""),
+                            "tools": r1_result.get("tools", "")
+                        }
+                    })
+                
+                # 提交GLM验证任务
+                task_ids = await verifier.submit_batch(
+                    session_id=request.session_id,
+                    frames_data=frames_for_verification
+                )
+                
+                if request.glm_verification_async:
+                    # 异步模式：立即返回，验证在后台进行
+                    glm_verification_task_ids = task_ids
+                    logger.info(f"GLM verification submitted async: {len(task_ids)} tasks")
+                else:
+                    # 同步模式：等待验证结果
+                    verification_results = await verifier.wait_for_batch(task_ids)
+                    
+                    # 用验证结果更新返回数据
+                    for i, vr in enumerate(verification_results):
+                        if i < len(response_results) and isinstance(vr, dict) and not vr.get("error"):
+                            response_results[i]["glm_verified"] = True
+                            response_results[i]["glm_verification"] = vr
+                            
+                            # 如果GLM修正了R1的结果，使用修正后的值
+                            if not vr.get("r1_correct", True):
+                                response_results[i]["surgical_phase"] = vr.get("verified_phase", response_results[i]["surgical_phase"])
+                                response_results[i]["surgical_action"] = vr.get("verified_action", response_results[i]["surgical_action"])
+                                response_results[i]["tool_localization"] = vr.get("verified_tools", response_results[i]["tool_localization"])
+                                response_results[i]["glm_corrected"] = True
+                    
+                    logger.info(f"GLM verification completed: {len(verification_results)} frames verified")
+                    
+            except Exception as glm_err:
+                logger.warning(f"GLM verification failed (R1 results still valid): {glm_err}")
+        
+        response = {
             "success": True,
-            "results": [
-                {
-                    "frame_idx": r.get("frame_idx"),
-                    "timestamp": r.get("timestamp"),
-                    "tool_localization": r.get("tools", ""),
-                    "surgical_action": r.get("action", ""),
-                    "surgical_phase": r.get("phase", ""),
-                    "window_id": int(r.get("timestamp", 0) / settings.WINDOW_DURATION)
-                }
-                for r in results
-            ],
+            "results": response_results,
             "batch_size": len(results)
         }
+        
+        if glm_verification_task_ids:
+            response["glm_verification_pending"] = True
+            response["glm_verification_task_ids"] = glm_verification_task_ids
+        
+        return response
         
     except Exception as e:
         logger.error(f"Batch frame analysis failed: {e}")
         raise HTTPException(500, f"Batch analysis failed: {str(e)}")
+
+
+# ==================== GLM Multimodal Verification ====================
+
+class FrameWithR1Analysis(BaseModel):
+    """Frame data with R1 analysis for verification"""
+    frame_idx: int
+    timestamp: float
+    image_base64: str  # Base64 encoded image
+    r1_phase: str = ""
+    r1_action: str = ""
+    r1_tools: str = ""
+
+
+class GLMVerifyRequest(BaseModel):
+    """Request for GLM multimodal verification"""
+    session_id: str
+    frames: List[FrameWithR1Analysis]
+    wait_for_results: bool = True  # If False, returns task IDs immediately
+
+
+class GLMVerifyBatchConfig(BaseModel):
+    """Configuration for GLM verification batch processing"""
+    max_batch_size: int = 8
+    batch_timeout: float = 0.5
+    max_images_per_request: int = 6
+
+
+@router.post("/glm-verify")
+async def glm_verify_frames(
+    request: GLMVerifyRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    使用GLM验证R1的分析结果
+    
+    GLM会将图像和R1的分析结果一起按时序分析：
+    - 检查R1的阶段/动作/工具识别是否与图像实际内容一致
+    - 如果R1分析错误，GLM会根据实际图像进行修正
+    - 支持动态批处理以提高效率
+    
+    Args:
+        request: 包含session_id、帧数据（带R1分析）的请求
+    
+    Returns:
+        验证结果列表，每帧包含：
+        - r1_correct: R1分析是否正确
+        - verified_phase/action/tools: 验证后的结果
+        - correction_notes: 修正说明（如有）
+    """
+    from ..services.glm_multimodal_verifier import get_glm_verifier, verify_frames_with_r1
+    
+    session = get_video_session(db, request.session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    if not request.frames:
+        return {"success": True, "results": [], "message": "No frames to verify"}
+    
+    try:
+        # 准备帧数据
+        frames_data = []
+        for frame in request.frames:
+            # 解码base64图像
+            image_bytes = base64.b64decode(frame.image_base64)
+            image = Image.open(BytesIO(image_bytes))
+            
+            frames_data.append({
+                "image": image,
+                "frame_idx": frame.frame_idx,
+                "timestamp": frame.timestamp,
+                "r1_analysis": {
+                    "phase": frame.r1_phase,
+                    "action": frame.r1_action,
+                    "tools": frame.r1_tools
+                }
+            })
+        
+        # 执行验证
+        if request.wait_for_results:
+            results = await verify_frames_with_r1(
+                session_id=request.session_id,
+                frames=frames_data,
+                wait_for_results=True
+            )
+            
+            return {
+                "success": True,
+                "results": results,
+                "frame_count": len(results),
+                "message": f"Verified {len(results)} frames with GLM"
+            }
+        else:
+            # 返回任务ID，客户端可稍后查询
+            task_ids = await verify_frames_with_r1(
+                session_id=request.session_id,
+                frames=frames_data,
+                wait_for_results=False
+            )
+            
+            return {
+                "success": True,
+                "task_ids": task_ids,
+                "message": f"Submitted {len(task_ids)} frames for verification"
+            }
+        
+    except Exception as e:
+        logger.error(f"GLM verification failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(500, f"GLM verification failed: {str(e)}")
+
+
+@router.get("/glm-verify/stats")
+async def get_glm_verify_stats():
+    """获取GLM验证器统计信息"""
+    from ..services.glm_multimodal_verifier import get_glm_verifier
+    
+    try:
+        verifier = await get_glm_verifier()
+        return {
+            "success": True,
+            "stats": verifier.get_stats()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get GLM verifier stats: {e}")
+        raise HTTPException(500, str(e))
+
+
+@router.post("/glm-verify/configure")
+async def configure_glm_verifier(config: GLMVerifyBatchConfig):
+    """配置GLM验证器的批处理参数"""
+    from ..services.glm_multimodal_verifier import get_glm_verifier, BatchConfig
+    
+    try:
+        verifier = await get_glm_verifier()
+        
+        # 更新配置
+        verifier.batch_config.max_batch_size = config.max_batch_size
+        verifier.batch_config.batch_timeout = config.batch_timeout
+        verifier.batch_config.max_images_per_request = config.max_images_per_request
+        
+        logger.info(f"GLM verifier config updated: batch_size={config.max_batch_size}, timeout={config.batch_timeout}")
+        
+        return {
+            "success": True,
+            "config": {
+                "max_batch_size": config.max_batch_size,
+                "batch_timeout": config.batch_timeout,
+                "max_images_per_request": config.max_images_per_request
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to configure GLM verifier: {e}")
+        raise HTTPException(500, str(e))
+
+
+class GLMVerifyResultsRequest(BaseModel):
+    """Request for querying verification results by task IDs"""
+    task_ids: List[str]
+    timeout: float = 30.0
+
+
+@router.post("/glm-verify/results")
+async def get_glm_verify_results(request: GLMVerifyResultsRequest):
+    """
+    查询GLM验证结果
+    
+    用于异步验证模式：先提交任务，稍后查询结果
+    """
+    from ..services.glm_multimodal_verifier import get_glm_verifier, VerificationStatus
+    
+    try:
+        verifier = await get_glm_verifier()
+        
+        results = []
+        pending_count = 0
+        
+        for task_id in request.task_ids:
+            task = verifier.get_task_status(task_id)
+            
+            if task is None:
+                results.append({
+                    "task_id": task_id,
+                    "status": "not_found",
+                    "error": "Task not found"
+                })
+            elif task.status == VerificationStatus.COMPLETED:
+                results.append({
+                    "task_id": task_id,
+                    "status": "completed",
+                    "frame_idx": task.frame_idx,
+                    "timestamp": task.timestamp,
+                    "result": task.result
+                })
+            elif task.status == VerificationStatus.FAILED:
+                results.append({
+                    "task_id": task_id,
+                    "status": "failed",
+                    "frame_idx": task.frame_idx,
+                    "timestamp": task.timestamp,
+                    "error": task.error
+                })
+            else:
+                # Still processing
+                pending_count += 1
+                results.append({
+                    "task_id": task_id,
+                    "status": task.status.value,
+                    "frame_idx": task.frame_idx,
+                    "timestamp": task.timestamp
+                })
+        
+        return {
+            "success": True,
+            "results": results,
+            "total": len(request.task_ids),
+            "completed": len([r for r in results if r.get("status") == "completed"]),
+            "pending": pending_count,
+            "failed": len([r for r in results if r.get("status") == "failed"])
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get GLM verify results: {e}")
+        raise HTTPException(500, str(e))
+
+
+@router.post("/glm-verify/wait")
+async def wait_glm_verify_results(request: GLMVerifyResultsRequest):
+    """
+    等待并获取GLM验证结果
+    
+    会阻塞直到所有任务完成或超时
+    """
+    from ..services.glm_multimodal_verifier import get_glm_verifier
+    
+    try:
+        verifier = await get_glm_verifier()
+        
+        results = await verifier.wait_for_batch(
+            task_ids=request.task_ids,
+            timeout=request.timeout
+        )
+        
+        return {
+            "success": True,
+            "results": results,
+            "total": len(results)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to wait for GLM verify results: {e}")
+        raise HTTPException(500, str(e))
 
 
 @router.post("/analyze-window")
@@ -1621,9 +1939,20 @@ async def glm_summarization_task(
                 if wid not in processed_windows and len(window_frames[wid]) >= 2
             ]
             
-            # Log status every 10 loops
-            if loop_count % 10 == 1:
-                logger.info(f"[GLM Task] Loop {loop_count}: {len(all_frames)} frames, windows={list(window_frames.keys())}, processed={processed_windows}, new={new_windows}")
+            # Log window frame counts for debugging
+            window_frame_counts = {wid: len(window_frames[wid]) for wid in window_frames.keys()}
+            
+            # Log status every 10 loops or when we have new windows
+            if loop_count % 10 == 1 or new_windows:
+                logger.info(f"[GLM Task] Loop {loop_count}: {len(all_frames)} frames, windows={list(window_frames.keys())}, frame_counts={window_frame_counts}, processed={processed_windows}, new={new_windows}")
+            
+            # Log if windows are skipped due to insufficient frames
+            skipped_windows = [
+                wid for wid in sorted(window_frames.keys()) 
+                if wid not in processed_windows and len(window_frames[wid]) < 2
+            ]
+            if skipped_windows:
+                logger.warning(f"[GLM Task] Skipped {len(skipped_windows)} windows with <2 frames: {skipped_windows}")
             
             if not new_windows:
                 no_new_frames_count += 1
@@ -1707,11 +2036,16 @@ async def glm_summarization_task(
                     import time as time_module
                     batch_start = time_module.time()
                     
+                    logger.info(f"[GLM Task] Calling GLM client for {len(windows_to_process)} windows")
+                    logger.info(f"[GLM Task] Window IDs: {[w['window_id'] for w in windows_to_process]}")
+                    
                     # 使用 GLM 并发摘要
                     glm_results = await glm_client.summarize_windows_concurrent(
                         windows=windows_to_process,
                         max_concurrent=glm_max_concurrent
                     )
+                    
+                    logger.info(f"[GLM Task] GLM client returned {len(glm_results)} results")
                     
                     batch_elapsed = time_module.time() - batch_start
                     

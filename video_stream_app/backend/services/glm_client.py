@@ -549,11 +549,16 @@ class GLMClient:
                 "max_tokens": max_tokens
             }
             
+            logger.info(f"[GLMClient] Sending request to {self.api_url}/chat/completions")
+            logger.debug(f"[GLMClient] Payload preview: model={self.model_name}, messages={len(messages)}")
+            
             response = await self.client.post(
                 f"{self.api_url}/chat/completions",
                 json=payload
             )
             response.raise_for_status()
+            
+            logger.info(f"[GLMClient] Received response: status={response.status_code}")
             
             data = response.json()
             text = data["choices"][0]["message"]["content"]
@@ -1147,10 +1152,16 @@ Output only the summary, no additional formatting."""
             """带信号量控制的单窗口摘要"""
             async with semaphore:
                 try:
+                    window_id = window.get("window_id")
+                    frame_count = len(window.get("frame_analyses", []))
+                    logger.info(f"[GLMClient] Processing window {window_id} with {frame_count} frames")
+                    
                     result = await self.integrate_analysis_results(
                         frame_analyses=window.get("frame_analyses", []),
                         images=window.get("images")
                     )
+                    
+                    logger.info(f"[GLMClient] Window {window_id} completed: success={result.get('success')}")
                     return index, {
                         "window_id": window.get("window_id"),
                         "success": result.get("success", False),
