@@ -389,6 +389,7 @@ class PhaseConflictResolver:
 
 # Cache background knowledge at module load time
 _background_knowledge: str = None
+_glm_system_prompt: str = None
 
 
 def get_background_knowledge() -> str:
@@ -399,6 +400,32 @@ def get_background_knowledge() -> str:
         if _background_knowledge:
             logger.info(f"[GLMClient] Loaded background knowledge ({len(_background_knowledge)} chars)")
     return _background_knowledge
+
+
+def get_glm_system_prompt() -> str:
+    """
+    从background.txt中提取GLM窗口分析的system prompt
+    
+    在 [GLM_SYSTEM_PROMPT_START] 和 [GLM_SYSTEM_PROMPT_END] 之间的内容
+    """
+    global _glm_system_prompt
+    if _glm_system_prompt is None:
+        background = get_background_knowledge()
+        if background:
+            start_marker = "[GLM_SYSTEM_PROMPT_START]"
+            end_marker = "[GLM_SYSTEM_PROMPT_END]"
+            start_idx = background.find(start_marker)
+            end_idx = background.find(end_marker)
+            
+            if start_idx != -1 and end_idx != -1:
+                _glm_system_prompt = background[start_idx + len(start_marker):end_idx].strip()
+                logger.info(f"[GLMClient] Loaded GLM system prompt ({len(_glm_system_prompt)} chars)")
+            else:
+                logger.warning("[GLMClient] GLM system prompt markers not found in background.txt")
+                _glm_system_prompt = ""
+        else:
+            _glm_system_prompt = ""
+    return _glm_system_prompt
 
 
 class GLMClient:
@@ -1030,41 +1057,46 @@ Output only the summary, no additional formatting."""
         # 构建内部分析上下文（供模型理解，但不要求输出）
         internal_context = self._build_internal_context(frame_analyses, consistency_analysis)
         
-        # 简洁直接的中文叙事提示词
-        system_prompt = """你是腹腔镜胆囊切除术分析专家。直接描述观察到的手术情况。
+        # 从background.txt加载system prompt，确保阶段连续性
+        loaded_prompt = get_glm_system_prompt()
+        if loaded_prompt:
+            system_prompt = loaded_prompt
+            logger.debug(f"[GLMClient] Using loaded system prompt from background.txt")
+        else:
+            # 如果加载失败，使用简化的默认prompt
+            system_prompt = """你是腹腔镜胆囊切除术分析专家。直接描述观察到的手术情况。
 
-输出格式（严格按此结构）：
+输出格式：
 【阶段】当前手术阶段名称
 【操作】正在进行的具体动作
 【工具】使用的器械及用途
-【CVS】安全关键视角评估（仅在相关时提及）
+【CVS】安全关键视角评估（仅在肝胆三角解剖阶段时评估，其他阶段填"无"）
 
-规则：
-- 直接陈述观察结果，禁止任何元描述或说明性文字
-- 每项内容简洁明了，避免重复
-- 使用中文术语：抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
-- 阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
-
-示例：
-【阶段】肝胆三角解剖
-【操作】分离胆囊壁周围组织，暴露Calot三角
-【工具】抓钳牵拉胆囊，电钩进行精细分离
-【CVS】可见胆囊管和胆囊动脉，第一标准部分达成"""
+阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
+工具中文名：Grasper→抓钳, Hook→电钩, Scissors→剪刀, Clipper→钛夹钳, Irrigator→冲吸器, Bipolar→双极电凝"""
+            logger.warning("[GLMClient] Using fallback system prompt")
         
-        # 构建简洁的用户消息
+        # 构建用户消息，强调历史上下文
         prompt_parts = []
         
+        # 如果有历史上下文（上一窗口信息），优先展示
+        if history_context:
+            # 提取上一窗口的关键信息
+            prev_info = history_context.strip()
+            if "摘要：" in prev_info:
+                prev_summary = prev_info.split("摘要：")[-1].strip()[:150]
+            else:
+                prev_summary = prev_info[:150]
+            prompt_parts.append(f"【上一窗口分析】{prev_summary}")
+            prompt_parts.append("（注意：当前窗口应保持阶段连续性，除非有明显变化）")
+            prompt_parts.append("")
+        
         # 添加当前窗口的帧分析数据
-        prompt_parts.append("分析数据：")
+        prompt_parts.append("【当前窗口帧数据】")
         prompt_parts.append(internal_context)
         
-        # 如果有历史上下文，简洁添加
-        if history_context:
-            prompt_parts.append("")
-            prompt_parts.append("上一窗口：" + history_context.split("摘要：")[-1].strip()[:100] if "摘要：" in history_context else "")
-        
         prompt_parts.append("")
-        prompt_parts.append("按格式输出观察结果：")
+        prompt_parts.append("请综合上述信息，按格式输出当前窗口的分析结果：")
         
         prompt_text = "\n".join(prompt_parts)
         

@@ -2217,6 +2217,11 @@ async def process_video_surgr1_glm_task(
             # Step 2: GLM - Summarize window (纯文本输入，全中文输出)
             # ==================================================================
             try:
+                # 获取上一窗口的摘要作为历史上下文，保持阶段连续性
+                from ..services.glm_client import get_history_manager, WindowSummary
+                history_manager = get_history_manager(session_id)
+                history_context = await history_manager.build_history_context()
+                
                 # GLM只使用文本输入，完全按照temporal_analyze.py的逻辑
                 # 输出强制为中文，无需额外处理
                 result = await glm_client.integrate_analysis_results(
@@ -2224,11 +2229,27 @@ async def process_video_surgr1_glm_task(
                     images=None,  # GLM只使用文本输入
                     system_prompt=None,  # 使用内置的全中文提示词
                     temperature=0.7,
-                    max_tokens=1500
+                    max_tokens=1500,
+                    history_context=history_context  # 传递历史上下文保持连续性
                 )
                 
                 if result.get("success"):
                     summary_text = result.get("summary", "")
+                    
+                    # 提取阶段信息保存到历史
+                    dominant_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
+                    tools_list = [f.get("tools", "")[:50] for f in frame_analyses[:3] if f.get("tools")]
+                    
+                    # 添加到历史管理器
+                    await history_manager.add_summary(WindowSummary(
+                        window_id=window.window_id,
+                        start_time=window.start_time,
+                        end_time=window.end_time,
+                        summary=summary_text[:200],  # 保存摘要前200字符
+                        dominant_phase=dominant_phase,
+                        tools=tools_list,
+                        cvs_status="未评估"
+                    ))
                 else:
                     summary_text = f"[分析出错: {result.get('error', '未知错误')}]"
                     
@@ -2250,7 +2271,7 @@ async def process_video_surgr1_glm_task(
                 key_actions=[f.get("action", "")[:200] for f in frame_analyses]
             )
             
-            logger.info(f"Completed window {window.window_id} with SurgR1+GLM")
+            logger.info(f"Completed window {window.window_id} with SurgR1+GLM (with history context)")
         
         # Update session status
         update_session_status(db, session_id, "completed")
