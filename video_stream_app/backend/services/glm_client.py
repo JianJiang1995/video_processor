@@ -850,6 +850,91 @@ class GLMClient:
                 "error": str(e)
             }
     
+    async def _analyze_images_with_timestamps(
+        self,
+        images: List[Union[str, Image.Image, bytes, Path]],
+        timestamps: List[float],
+        question: str,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        分析带时间戳标注的多张图片
+        
+        Args:
+            images: 图片列表
+            timestamps: 对应的时间戳列表
+            question: 问题文本
+            system_prompt: 系统提示词
+            temperature: 采样温度
+            max_tokens: 最大token数
+        """
+        temperature = temperature or self.temperature
+        max_tokens = max_tokens or self.max_tokens
+        
+        try:
+            content = []
+            
+            # 为每张图片添加时间戳标注
+            for idx, (img, ts) in enumerate(zip(images, timestamps)):
+                # 添加时间戳标签
+                content.append({
+                    "type": "text",
+                    "text": f"【图片{idx + 1}/{len(images)}】时间：{ts:.1f}秒"
+                })
+                # 添加图片
+                image_url = self._image_to_base64_url(img)
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": image_url, "detail": "low"}
+                })
+            
+            # 添加问题文本
+            content.append({"type": "text", "text": question})
+            
+            messages = []
+            # 添加禁用思考模式的 system prompt
+            if system_prompt:
+                full_system_prompt = f"{self.NO_THINKING_PROMPT}\n\n{system_prompt}"
+                messages.append({"role": "system", "content": full_system_prompt})
+            else:
+                messages.append({"role": "system", "content": self.NO_THINKING_PROMPT})
+            messages.append({"role": "user", "content": content})
+            
+            payload = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+            
+            response = await self.client.post(
+                f"{self.api_url}/chat/completions",
+                json=payload
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            text = data["choices"][0]["message"]["content"]
+            tokens = data.get("usage", {}).get("total_tokens", 0)
+            
+            return {
+                "success": True,
+                "text": text,
+                "tokens_used": tokens,
+                "model": self.model_name,
+                "image_count": len(images)
+            }
+            
+        except Exception as e:
+            logger.error(f"[GLMClient] Timestamped image analysis failed: {e}")
+            return {
+                "success": False,
+                "text": f"[Error: {str(e)}]",
+                "error": str(e)
+            }
+    
     async def summarize_window(
         self,
         images: List[Image.Image],
@@ -1100,29 +1185,43 @@ Output only the summary, no additional formatting."""
             prompt_parts.append("")
         
         # 添加当前窗口的帧分析数据
-        prompt_parts.append("【R1分析结果】（可能有误，请结合图片验证）")
+        prompt_parts.append("【R1帧标注】（器械检测通常准确，请在叙事中体现）")
         prompt_parts.append(internal_context)
         
         prompt_parts.append("")
-        prompt_parts.append("请观察图片实际内容，如果R1分析与图片不符则以图片为准，按格式输出分析结果：")
+        prompt_parts.append("请结合R1标注和图片内容，生成当前窗口的时序叙事分析（如有器械必须提及）：")
         
         prompt_text = "\n".join(prompt_parts)
+        
+        # 获取帧时间戳用于图片标注
+        frame_timestamps = [a.get('timestamp', 0) for a in frame_analyses]
         
         # 判断是否使用多模态（图片+文本）还是纯文本
         if images and len(images) > 0:
             # 使用多模态分析：图片 + R1分析结果
-            # 采样图片，最多使用6张（GLM限制）
-            max_images = 6
-            if len(images) > max_images:
-                step = len(images) // max_images
-                sampled_images = [images[i] for i in range(0, len(images), step)][:max_images]
+            # 均匀采样图片，最多使用10张
+            num_images = len(images)
+            max_images = 10
+            
+            if num_images <= max_images:
+                # 图片数不超过上限，全部使用
+                image_indices = list(range(num_images))
             else:
-                sampled_images = images
+                # 均匀采样：确保首尾帧被包含
+                image_indices = []
+                for i in range(max_images):
+                    idx = int(i * (num_images - 1) / (max_images - 1))
+                    image_indices.append(idx)
             
-            logger.info(f"[GLMClient] Using multimodal analysis with {len(sampled_images)} images")
+            sampled_images = [images[i] for i in image_indices]
+            sampled_timestamps = [frame_timestamps[i] if i < len(frame_timestamps) else 0 for i in image_indices]
             
-            result = await self.analyze_multiple_images(
+            logger.info(f"[GLMClient] Using multimodal analysis with {len(sampled_images)} images (from {num_images} frames)")
+            
+            # 构建带时间戳的图片内容
+            result = await self._analyze_images_with_timestamps(
                 images=sampled_images,
+                timestamps=sampled_timestamps,
                 question=prompt_text,
                 system_prompt=system_prompt,
                 temperature=temperature,
@@ -1138,9 +1237,9 @@ Output only the summary, no additional formatting."""
                 max_tokens=max_tokens
             )
         
-        # 后处理：过滤思考过程，只提取结构化输出
+        # 后处理：过滤思考过程，提取叙事内容
         raw_text = result.get("text", "")
-        cleaned_text = self._extract_structured_output(raw_text)
+        cleaned_text = self._extract_narrative_output(raw_text)
         
         return {
             "success": result.get("success", False),
@@ -1152,20 +1251,83 @@ Output only the summary, no additional formatting."""
             "error": result.get("error")
         }
     
-    def _extract_structured_output(self, text: str) -> str:
+    def _extract_narrative_output(self, text: str) -> str:
         """
-        从GLM输出中提取结构化内容，过滤掉思考过程
+        从GLM输出中提取<answer>标签内的叙事内容
         
-        期望格式：
-        【阶段】xxx
-        【操作】xxx
-        【工具】xxx
-        【CVS】xxx
+        格式：<think>分析过程</think><answer>叙事内容</answer>
         """
         import re
         
         if not text:
             return text
+        
+        text = text.strip()
+        
+        # 提取 <answer>...</answer> 标签内容
+        answer_match = re.search(r'<answer>(.*?)</answer>', text, flags=re.DOTALL)
+        if answer_match:
+            result = answer_match.group(1).strip()
+            logger.info(f"[GLMClient] Extracted <answer>: {len(result)} chars")
+            return result
+        
+        # 如果只有开始标签，提取后面的内容
+        if '<answer>' in text:
+            idx = text.find('<answer>') + len('<answer>')
+            result = text[idx:].replace('</answer>', '').strip()
+            logger.info(f"[GLMClient] Extracted from <answer> tag: {len(result)} chars")
+            return result
+        
+        # 没有标签，移除 <think> 内容后返回
+        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        text = text.strip()
+        logger.warning(f"[GLMClient] No <answer> tag found, returning cleaned text: {len(text)} chars")
+        return text
+    
+    def _extract_structured_output(self, text: str) -> str:
+        """
+        从GLM输出中提取结构化内容，过滤掉思考过程和元描述
+        （保留用于兼容旧代码）
+        
+        期望格式：
+        【阶段】xxx
+        【操作】xxx
+        【CVS】xxx
+        【安全】xxx
+        """
+        import re
+        
+        if not text:
+            return text
+        
+        # 检测并过滤元描述（GLM在解释格式而不是输出格式）
+        meta_description_markers = [
+            "四行", "阶段是", "操作描述", "操作是", "CVS是", "安全是",
+            "格式", "如下", "分别是", "依次是", "第一行", "第二行",
+            "因为", "所以", "原因"
+        ]
+        
+        for marker in meta_description_markers:
+            if marker in text:
+                # GLM 在输出元描述，返回从文本中提取的默认值
+                logger.warning(f"[GLMClient] Detected meta-description marker: {marker}")
+                # 尝试从元描述中提取实际内容
+                phase = "准备"
+                action = "分析中"
+                for p in ["准备", "肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "清洁凝血", "胆囊取出"]:
+                    if p in text:
+                        phase = p
+                        break
+                # 尝试提取操作描述（通常在"操作描述"或"操作是"后面）
+                action_match = re.search(r'操作(?:描述|是)[：:]*(.{5,40}?)(?:[，。\n]|CVS|安全|$)', text)
+                if action_match:
+                    action = action_match.group(1).strip()
+                elif "抓钳" in text:
+                    action_match = re.search(r'(抓钳.{5,30}?)(?:[，。\n]|CVS|$)', text)
+                    if action_match:
+                        action = action_match.group(1).strip()
+                
+                return f"【阶段】{phase}\n【操作】{action}\n【CVS】未涉及"
         
         # 定义允许的阶段名称
         valid_phases = ["准备", "肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "清洁凝血", "胆囊取出"]
