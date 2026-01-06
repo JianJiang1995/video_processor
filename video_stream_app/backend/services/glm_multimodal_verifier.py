@@ -41,12 +41,37 @@ import logging
 import time
 import uuid
 import base64
+import json
+from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Union
 from collections import defaultdict
 from io import BytesIO
 from PIL import Image
+
+# ============================================================================
+# Prompt Configuration
+# ============================================================================
+
+PROMPTS_CONFIG_PATH = Path(__file__).parent / "glm_prompts.json"
+
+
+def load_glm_prompts() -> dict:
+    """Load GLM prompts from external config file"""
+    if PROMPTS_CONFIG_PATH.exists():
+        with open(PROMPTS_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    # Fallback to default prompts
+    return {
+        "system_prompt": """你是腹腔镜手术分析专家。请验证R1模型对手术图像的分析是否准确。
+以实际图像为准进行验证和修正。关注：阶段、三元组、CVS、出血、器械碰撞。""",
+        "user_prompt_template": "## R1模型分析结果\n\n{r1_analysis_text}\n\n请验证以上分析。"
+    }
+
+
+GLM_PROMPTS = load_glm_prompts()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,42 +120,12 @@ class GLMMultimodalVerifier:
     
     使用GLM-4.6V-Flash对SurgR1的分析结果进行验证和修正。
     支持动态批处理以提高处理效率。
+    Prompts从外部配置文件(glm_prompts.json)加载。
     """
     
-    # 验证系统提示词
-    VERIFICATION_SYSTEM_PROMPT = """你是腹腔镜手术分析专家。你的任务是验证AI模型（R1）对手术图像的分析是否准确。
-
-你将收到：
-1. 按时间顺序排列的手术帧图像（带时间戳）
-2. R1模型对每帧的分析结果
-
-你需要：
-1. 仔细观察每帧图像的实际内容
-2. 对比R1的分析是否与图像内容一致
-3. 如果R1分析错误，根据实际图像进行修正
-
-输出格式（JSON）：
-{
-    "frames": [
-        {
-            "frame_idx": 帧索引,
-            "timestamp": 时间戳,
-            "r1_correct": true/false,
-            "verified_phase": "修正后的阶段（如R1正确则保持原值）",
-            "verified_action": "修正后的动作描述",
-            "verified_tools": "修正后的工具列表",
-            "correction_notes": "修正说明（如有）"
-        }
-    ],
-    "temporal_summary": "时序分析摘要，描述这段时间内手术进展",
-    "consistency_check": "时序一致性检查结果"
-}
-
-重要规则：
-- 以实际图像内容为准，不要被R1的错误分析误导
-- 注意时序连续性，相邻帧的阶段变化应合理
-- 工具识别要准确，注意区分：抓钳(Grasper)、电钩(Hook)、剪刀(Scissors)、钛夹钳(Clipper)
-- 手术阶段应遵循正常顺序：准备→肝胆三角解剖→夹闭切断→胆囊分离→胆囊牵拉→清洁凝血→胆囊取出"""
+    # 从外部配置加载系统提示词
+    VERIFICATION_SYSTEM_PROMPT = GLM_PROMPTS.get("system_prompt", "")
+    USER_PROMPT_TEMPLATE = GLM_PROMPTS.get("user_prompt_template", "{r1_analysis_text}")
 
     def __init__(
         self,
@@ -326,16 +321,17 @@ class GLMMultimodalVerifier:
             })
         
         # 构建R1分析文本
-        r1_text = "## R1模型分析结果（按时序）\n\n"
+        r1_analysis_text = ""
         for task in tasks:
-            r1_text += f"### 帧{task.frame_idx}（时间戳: {task.timestamp:.2f}s）\n"
-            r1_text += f"- 阶段: {task.r1_analysis.get('phase', '未知')}\n"
-            r1_text += f"- 动作: {task.r1_analysis.get('action', '未知')}\n"
-            r1_text += f"- 工具: {task.r1_analysis.get('tools', '未知')}\n\n"
+            r1_analysis_text += f"### 帧{task.frame_idx}（时间戳: {task.timestamp:.2f}s）\n"
+            r1_analysis_text += f"- 阶段(Phase): {task.r1_analysis.get('phase', '未知')}\n"
+            r1_analysis_text += f"- 三元组(Triplet): {task.r1_analysis.get('action', '未知')}\n"
+            r1_analysis_text += f"- 工具(Tools): {task.r1_analysis.get('tools', '未知')}\n\n"
         
-        r1_text += "\n请验证以上R1分析是否与图像实际内容一致，并进行时序分析。"
+        # 使用模板生成用户提示
+        user_text = self.USER_PROMPT_TEMPLATE.format(r1_analysis_text=r1_analysis_text)
         
-        content.append({"type": "text", "text": r1_text})
+        content.append({"type": "text", "text": user_text})
         
         # 构建完整消息
         messages = [
@@ -371,13 +367,20 @@ class GLMMultimodalVerifier:
         response_text: str,
         tasks: List[VerificationTask]
     ) -> Dict[str, Any]:
-        """解析GLM验证响应"""
-        import json
+        """解析GLM验证响应（支持新格式：window_summary, inter_frame_analysis等）"""
         import re
         
-        # 尝试提取JSON
-        json_match = re.search(r'\{[\s\S]*\}', response_text)
+        # 尝试提取JSON（支持markdown代码块包裹）
+        # 先尝试提取 ```json ... ``` 中的内容
+        json_block_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response_text)
+        if json_block_match:
+            try:
+                return json.loads(json_block_match.group(1))
+            except json.JSONDecodeError:
+                pass
         
+        # 再尝试直接提取JSON对象
+        json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             try:
                 return json.loads(json_match.group())
@@ -388,20 +391,32 @@ class GLMMultimodalVerifier:
         logger.warning("[GLMVerifier] Could not parse JSON response, using text fallback")
         
         return {
+            "window_summary": {
+                "time_range": f"{tasks[0].timestamp:.2f}s - {tasks[-1].timestamp:.2f}s" if tasks else "",
+                "dominant_phase": tasks[0].r1_analysis.get("phase", "未知") if tasks else "未知",
+                "phase_progression": "基于R1结果（未经GLM验证）",
+                "cvs_status": "unknown",
+                "safety_concerns": []
+            },
             "frames": [
                 {
                     "frame_idx": task.frame_idx,
                     "timestamp": task.timestamp,
                     "r1_correct": True,  # 默认假设正确
                     "verified_phase": task.r1_analysis.get("phase", ""),
-                    "verified_action": task.r1_analysis.get("action", ""),
-                    "verified_tools": task.r1_analysis.get("tools", ""),
+                    "verified_triplet": task.r1_analysis.get("action", ""),
+                    "verified_tools": task.r1_analysis.get("tools", []),
+                    "intra_frame_issues": [],
                     "correction_notes": ""
                 }
                 for task in tasks
             ],
-            "temporal_summary": response_text[:500],
-            "consistency_check": "基于文本响应"
+            "inter_frame_analysis": {
+                "temporal_consistency": True,
+                "phase_transitions": [],
+                "issues": []
+            },
+            "raw_response": response_text[:1000]
         }
     
     def _apply_results(
@@ -409,8 +424,10 @@ class GLMMultimodalVerifier:
         tasks: List[VerificationTask],
         result: Dict[str, Any]
     ):
-        """将验证结果应用到任务"""
+        """将验证结果应用到任务（支持新格式：triplet, intra_frame_issues, window_summary等）"""
         frames_result = result.get("frames", [])
+        window_summary = result.get("window_summary", {})
+        inter_frame = result.get("inter_frame_analysis", {})
         
         # 创建frame_idx到result的映射
         result_map = {fr["frame_idx"]: fr for fr in frames_result if "frame_idx" in fr}
@@ -418,15 +435,32 @@ class GLMMultimodalVerifier:
         for task in tasks:
             frame_result = result_map.get(task.frame_idx, {})
             
+            # 兼容旧格式(verified_action)和新格式(verified_triplet)
+            verified_triplet = frame_result.get("verified_triplet") or frame_result.get("verified_action", "")
+            
             task.result = {
+                # 帧级结果
                 "r1_correct": frame_result.get("r1_correct", True),
                 "verified_phase": frame_result.get("verified_phase", task.r1_analysis.get("phase", "")),
-                "verified_action": frame_result.get("verified_action", task.r1_analysis.get("action", "")),
-                "verified_tools": frame_result.get("verified_tools", task.r1_analysis.get("tools", "")),
+                "verified_triplet": verified_triplet or task.r1_analysis.get("action", ""),
+                "verified_tools": frame_result.get("verified_tools", task.r1_analysis.get("tools", [])),
+                "intra_frame_issues": frame_result.get("intra_frame_issues", []),
                 "correction_notes": frame_result.get("correction_notes", ""),
+                
+                # 原始R1分析
                 "original_r1_analysis": task.r1_analysis,
-                "temporal_summary": result.get("temporal_summary", ""),
-                "consistency_check": result.get("consistency_check", "")
+                
+                # 窗口级摘要（所有帧共享）
+                "window_summary": window_summary,
+                
+                # 帧间分析（所有帧共享）
+                "inter_frame_analysis": inter_frame,
+                
+                # CVS状态
+                "cvs_status": window_summary.get("cvs_status", "unknown"),
+                
+                # 安全问题
+                "safety_concerns": window_summary.get("safety_concerns", [])
             }
             
             task.status = VerificationStatus.COMPLETED
@@ -437,7 +471,12 @@ class GLMMultimodalVerifier:
             if task.id in self._task_events:
                 self._task_events[task.id].set()
             
-            logger.debug(f"[GLMVerifier] Task {task.id} completed: r1_correct={task.result['r1_correct']}")
+            # 记录关键信息
+            issues = task.result.get("intra_frame_issues", [])
+            if issues:
+                logger.info(f"[GLMVerifier] Task {task.id}: intra-frame issues detected: {issues}")
+            if not task.result["r1_correct"]:
+                logger.info(f"[GLMVerifier] Task {task.id}: R1 correction applied")
     
     def _image_to_base64_url(self, image: Image.Image) -> str:
         """将PIL图像转换为base64 URL"""
@@ -669,4 +708,5 @@ async def verify_frames_with_r1(
         return await verifier.wait_for_batch(task_ids, timeout)
     else:
         return task_ids
+
 
