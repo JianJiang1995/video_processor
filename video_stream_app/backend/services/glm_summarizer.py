@@ -1,11 +1,13 @@
 """
 GLM-4.6V-Flash Summarization Service
 Uses GLM-4.6V-Flash via vLLM server for multimodal summarization
+Prompts loaded from external glm_prompts.json config file
 """
 import asyncio
 import base64
 import json
 from io import BytesIO
+from pathlib import Path
 from typing import List, Optional, Dict, Any, Union
 from PIL import Image
 import httpx
@@ -13,6 +15,27 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Load GLM Prompts from External Config
+# ============================================================================
+
+PROMPTS_CONFIG_PATH = Path(__file__).parent / "glm_prompts.json"
+
+
+def load_glm_prompts() -> dict:
+    """Load GLM prompts from external config file"""
+    if PROMPTS_CONFIG_PATH.exists():
+        with open(PROMPTS_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            logger.info(f"[GLMSummarizer] Loaded prompts from {PROMPTS_CONFIG_PATH}")
+            return config
+    
+    logger.warning(f"[GLMSummarizer] Prompts config not found at {PROMPTS_CONFIG_PATH}, using defaults")
+    return {}
+
+
+GLM_PROMPTS_CONFIG = load_glm_prompts()
 
 
 class GLMSummarizer:
@@ -384,43 +407,41 @@ Output only the summary, no additional formatting."""
         # 构建内部分析上下文
         internal_context = self._build_internal_context(frame_analyses, consistency_analysis)
         
-        # 简洁直接的中文叙事提示词
-        system_prompt = """你是腹腔镜胆囊切除术分析专家。直接描述观察到的手术情况。
+        # 从外部配置加载系统提示词
+        system_prompt = GLM_PROMPTS_CONFIG.get("summarizer_system_prompt", "")
+        if not system_prompt:
+            # Fallback to default prompt
+            system_prompt = """你是腹腔镜胆囊切除术分析专家。整合R1分析结果，检测矛盾，输出窗口摘要。
 
-输出格式（严格按此结构）：
-【阶段】当前手术阶段名称
-【操作】正在进行的具体动作
-【工具】使用的器械及用途
-【CVS】安全关键视角评估（仅在相关时提及）
+输出格式：
+【阶段】当前窗口主导阶段
+【操作】主要手术动作（三元组：工具-动作-组织）
+【工具】检测到的器械
+【CVS】CVS状态（未涉及/进行中/已达成）
+【矛盾】帧内或帧间矛盾（无则省略）
 
-规则：
-- 直接陈述观察结果，禁止任何元描述或说明性文字
-- 每项内容简洁明了，避免重复
-- 使用中文术语：抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
-- 阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
-
-示例：
-【阶段】肝胆三角解剖
-【操作】分离胆囊壁周围组织，暴露Calot三角
-【工具】抓钳牵拉胆囊，电钩进行精细分离
-【CVS】可见胆囊管和胆囊动脉，第一标准部分达成"""
+规则：直接陈述，禁止元描述。阶段异常倒退、出血、器械碰撞优先报告。"""
         
-        # 构建简洁的用户消息
-        prompt_parts = []
-        
-        # 添加当前窗口的帧分析数据
-        prompt_parts.append("分析数据：")
-        prompt_parts.append(internal_context)
-        
-        # 如果有历史上下文，简洁添加
+        # 构建用户消息
+        history_text = ""
         if history_context:
+            history_text = "上一窗口：" + (history_context.split("摘要：")[-1].strip()[:100] if "摘要：" in history_context else history_context[:100])
+        
+        # 使用模板或构建默认消息
+        user_template = GLM_PROMPTS_CONFIG.get("summarizer_user_template", "")
+        if user_template:
+            prompt_text = user_template.format(
+                analysis_context=internal_context,
+                history_context=history_text
+            )
+        else:
+            prompt_parts = ["分析数据：", internal_context]
+            if history_text:
+                prompt_parts.append("")
+                prompt_parts.append(history_text)
             prompt_parts.append("")
-            prompt_parts.append("上一窗口：" + history_context.split("摘要：")[-1].strip()[:100] if "摘要：" in history_context else "")
-        
-        prompt_parts.append("")
-        prompt_parts.append("按格式输出观察结果：")
-        
-        prompt_text = "\n".join(prompt_parts)
+            prompt_parts.append("请整合以上R1分析结果，检测矛盾，输出窗口摘要：")
+            prompt_text = "\n".join(prompt_parts)
         
         # 只使用纯文本
         payload = {
