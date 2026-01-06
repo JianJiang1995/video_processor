@@ -1213,12 +1213,13 @@ Output only the summary, no additional formatting."""
             
             return content
         
-        # 尝试提取【阶段】【操作】【工具】【CVS】四个字段
+        # 尝试提取【阶段】【操作】【工具】【CVS】【矛盾】五个字段
         patterns = {
             "阶段": r"【阶段】\s*(.+?)(?=【|$)",
             "操作": r"【操作】\s*(.+?)(?=【|$)",
             "工具": r"【工具】\s*(.+?)(?=【|$)",
-            "CVS": r"【CVS】\s*(.+?)(?=【|$)"
+            "CVS": r"【CVS】\s*(.+?)(?=【|$)",
+            "矛盾": r"【矛盾】\s*(.+?)(?=【|$)"
         }
         
         extracted = {}
@@ -1245,6 +1246,10 @@ Output only the summary, no additional formatting."""
             clean_output += f"【操作】{extracted.get('操作', '')}\n"
             clean_output += f"【工具】{extracted.get('工具', '未识别')}\n"
             clean_output += f"【CVS】{extracted.get('CVS', '无')}"
+            
+            # 如果有矛盾检测结果，添加到输出
+            if "矛盾" in extracted and extracted["矛盾"]:
+                clean_output += f"\n【矛盾】{extracted['矛盾']}"
             
             logger.debug(f"[GLMClient] Extracted structured output from {len(text)} chars")
             return clean_output
