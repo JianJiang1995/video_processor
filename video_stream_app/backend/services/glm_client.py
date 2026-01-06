@@ -1213,11 +1213,10 @@ Output only the summary, no additional formatting."""
             
             return content
         
-        # 尝试提取【阶段】【操作】【工具】【CVS】【安全】五个字段
+        # 尝试提取【阶段】【操作】【CVS】【安全】四个字段（工具已包含在操作中）
         patterns = {
             "阶段": r"【阶段】\s*(.+?)(?=【|$)",
             "操作": r"【操作】\s*(.+?)(?=【|$)",
-            "工具": r"【工具】\s*(.+?)(?=【|$)",
             "CVS": r"【CVS】\s*(.+?)(?=【|$)",
             "安全": r"【安全】\s*(.+?)(?=【|$)"
         }
@@ -1244,7 +1243,6 @@ Output only the summary, no additional formatting."""
             
             clean_output = f"【阶段】{phase}\n"
             clean_output += f"【操作】{extracted.get('操作', '')}\n"
-            clean_output += f"【工具】{extracted.get('工具', '未识别')}\n"
             clean_output += f"【CVS】{extracted.get('CVS', '未涉及')}"
             
             # 如果有安全问题（出血、器械碰撞），添加到输出
@@ -1271,7 +1269,7 @@ Output only the summary, no additional formatting."""
                 else:
                     # 无法找到结构化内容，返回错误提示
                     logger.warning(f"[GLMClient] Could not extract structured output, text starts with thinking")
-                    return "【阶段】准备\n【操作】分析中\n【工具】未识别\n【CVS】无"
+                    return "【阶段】准备\n【操作】分析中\n【CVS】未涉及"
         
         # 如果文本包含【阶段】但不在开头，尝试提取
         stage_start = text.find("【阶段】")
@@ -1279,7 +1277,7 @@ Output only the summary, no additional formatting."""
             return self._extract_structured_output(text[stage_start:])
         
         # 返回默认值
-        return "【阶段】准备\n【操作】分析中\n【工具】未识别\n【CVS】无"
+        return "【阶段】准备\n【操作】分析中\n【CVS】未涉及"
     
     def _build_internal_context(
         self,
