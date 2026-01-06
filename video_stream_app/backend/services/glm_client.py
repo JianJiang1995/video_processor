@@ -1253,9 +1253,12 @@ Output only the summary, no additional formatting."""
     
     def _extract_narrative_output(self, text: str) -> str:
         """
-        从GLM输出中提取<answer>标签内的叙事内容
+        从VLM输出中提取叙事内容，支持多种模型格式
         
-        格式：<think>分析过程</think><answer>叙事内容</answer>
+        支持：
+        - GLM格式：<think>分析过程</think><answer>叙事内容</answer>
+        - Qwen3-VL格式：直接输出叙事（可能带思考过程标签）
+        - 纯文本格式：直接叙事
         """
         import re
         
@@ -1264,24 +1267,48 @@ Output only the summary, no additional formatting."""
         
         text = text.strip()
         
-        # 提取 <answer>...</answer> 标签内容
+        # 1. 提取 <answer>...</answer> 标签内容（GLM格式）
         answer_match = re.search(r'<answer>(.*?)</answer>', text, flags=re.DOTALL)
         if answer_match:
             result = answer_match.group(1).strip()
             logger.info(f"[GLMClient] Extracted <answer>: {len(result)} chars")
             return result
         
-        # 如果只有开始标签，提取后面的内容
+        # 2. 如果只有开始标签，提取后面的内容
         if '<answer>' in text:
             idx = text.find('<answer>') + len('<answer>')
             result = text[idx:].replace('</answer>', '').strip()
             logger.info(f"[GLMClient] Extracted from <answer> tag: {len(result)} chars")
             return result
         
-        # 没有标签，移除 <think> 内容后返回
+        # 3. 移除各种思考/推理标签（Qwen3-VL可能使用不同标签）
+        # 移除 <think>...</think>
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # 移除 <reasoning>...</reasoning>
+        text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL)
+        # 移除 /think 等残余标签
+        text = re.sub(r'</?(think|reasoning|answer)>', '', text)
+        
+        # 4. 清理前导非叙事内容
         text = text.strip()
-        logger.warning(f"[GLMClient] No <answer> tag found, returning cleaned text: {len(text)} chars")
+        
+        # 5. 如果以叙事时序标记开头，直接返回
+        narrative_starts = ['起始', '镜头', '抓钳', '电钩', '可见', '首先', '随后', '期间', '至片段']
+        for start in narrative_starts:
+            if text.startswith(start):
+                logger.info(f"[GLMClient] Direct narrative output: {len(text)} chars")
+                return text
+        
+        # 6. 尝试找到叙事开始位置
+        for start in narrative_starts:
+            idx = text.find(start)
+            if idx != -1 and idx < 50:  # 在前50个字符内找到
+                result = text[idx:].strip()
+                logger.info(f"[GLMClient] Found narrative at offset {idx}: {len(result)} chars")
+                return result
+        
+        # 7. 返回清理后的文本
+        logger.info(f"[GLMClient] Returning cleaned text: {len(text)} chars")
         return text
     
     def _extract_structured_output(self, text: str) -> str:

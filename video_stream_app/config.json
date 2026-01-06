@@ -30,13 +30,13 @@
             "port": 8000,
             "host": "localhost",
             "api_url": "http://localhost:8000/v1",
-            "model_name": "GLM-4.6V-Flash",
+            "model_name": "Qwen3-VL-8B",
             "temperature": 0.7,
             "max_tokens": 1000,
             "max_concurrent": 16,
             "retry_count": 2,
             "window_merge_count": 3,
-            "comment": "GLM-4.6-Flash用于多图像问题分析的总结（文本时序总结）[核心服务，必须开启]，支持16并发+窗口合并"
+            "comment": "VLM用于多图像分析总结，当前使用Qwen3-VL-8B（可切换GLM-4.6V-Flash）"
         },
         "sam3": {
             "enabled": true,
@@ -69,9 +69,9 @@
     },
     
     "video_processing": {
-        "window_duration": 5.0,
+        "window_duration": 15.0,
         "sample_interval": 1.0,
-        "comment": "N=5秒窗口，每秒采样1帧，每个窗口5帧"
+        "comment": "N=15秒窗口，每秒采样1帧，每个窗口15帧"
     },
     
     "analysis": {
