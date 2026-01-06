@@ -382,13 +382,11 @@ Output only the summary, no additional formatting."""
         conflict_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        整合多帧分析结果为连贯的叙事摘要
-        按照temporal_analyze.py和video_analyze_prompt.txt的逻辑
-        只使用文本输入，输出纯中文叙事
+        整合多帧分析结果为连贯的叙事摘要（多模态：图片 + R1分析结果）
         
         参数:
             frame_analyses: 帧分析结果列表，包含阶段、动作、工具
-            images: 忽略此参数，只使用纯文本
+            images: 帧图片列表，用于GLM多模态验证（如果R1分析不准确，以图片实际内容为准）
             system_prompt: 忽略此参数，使用内置提示词
             max_tokens: 最大生成长度
             temperature: 采样温度
@@ -411,7 +409,7 @@ Output only the summary, no additional formatting."""
         system_prompt = GLM_PROMPTS_CONFIG.get("system_prompt", "")
         if not system_prompt:
             # Fallback to default prompt
-            system_prompt = """你是腹腔镜胆囊切除术分析专家。结合历史上下文，输出当前窗口摘要。
+            system_prompt = """你是腹腔镜胆囊切除术分析专家。结合历史上下文和实际图片，输出当前窗口摘要。
 
 输出格式（全中文）：
 【阶段】当前窗口主导阶段
@@ -419,7 +417,7 @@ Output only the summary, no additional formatting."""
 【CVS】在肝胆三角解剖/夹闭切断阶段评估（未达成/进行中/已达成）；其他阶段写"未涉及"
 【安全】如有出血或器械碰撞则标注；无问题则写"正常"
 
-规则：全中文，直接陈述，结合历史保持连续性。"""
+规则：全中文，直接陈述，以实际图片为准验证R1分析。"""
         
         # 构建用户消息 - 使用完整的历史上下文
         history_text = history_context if history_context else "（第一个窗口，无历史）"
@@ -434,15 +432,40 @@ Output only the summary, no additional formatting."""
         else:
             prompt_parts = ["## 之前窗口上下文", history_text, "", "## 当前窗口R1分析", internal_context]
             prompt_parts.append("")
-            prompt_parts.append("请结合上下文，输出当前窗口摘要：")
+            prompt_parts.append("请结合图片和上下文，输出当前窗口摘要：")
             prompt_text = "\n".join(prompt_parts)
         
-        # 只使用纯文本
+        # 构建多模态消息内容（图片 + 文本）
+        user_content = []
+        
+        # 添加图片（GLM-4.6V支持多图，最多6张以控制token消耗）
+        if images:
+            max_images = min(len(images), 6)
+            step = max(1, len(images) // max_images) if len(images) > max_images else 1
+            
+            for i in range(0, len(images), step):
+                if len([c for c in user_content if c.get("type") == "image_url"]) >= max_images:
+                    break
+                try:
+                    image_url = self._image_to_base64_url(images[i])
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": image_url, "detail": "low"}
+                    })
+                except Exception as e:
+                    logger.warning(f"[GLMSummarizer] Failed to convert image {i}: {e}")
+            
+            logger.info(f"[GLMSummarizer] Added {len([c for c in user_content if c.get('type') == 'image_url'])} images to request")
+        
+        # 添加文本内容
+        user_content.append({"type": "text", "text": prompt_text})
+        
+        # 构建payload
         payload = {
             "model": self.model_name,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_text}
+                {"role": "user", "content": user_content}
             ],
             "temperature": temperature,
             "max_tokens": max_tokens
