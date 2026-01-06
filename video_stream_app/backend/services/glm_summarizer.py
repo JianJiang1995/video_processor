@@ -408,7 +408,7 @@ Output only the summary, no additional formatting."""
         internal_context = self._build_internal_context(frame_analyses, consistency_analysis)
         
         # 从外部配置加载系统提示词
-        system_prompt = GLM_PROMPTS_CONFIG.get("summarizer_system_prompt", "")
+        system_prompt = GLM_PROMPTS_CONFIG.get("system_prompt", "")
         if not system_prompt:
             # Fallback to default prompt
             system_prompt = """你是腹腔镜胆囊切除术分析专家。整合R1分析结果，检测矛盾，输出窗口摘要。
@@ -428,7 +428,7 @@ Output only the summary, no additional formatting."""
             history_text = "上一窗口：" + (history_context.split("摘要：")[-1].strip()[:100] if "摘要：" in history_context else history_context[:100])
         
         # 使用模板或构建默认消息
-        user_template = GLM_PROMPTS_CONFIG.get("summarizer_user_template", "")
+        user_template = GLM_PROMPTS_CONFIG.get("user_template", "")
         if user_template:
             prompt_text = user_template.format(
                 analysis_context=internal_context,

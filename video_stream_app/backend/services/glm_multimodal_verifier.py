@@ -65,9 +65,8 @@ def load_glm_prompts() -> dict:
     
     # Fallback to default prompts
     return {
-        "system_prompt": """你是腹腔镜手术分析专家。请验证R1模型对手术图像的分析是否准确。
-以实际图像为准进行验证和修正。关注：阶段、三元组、CVS、出血、器械碰撞。""",
-        "user_prompt_template": "## R1模型分析结果\n\n{r1_analysis_text}\n\n请验证以上分析。"
+        "system_prompt": "你是腹腔镜手术分析专家。验证R1分析，关注阶段、三元组、CVS、出血、器械碰撞。",
+        "user_template": "分析数据：\n{r1_analysis_text}\n\n请验证以上分析："
     }
 
 
@@ -123,9 +122,9 @@ class GLMMultimodalVerifier:
     Prompts从外部配置文件(glm_prompts.json)加载。
     """
     
-    # 从外部配置加载系统提示词
-    VERIFICATION_SYSTEM_PROMPT = GLM_PROMPTS.get("system_prompt", "")
-    USER_PROMPT_TEMPLATE = GLM_PROMPTS.get("user_prompt_template", "{r1_analysis_text}")
+    # 从外部配置加载系统提示词（共用summarizer的prompt）
+    VERIFICATION_SYSTEM_PROMPT = GLM_PROMPTS.get("system_prompt", "你是腹腔镜手术分析专家。验证R1分析，关注阶段、三元组、CVS、出血、器械碰撞。")
+    USER_PROMPT_TEMPLATE = GLM_PROMPTS.get("user_template", "分析数据：\n{r1_analysis_text}\n\n请验证以上分析：")
 
     def __init__(
         self,
