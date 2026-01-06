@@ -1292,14 +1292,28 @@ Output only the summary, no additional formatting."""
         # 4. 清理前导非叙事内容
         text = text.strip()
         
-        # 5. 如果以叙事时序标记开头，直接返回
-        narrative_starts = ['起始', '镜头', '抓钳', '电钩', '可见', '首先', '随后', '期间', '至片段']
+        # 5. 如果以阶段标记【xxx】或叙事关键词开头，直接返回
+        # 新格式：【准备】、【肝胆三角解剖】等
+        if text.startswith('【'):
+            logger.info(f"[GLMClient] Direct narrative with phase tag: {len(text)} chars")
+            return text
+        
+        # 中文阶段名（带"阶段"后缀）
+        narrative_starts = ['准备阶段', '肝胆三角解剖阶段', '夹闭切断阶段', '胆囊分离阶段', 
+                           '胆囊牵拉阶段', '清洁凝血阶段', '胆囊取出阶段',
+                           '镜头', '抓钳', '电钩', '可见', '随后', '期间', '至片段']
         for start in narrative_starts:
             if text.startswith(start):
                 logger.info(f"[GLMClient] Direct narrative output: {len(text)} chars")
                 return text
         
-        # 6. 尝试找到叙事开始位置
+        # 6. 尝试找到叙事开始位置（优先找【阶段】标记）
+        bracket_idx = text.find('【')
+        if bracket_idx != -1 and bracket_idx < 50:
+            result = text[bracket_idx:].strip()
+            logger.info(f"[GLMClient] Found phase tag at offset {bracket_idx}: {len(result)} chars")
+            return result
+        
         for start in narrative_starts:
             idx = text.find(start)
             if idx != -1 and idx < 50:  # 在前50个字符内找到
