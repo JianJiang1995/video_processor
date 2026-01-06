@@ -411,21 +411,18 @@ Output only the summary, no additional formatting."""
         system_prompt = GLM_PROMPTS_CONFIG.get("system_prompt", "")
         if not system_prompt:
             # Fallback to default prompt
-            system_prompt = """你是腹腔镜胆囊切除术分析专家。整合R1分析结果，检测矛盾，输出窗口摘要。
+            system_prompt = """你是腹腔镜胆囊切除术分析专家。结合历史上下文，输出当前窗口摘要。
 
-输出格式：
+输出格式（全中文）：
 【阶段】当前窗口主导阶段
-【操作】主要手术动作（三元组：工具-动作-组织）
-【工具】检测到的器械
-【CVS】CVS状态（未涉及/进行中/已达成）
-【矛盾】帧内或帧间矛盾（无则省略）
+【操作】三元组描述（工具-动作-组织）
+【CVS】在肝胆三角解剖/夹闭切断阶段评估（未达成/进行中/已达成）；其他阶段写"未涉及"
+【安全】如有出血或器械碰撞则标注；无问题则写"正常"
 
-规则：直接陈述，禁止元描述。阶段异常倒退、出血、器械碰撞优先报告。"""
+规则：全中文，直接陈述，结合历史保持连续性。"""
         
-        # 构建用户消息
-        history_text = ""
-        if history_context:
-            history_text = "上一窗口：" + (history_context.split("摘要：")[-1].strip()[:100] if "摘要：" in history_context else history_context[:100])
+        # 构建用户消息 - 使用完整的历史上下文
+        history_text = history_context if history_context else "（第一个窗口，无历史）"
         
         # 使用模板或构建默认消息
         user_template = GLM_PROMPTS_CONFIG.get("user_template", "")
@@ -435,12 +432,9 @@ Output only the summary, no additional formatting."""
                 history_context=history_text
             )
         else:
-            prompt_parts = ["分析数据：", internal_context]
-            if history_text:
-                prompt_parts.append("")
-                prompt_parts.append(history_text)
+            prompt_parts = ["## 之前窗口上下文", history_text, "", "## 当前窗口R1分析", internal_context]
             prompt_parts.append("")
-            prompt_parts.append("请整合以上R1分析结果，检测矛盾，输出窗口摘要：")
+            prompt_parts.append("请结合上下文，输出当前窗口摘要：")
             prompt_text = "\n".join(prompt_parts)
         
         # 只使用纯文本

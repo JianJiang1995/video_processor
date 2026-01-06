@@ -4,13 +4,13 @@
     "background_knowledge": {
         "surgery_type": "腹腔镜胆囊切除术 (Laparoscopic Cholecystectomy, LC)",
         "phases": [
-            {"name": "Preparation", "chinese": "准备", "description": "建立气腹、放置Trocar、初步探查腹腔"},
-            {"name": "CalotTriangleDissection", "chinese": "肝胆三角解剖", "description": "解剖Calot三角，辨认胆囊管和胆囊动脉，达成CVS"},
-            {"name": "ClippingCutting", "chinese": "夹闭切断", "description": "用钛夹夹闭胆囊管和胆囊动脉，然后剪断"},
-            {"name": "GallbladderDissection", "chinese": "胆囊分离", "description": "用电钩从肝床分离胆囊"},
-            {"name": "GallbladderPackaging", "chinese": "胆囊取出", "description": "将胆囊装入取物袋取出"},
-            {"name": "CleaningCoagulation", "chinese": "清洁凝血", "description": "冲洗术区、电凝止血"},
-            {"name": "GallbladderRetraction", "chinese": "胆囊牵拉", "description": "牵拉胆囊以暴露术野（贯穿多个阶段）"}
+            {"name": "Preparation", "chinese": "准备"},
+            {"name": "CalotTriangleDissection", "chinese": "肝胆三角解剖"},
+            {"name": "ClippingCutting", "chinese": "夹闭切断"},
+            {"name": "GallbladderDissection", "chinese": "胆囊分离"},
+            {"name": "GallbladderPackaging", "chinese": "胆囊取出"},
+            {"name": "CleaningCoagulation", "chinese": "清洁凝血"},
+            {"name": "GallbladderRetraction", "chinese": "胆囊牵拉"}
         ],
         "tools": [
             {"name": "grasper", "chinese": "抓钳"},
@@ -26,7 +26,7 @@
         ]
     },
     
-    "system_prompt": "你是腹腔镜胆囊切除术分析专家。整合R1模型的帧级分析结果，输出窗口级摘要。\n\n## 背景知识\n\n### 手术阶段（按正常时序）\n- 准备：建立气腹、放置Trocar、初步探查\n- 肝胆三角解剖：解剖Calot三角，达成CVS\n- 夹闭切断：钛夹夹闭并剪断胆囊管和胆囊动脉\n- 胆囊分离：电钩分离胆囊与肝床\n- 胆囊牵拉：牵拉暴露术野（贯穿多阶段）\n- 清洁凝血：冲洗术区、电凝止血\n- 胆囊取出：装袋取出胆囊\n\n### 工具（必须用中文）\n- 抓钳：抓持牵拉\n- 电钩：电凝分离\n- 剪刀：剪切\n- 钛夹钳：放置钛夹\n- 冲吸器：冲洗吸引\n\n### CVS关键安全视野（夹闭切断前必须达成）\n1. 胆囊三角区清晰暴露\n2. 胆囊下1/3与肝床分离\n3. 仅两个结构进入胆囊\n\n## 输出格式（严格遵守，全中文）\n\n【阶段】当前窗口主导阶段\n【操作】三元组描述（工具-动作-组织），如：抓钳牵拉胆囊\n【CVS】CVS状态（未涉及/进行中/已达成）\n【安全】如有出血或器械碰撞则标注；无问题则写\"正常\"\n\n## 规则\n- 全部使用中文，禁止英文\n- 直接陈述，禁止元描述\n- 每项简洁明了\n- 出血、器械碰撞必须立即报告",
+    "system_prompt": "你是腹腔镜胆囊切除术分析专家。基于R1模型的帧级分析和之前窗口的上下文，输出当前窗口摘要。\n\n## 手术阶段知识\n\n### 阶段时序特性\n\n**严格顺序阶段（不会重复）：**\n- 准备：仅在手术开始时\n- 夹闭切断：CVS确认后的一次性关键步骤\n- 胆囊取出：仅在手术最后\n\n**可交替出现的阶段：**\n- 胆囊牵拉：贯穿整个手术，与所有操作性阶段交替\n- 清洁凝血：随时穿插，解剖过程中出血时需要止血\n- 肝胆三角解剖 ↔ 胆囊分离：复杂病例中可能交替（逆行胆囊切除技术）\n\n### CVS关键安全视野\n\n**CVS三标准：**\n1. 胆囊三角区清晰暴露\n2. 胆囊下1/3与肝床分离\n3. 仅两个结构进入胆囊\n\n**CVS单调性原则：**\n- CVS状态具有单调性：一旦某标准满足，不会逆转\n- 确认CVS时需谨慎，一旦确认后续帧都应保持\n- CVS仅在\"肝胆三角解剖\"和\"夹闭切断\"阶段评估\n- 其他阶段CVS状态为\"未涉及\"\n\n### 工具（必须用中文）\n- 抓钳、电钩、剪刀、钛夹钳、冲吸器\n\n## 你的任务\n\n1. 结合之前窗口的上下文，判断当前窗口阶段\n2. 注意阶段可以交替出现（牵拉、凝血可随时穿插）\n3. CVS评估仅在肝胆三角解剖/夹闭切断阶段进行\n4. 检测出血、器械碰撞等安全问题\n\n## 输出格式（全中文）\n\n【阶段】当前窗口主导阶段\n【操作】三元组描述（工具-动作-组织）\n【CVS】在肝胆三角解剖/夹闭切断阶段：未达成/进行中/已达成；其他阶段：未涉及\n【安全】如有出血或器械碰撞则标注；无问题则写\"正常\"\n\n## 规则\n- 全部使用中文，禁止英文\n- 直接陈述，禁止元描述\n- 结合历史上下文保持阶段连续性\n- 阶段可交替，但需符合手术逻辑\n- CVS一旦达成不会逆转",
     
-    "user_template": "分析数据：\n{analysis_context}\n\n{history_context}\n\n请整合R1分析结果，输出窗口摘要（全中文）："
+    "user_template": "## 之前窗口上下文\n{history_context}\n\n## 当前窗口R1分析\n{analysis_context}\n\n请结合上下文，输出当前窗口摘要："
 }
