@@ -23,9 +23,9 @@
         "comment": "API server configuration (避免与rtc_simulator 9001冲突)"
     },
     "questions": {
-        "tool_localization": "Given the laparoscopic surgical image <image>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
-        "surgical_action": "Given the laparoscopic surgical image <image>, describe the complete surgical action in terms of tool, action, and tissue.",
-        "surgical_phase": "Given the laparoscopic surgical image <image>, which surgical phase does this frame belong to? Choose from: Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderPackaging, CleaningCoagulation, GallbladderRetraction.",
-        "comment": "Three standard questions for surgical image analysis"
+        "surgical_phase": "Given the laparoscopic cholecystectomy image <image>, which surgical phase is being performed?",
+        "surgical_action": "Given the laparoscopic cholecystectomy image <image>, describe the complete surgical action in terms of tool, action, and tissue.",
+        "tool_localization": "Given the laparoscopic cholecystectomy image <image>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
+        "comment": "Three standard questions matching training format"
     }
 }

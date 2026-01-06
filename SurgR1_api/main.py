@@ -70,16 +70,34 @@ CONFIG = load_config()
 # System prompt for surgical CoT reasoning
 SYSTEM_PROMPT = """A conversation between User and Surgical Assistant. The user asks a question related, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>"""
 
-# Three standard questions for surgical image analysis
+# Image placeholder for vLLM/Qwen2.5-VL
 # IMPORTANT: ms-swift replaces <image> with <|vision_start|><|image_pad|><|vision_end|>
 # See: ms-swift/swift/llm/template/template/qwen.py line 248 (Qwen2VLTemplate.replace_tag)
-# Training format: "Given the laparoscopic surgical image <image>, ..."
-# vLLM/Qwen2.5-VL needs: <|vision_start|><|image_pad|><|vision_end|>
-QUESTIONS = {
-    "tool_localization": "Given the laparoscopic surgical image <|vision_start|><|image_pad|><|vision_end|>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
-    "surgical_action": "Given the laparoscopic surgical image <|vision_start|><|image_pad|><|vision_end|>, describe the complete surgical action in terms of tool, action, and tissue.",
-    "surgical_phase": "Given the laparoscopic surgical image <|vision_start|><|image_pad|><|vision_end|>, which surgical phase does this frame belong to? Choose from: Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderPackaging, CleaningCoagulation, GallbladderRetraction."
-}
+# Training format uses <image>, vLLM/Qwen2.5-VL needs: <|vision_start|><|image_pad|><|vision_end|>
+VLLM_IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
+
+
+def load_questions() -> dict:
+    """Load questions from config.json and convert <image> to vLLM format"""
+    questions_config = CONFIG.get("questions", {})
+    questions = {}
+    for key, value in questions_config.items():
+        if key == "comment":
+            continue
+        # Replace <image> with vLLM image placeholder
+        questions[key] = value.replace("<image>", VLLM_IMAGE_PLACEHOLDER)
+    
+    # Fallback to default questions if config is empty (matching training format)
+    if not questions:
+        questions = {
+            "surgical_phase": f"Given the laparoscopic cholecystectomy image {VLLM_IMAGE_PLACEHOLDER}, which surgical phase is being performed?",
+            "surgical_action": f"Given the laparoscopic cholecystectomy image {VLLM_IMAGE_PLACEHOLDER}, describe the complete surgical action in terms of tool, action, and tissue.",
+            "tool_localization": f"Given the laparoscopic cholecystectomy image {VLLM_IMAGE_PLACEHOLDER}, locate all the tools in the format of bbox (x1,y1), (x2,y2)."
+        }
+    return questions
+
+
+QUESTIONS = load_questions()
 
 
 # ============================================================================
