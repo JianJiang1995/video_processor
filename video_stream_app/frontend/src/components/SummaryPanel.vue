@@ -4,29 +4,28 @@
     <div class="summary-header">
       <div class="summary-title">
         <span class="summary-title-icon">📝</span>
-        GLM 分析摘要
+        分析摘要
       </div>
-      <div class="window-indicator" v-if="currentSummary">
-        窗口 {{ currentSummary.window_id + 1 }}
+      <div class="window-indicator" v-if="displaySummary">
+        窗口 {{ displaySummary.window_id + 1 }}
       </div>
     </div>
     
-    <!-- Current Summary (Large) -->
-    <div class="current-summary" v-if="currentSummary || isProcessing">
+    <!-- Current Summary (Large) - 始终显示最新的分析结果 -->
+    <div class="current-summary" v-if="displaySummary">
       <div class="summary-card active" :class="{ highlighted: isHighlighted }">
         <div class="summary-time">
           <span>⏱️</span>
-          <span v-if="currentSummary">
-            {{ formatTime(currentSummary.start_time) }} - {{ formatTime(currentSummary.end_time) }}
+          <span>
+            {{ formatTime(displaySummary.start_time) }} - {{ formatTime(displaySummary.end_time) }}
           </span>
-          <span v-else>处理中...</span>
         </div>
         
-        <div class="summary-text" :class="{ loading: !currentSummary }">
-          {{ currentSummary?.summary || '正在分析视频片段...' }}
+        <div class="summary-text">
+          {{ displaySummary.summary }}
         </div>
         
-        <div class="summary-actions" v-if="currentSummary">
+        <div class="summary-actions">
           <button 
             class="action-btn" 
             :class="{ playing: isTTSPlaying }"
@@ -63,7 +62,7 @@
         :ref="el => setItemRef(summary.window_id, el)"
         class="summary-card"
         :class="{ 
-          active: summary.window_id === currentSummary?.window_id,
+          active: summary.window_id === displaySummary?.window_id,
           highlighted: summary.window_id === highlightedWindowId,
           'already-animated': animatedWindows.has(summary.window_id)
         }"
@@ -180,9 +179,21 @@ const sortedSummaries = computed(() => {
   return sorted
 })
 
+// 用于顶部显示的摘要：优先显示 currentSummary，否则显示最新的历史记录
+const displaySummary = computed(() => {
+  if (props.currentSummary) {
+    return props.currentSummary
+  }
+  // 如果没有 currentSummary，显示最新的历史记录（window_id 最大的）
+  if (props.summaries.length > 0) {
+    return [...props.summaries].sort((a, b) => b.window_id - a.window_id)[0]
+  }
+  return null
+})
+
 // Check if current summary is highlighted
 const isHighlighted = computed(() => {
-  return props.currentSummary && props.highlightedWindowId === props.currentSummary.window_id
+  return displaySummary.value && props.highlightedWindowId === displaySummary.value.window_id
 })
 
 // Store refs for each summary card
@@ -247,9 +258,9 @@ const playTTS = () => {
     return
   }
   
-  if (props.currentSummary) {
+  if (displaySummary.value) {
     isTTSPlaying.value = true
-    emit('tts', props.currentSummary)
+    emit('tts', displaySummary.value)
     
     // Simulate TTS completion
     setTimeout(() => {
@@ -259,14 +270,14 @@ const playTTS = () => {
 }
 
 const showSAM2 = () => {
-  if (props.currentSummary) {
-    emit('sam2', props.currentSummary.start_time)
+  if (displaySummary.value) {
+    emit('sam2', displaySummary.value.start_time)
   }
 }
 
 const copySummary = () => {
-  if (props.currentSummary?.summary) {
-    navigator.clipboard.writeText(props.currentSummary.summary)
+  if (displaySummary.value?.summary) {
+    navigator.clipboard.writeText(displaySummary.value.summary)
   }
 }
 
