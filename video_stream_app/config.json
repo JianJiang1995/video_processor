@@ -1,6 +1,19 @@
 {
     "description": "Video Stream Analyzer Configuration",
-    
+    "window_analysis": {
+        "provider": "gemini",
+        "history_window_count": 10,
+        "max_output_chars": 300,
+        "min_frames_ratio": 0.3,
+        "comment": "provider: VLM提供商; history_window_count: 上下文窗口数; max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.3=30%，适应实时流处理延迟)"
+    },
+    "chat_assistant": {
+        "provider": "gemini",
+        "compress_window_count": 5,
+        "compress_prompt_file": "prompts/compress_summary_prompt.txt",
+        "max_context_summaries": 50,
+        "comment": "provider: 聊天使用的VLM(gemini/qwen/glm); compress_window_count: 每N个窗口总结进行一次压缩; max_context_summaries: 最大压缩总结数量"
+    },
     "services": {
         "frontend": {
             "port": 5176,
@@ -62,18 +75,32 @@
             "host": "localhost",
             "api_url": "http://localhost:8765",
             "ws_url": "ws://localhost:8765",
-            "keywords": ["你好小助", "小助小助", "开始识别"],
+            "keywords": [
+                "你好小助",
+                "小助小助",
+                "开始识别"
+            ],
             "standby_timeout": 180,
             "comment": "FunASR API - 长时间监控模式，唤醒后待机N分钟后进入监控模式 [可选服务]"
+        },
+        "gemini": {
+            "enabled": true,
+            "required": false,
+            "api_key_env": "GEMINI_API_KEY",
+            "model_name": "gemini-3-flash-preview",
+            "thinking_level": "low",
+            "max_tokens": 1000,
+            "max_concurrent": 8,
+            "retry_count": 3,
+            "retry_delay": 1.0,
+            "comment": "Gemini 3.0 Flash API - Google多模态分析，需设置GEMINI_API_KEY环境变量 [可选服务]"
         }
     },
-    
     "video_processing": {
         "window_duration": 15.0,
         "sample_interval": 1.0,
         "comment": "N=15秒窗口，每秒采样1帧，每个窗口15帧"
     },
-    
     "analysis": {
         "questions": {
             "tool_localization": "Given the laparoscopic surgical image <image>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
@@ -83,7 +110,6 @@
         "temperature": 0.1,
         "max_tokens": 512
     },
-    
     "database": {
         "mysql": {
             "host": "localhost",
@@ -94,7 +120,6 @@
             "comment": "MySQL用于存储所有数据（会话、分析结果、对话历史）"
         }
     },
-    
     "openai": {
         "comment": "用于GPT总结和TTS（备用），从 .env 读取 OPENAI_API_KEY"
     }

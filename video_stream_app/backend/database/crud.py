@@ -166,12 +166,12 @@ def create_window_summary(
     tools_detected: list = None,
     key_actions: list = None
 ) -> int:
-    """Create window summary record"""
+    """Create window summary record and trigger compression check"""
     from ..services.mysql_service import get_mysql_service
     
     session_str = _resolve_session_id(session_id)
     
-    return get_mysql_service().save_analysis(
+    result_id = get_mysql_service().save_analysis(
         session_id=session_str,
         window_id=window_id,
         window_start=start_time,
@@ -180,6 +180,37 @@ def create_window_summary(
         glm_summary=summary_text,
         surgical_phase=dominant_phase
     )
+    
+    # Trigger async compression check in background
+    _trigger_compression_check(session_str)
+    
+    return result_id
+
+
+def _trigger_compression_check(session_id: str):
+    """Trigger compression check in background (non-blocking)"""
+    import asyncio
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    async def _check_and_compress():
+        try:
+            from ..services.summary_compressor import check_and_compress_for_session
+            result = await check_and_compress_for_session(session_id)
+            if result and result.get("success"):
+                logger.info(f"[CRUD] Compressed windows {result.get('window_start_id')}-{result.get('window_end_id')} for session {session_id}")
+        except Exception as e:
+            logger.warning(f"[CRUD] Compression check failed for {session_id}: {e}")
+    
+    try:
+        # Try to get running event loop
+        loop = asyncio.get_running_loop()
+        # Schedule task in the existing loop
+        loop.create_task(_check_and_compress())
+    except RuntimeError:
+        # No running loop - skip compression (will be done next time)
+        pass
 
 
 def get_summaries_by_session(db, session_id) -> List[Dict[str, Any]]:

@@ -126,6 +126,35 @@ class ChatHistory(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class CompressedSummary(Base):
+    """压缩总结表 - 多个窗口总结的压缩版本"""
+    __tablename__ = "compressed_summaries"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # 会话信息
+    session_id = Column(String(64), nullable=False, index=True, comment="会话ID")
+    
+    # 窗口范围
+    window_start_id = Column(Integer, nullable=False, comment="起始窗口ID")
+    window_end_id = Column(Integer, nullable=False, comment="结束窗口ID")
+    window_count = Column(Integer, nullable=False, comment="压缩的窗口数量")
+    
+    # 时间范围
+    time_start = Column(Float, nullable=True, comment="起始时间戳(秒)")
+    time_end = Column(Float, nullable=True, comment="结束时间戳(秒)")
+    
+    # 压缩总结内容
+    compressed_text = Column(Text, nullable=False, comment="压缩后的总结文本")
+    
+    # 原始窗口总结ID列表
+    source_window_ids = Column(Text, nullable=True, comment="原始窗口ID列表 (JSON数组)")
+    
+    # 元数据
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    processing_time = Column(Float, nullable=True, comment="压缩处理耗时(秒)")
+
+
 # ============================================================================
 # Database Service
 # ============================================================================
@@ -294,6 +323,7 @@ class MySQLService:
                     "id": vs.id,
                     "session_id": vs.session_id,
                     "video_name": vs.video_name,
+                    "video_path": vs.video_path,
                     "video_type": vs.video_type,
                     "duration": vs.duration,
                     "storage_path": vs.storage_path,
@@ -302,6 +332,108 @@ class MySQLService:
                 }
                 for vs in results
             ]
+    
+    def delete_video_session(self, session_id: str) -> Dict[str, Any]:
+        """删除单个视频会话及其所有关联数据
+        
+        Returns:
+            Dict with deleted counts for each table and storage_path for file cleanup
+        """
+        import shutil
+        
+        result = {
+            "session_id": session_id,
+            "session_deleted": False,
+            "analysis_deleted": 0,
+            "chat_deleted": 0,
+            "storage_deleted": False,
+            "storage_path": None
+        }
+        
+        with self.get_session() as session:
+            # 1. Get session info first (for storage_path)
+            vs = session.query(VideoSession).filter(
+                VideoSession.session_id == session_id
+            ).first()
+            
+            if vs:
+                result["storage_path"] = vs.storage_path
+                
+                # 2. Delete analysis results
+                analysis_count = session.query(AnalysisResult).filter(
+                    AnalysisResult.session_id == session_id
+                ).delete()
+                result["analysis_deleted"] = analysis_count
+                
+                # 3. Delete chat history
+                chat_count = session.query(ChatHistory).filter(
+                    ChatHistory.session_id == session_id
+                ).delete()
+                result["chat_deleted"] = chat_count
+                
+                # 4. Delete video session
+                session.delete(vs)
+                result["session_deleted"] = True
+                
+                # 5. Delete storage folder if exists
+                if vs.storage_path:
+                    storage_path = Path(vs.storage_path)
+                    if storage_path.exists():
+                        try:
+                            shutil.rmtree(storage_path)
+                            result["storage_deleted"] = True
+                            logger.info(f"[MySQL] Deleted storage folder: {storage_path}")
+                        except Exception as e:
+                            logger.warning(f"[MySQL] Failed to delete storage folder: {e}")
+                
+                logger.info(f"[MySQL] Deleted session {session_id}: {result}")
+            else:
+                logger.warning(f"[MySQL] Session not found: {session_id}")
+        
+        return result
+    
+    def delete_all_video_sessions(self) -> Dict[str, Any]:
+        """删除所有视频会话及其所有关联数据
+        
+        Returns:
+            Dict with total deleted counts
+        """
+        import shutil
+        
+        result = {
+            "sessions_deleted": 0,
+            "analysis_deleted": 0,
+            "chat_deleted": 0,
+            "storage_deleted": 0
+        }
+        
+        with self.get_session() as session:
+            # 1. Get all sessions first (for storage_paths)
+            all_sessions = session.query(VideoSession).all()
+            storage_paths = [vs.storage_path for vs in all_sessions if vs.storage_path]
+            
+            # 2. Delete all analysis results
+            result["analysis_deleted"] = session.query(AnalysisResult).delete()
+            
+            # 3. Delete all chat history
+            result["chat_deleted"] = session.query(ChatHistory).delete()
+            
+            # 4. Delete all video sessions
+            result["sessions_deleted"] = session.query(VideoSession).delete()
+            
+            # 5. Delete storage folders
+            for storage_path in storage_paths:
+                path = Path(storage_path)
+                if path.exists():
+                    try:
+                        shutil.rmtree(path)
+                        result["storage_deleted"] += 1
+                    except Exception as e:
+                        logger.warning(f"[MySQL] Failed to delete storage folder {path}: {e}")
+            
+            logger.info(f"[MySQL] Deleted all sessions: {result}")
+        
+        return result
     
     # ========================================================================
     # Analysis Results Operations
@@ -325,28 +457,76 @@ class MySQLService:
         image_saved: int = 0,
         processing_time: float = None
     ) -> int:
-        """保存分析结果，返回ID"""
+        """保存分析结果，返回ID
+        
+        使用 upsert 逻辑：如果同一 session_id + timestamp 的记录已存在，则更新；否则创建新记录。
+        这样可以避免因视频循环或 R1 重试导致的重复记录。
+        """
         with self.get_session() as session:
-            result = AnalysisResult(
-                session_id=session_id,
-                video_name=video_name,
-                frame_idx=frame_idx,
-                timestamp=timestamp,
-                window_id=window_id,
-                window_start=window_start,
-                window_end=window_end,
-                analysis_type=analysis_type,
-                tool_localization=tool_localization,
-                surgical_action=surgical_action,
-                surgical_phase=surgical_phase,
-                glm_summary=glm_summary,
-                image_path=image_path,
-                image_saved=image_saved,
-                processing_time=processing_time
-            )
-            session.add(result)
-            session.flush()
-            return result.id
+            # 检查是否已存在同一 session_id + timestamp 的记录
+            existing = None
+            if timestamp is not None:
+                # 使用四舍五入到 0.1 秒精度来匹配
+                ts_lower = round(timestamp, 1) - 0.05
+                ts_upper = round(timestamp, 1) + 0.05
+                existing = session.query(AnalysisResult).filter(
+                    AnalysisResult.session_id == session_id,
+                    AnalysisResult.timestamp >= ts_lower,
+                    AnalysisResult.timestamp <= ts_upper
+                ).first()
+            
+            if existing:
+                # 更新现有记录
+                if video_name is not None:
+                    existing.video_name = video_name
+                if frame_idx is not None:
+                    existing.frame_idx = frame_idx
+                if window_id is not None:
+                    existing.window_id = window_id
+                if window_start is not None:
+                    existing.window_start = window_start
+                if window_end is not None:
+                    existing.window_end = window_end
+                if analysis_type is not None:
+                    existing.analysis_type = analysis_type
+                if tool_localization is not None:
+                    existing.tool_localization = tool_localization
+                if surgical_action is not None:
+                    existing.surgical_action = surgical_action
+                if surgical_phase is not None:
+                    existing.surgical_phase = surgical_phase
+                if glm_summary is not None:
+                    existing.glm_summary = glm_summary
+                if image_path is not None:
+                    existing.image_path = image_path
+                if image_saved is not None:
+                    existing.image_saved = image_saved
+                if processing_time is not None:
+                    existing.processing_time = processing_time
+                session.flush()
+                return existing.id
+            else:
+                # 创建新记录
+                result = AnalysisResult(
+                    session_id=session_id,
+                    video_name=video_name,
+                    frame_idx=frame_idx,
+                    timestamp=timestamp,
+                    window_id=window_id,
+                    window_start=window_start,
+                    window_end=window_end,
+                    analysis_type=analysis_type,
+                    tool_localization=tool_localization,
+                    surgical_action=surgical_action,
+                    surgical_phase=surgical_phase,
+                    glm_summary=glm_summary,
+                    image_path=image_path,
+                    image_saved=image_saved,
+                    processing_time=processing_time
+                )
+                session.add(result)
+                session.flush()
+                return result.id
     
     def get_analyses(
         self,
@@ -566,6 +746,149 @@ class MySQLService:
         with self.get_session() as session:
             session.query(ChatHistory).filter(
                 ChatHistory.session_id == session_id
+            ).delete()
+    
+    # ========================================================================
+    # Compressed Summary Operations
+    # ========================================================================
+    
+    def save_compressed_summary(
+        self,
+        session_id: str,
+        window_start_id: int,
+        window_end_id: int,
+        compressed_text: str,
+        time_start: float = None,
+        time_end: float = None,
+        source_window_ids: List[int] = None,
+        processing_time: float = None
+    ) -> int:
+        """保存压缩总结"""
+        with self.get_session() as session:
+            summary = CompressedSummary(
+                session_id=session_id,
+                window_start_id=window_start_id,
+                window_end_id=window_end_id,
+                window_count=window_end_id - window_start_id + 1,
+                time_start=time_start,
+                time_end=time_end,
+                compressed_text=compressed_text,
+                source_window_ids=json.dumps(source_window_ids) if source_window_ids else None,
+                processing_time=processing_time
+            )
+            session.add(summary)
+            session.flush()
+            logger.info(f"[MySQLService] Saved compressed summary {summary.id} for windows {window_start_id}-{window_end_id}")
+            return summary.id
+    
+    def get_compressed_summaries(
+        self,
+        session_id: str,
+        limit: int = None
+    ) -> List[Dict[str, Any]]:
+        """获取会话的所有压缩总结"""
+        with self.get_session() as session:
+            query = session.query(CompressedSummary).filter(
+                CompressedSummary.session_id == session_id
+            ).order_by(CompressedSummary.window_start_id.asc())
+            
+            if limit:
+                query = query.limit(limit)
+            
+            results = query.all()
+            
+            return [
+                {
+                    "id": r.id,
+                    "window_start_id": r.window_start_id,
+                    "window_end_id": r.window_end_id,
+                    "window_count": r.window_count,
+                    "time_start": r.time_start,
+                    "time_end": r.time_end,
+                    "compressed_text": r.compressed_text,
+                    "created_at": r.created_at.isoformat() if r.created_at else None
+                }
+                for r in results
+            ]
+    
+    def get_compressed_summaries_context(
+        self,
+        session_id: str,
+        limit: int = None
+    ) -> str:
+        """获取压缩总结作为上下文字符串"""
+        summaries = self.get_compressed_summaries(session_id, limit)
+        
+        if not summaries:
+            return "暂无手术记录总结。"
+        
+        context_parts = ["## 手术记录总结\n"]
+        for i, s in enumerate(summaries):
+            time_range = ""
+            if s.get("time_start") is not None and s.get("time_end") is not None:
+                time_range = f" ({s['time_start']:.1f}s - {s['time_end']:.1f}s)"
+            
+            context_parts.append(f"### 阶段 {i+1}{time_range}")
+            context_parts.append(s["compressed_text"])
+            context_parts.append("")
+        
+        return "\n".join(context_parts)
+    
+    def get_last_compressed_window_id(self, session_id: str) -> Optional[int]:
+        """获取最后一个被压缩的窗口ID"""
+        with self.get_session() as session:
+            result = session.query(func.max(CompressedSummary.window_end_id)).filter(
+                CompressedSummary.session_id == session_id
+            ).scalar()
+            return result
+    
+    def get_uncompressed_window_count(self, session_id: str) -> int:
+        """获取未被压缩的窗口数量"""
+        last_compressed_id = self.get_last_compressed_window_id(session_id)
+        
+        with self.get_session() as session:
+            query = session.query(func.count(AnalysisResult.id)).filter(
+                AnalysisResult.session_id == session_id,
+                AnalysisResult.analysis_type == "window"
+            )
+            
+            if last_compressed_id is not None:
+                query = query.filter(AnalysisResult.window_id > last_compressed_id)
+            
+            return query.scalar() or 0
+    
+    def get_uncompressed_windows(self, session_id: str) -> List[Dict[str, Any]]:
+        """获取未被压缩的窗口总结"""
+        last_compressed_id = self.get_last_compressed_window_id(session_id)
+        
+        with self.get_session() as session:
+            query = session.query(AnalysisResult).filter(
+                AnalysisResult.session_id == session_id,
+                AnalysisResult.analysis_type == "window"
+            )
+            
+            if last_compressed_id is not None:
+                query = query.filter(AnalysisResult.window_id > last_compressed_id)
+            
+            results = query.order_by(AnalysisResult.window_id.asc()).all()
+            
+            return [
+                {
+                    "id": r.id,
+                    "window_id": r.window_id,
+                    "window_start": r.window_start,
+                    "window_end": r.window_end,
+                    "glm_summary": r.glm_summary,
+                    "surgical_phase": r.surgical_phase
+                }
+                for r in results
+            ]
+    
+    def clear_compressed_summaries(self, session_id: str):
+        """清除压缩总结"""
+        with self.get_session() as session:
+            session.query(CompressedSummary).filter(
+                CompressedSummary.session_id == session_id
             ).delete()
 
 

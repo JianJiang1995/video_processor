@@ -1,14 +1,18 @@
 """
 Conversation Service
-Integrates ASR (wake word monitoring), GLM (response generation), and MySQL (context storage).
+Integrates ASR (wake word monitoring), VLM (response generation), and MySQL (context storage).
 
 Flow:
 1. Continuous wake word monitoring via ASR
 2. When wake word detected, enter active listening mode
 3. Collect user input, validate it's not noise
-4. Send user query + surgical context from MySQL to GLM
-5. Return GLM response (with TTS audio)
+4. Send user query + compressed surgical context to VLM (Gemini/Qwen/GLM)
+5. Return VLM response (with TTS audio)
 6. If no valid input for N seconds, return to monitoring mode
+
+Updated to use:
+- VLM Factory for provider selection (config.json: chat_assistant.provider)
+- SummaryCompressor for context management (compressed window summaries)
 """
 import asyncio
 import json
@@ -16,10 +20,22 @@ import logging
 import time
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, Any, List, Callable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Load config
+CONFIG_PATH = Path(__file__).parent.parent.parent / "config.json"
+
+
+def load_config() -> dict:
+    """Load configuration from config.json"""
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, 'r') as f:
+            return json.load(f)
+    return {}
 
 
 class ConversationService:
@@ -37,7 +53,7 @@ class ConversationService:
         r'^\.+$',  # Just dots
         r'^\s*$',  # Empty or whitespace
         r'^[0-9]+$',  # Just numbers
-        r'^[。，、！？；：""''（）【】…—\s]+$',  # Only punctuation
+        r'^[。，、！？；：""''（）【】…— \t\n]+$',  # Only punctuation and whitespace
         r'^(对|是|好|行|嗯|哦|啊|谢谢)[。，]?$',  # Common ASR hallucinations
         r'^(对对|好好|是是|嗯嗯)[。，]?$',  # Repeated single chars
         r'^(对的|好的|是的|行的)[。，]?$',  # Common confirmations (often hallucinations)
@@ -62,10 +78,18 @@ class ConversationService:
         self.last_activity_time = None
         self.activation_time = None
         
+        # Load chat assistant config
+        config = load_config()
+        chat_config = config.get("chat_assistant", {})
+        self.provider = chat_config.get("provider", "gemini")
+        
+        logger.info(f"[ConversationService] Initialized for session {session_id}, VLM provider: {self.provider}")
+        
         # Service references (lazy loaded)
         self._mysql_service = None
-        self._glm_client = None
+        self._vlm_client = None
         self._tts_client = None
+        self._summary_compressor = None
     
     @property
     def mysql_service(self):
@@ -75,11 +99,12 @@ class ConversationService:
         return self._mysql_service
     
     @property
-    def glm_client(self):
-        if self._glm_client is None:
-            from .glm_client import get_glm_client
-            self._glm_client = get_glm_client()
-        return self._glm_client
+    def vlm_client(self):
+        """Get VLM client based on chat_assistant.provider config"""
+        if self._vlm_client is None:
+            from .vlm_factory import get_vlm_client
+            self._vlm_client = get_vlm_client()
+        return self._vlm_client
     
     @property
     def tts_client(self):
@@ -87,6 +112,14 @@ class ConversationService:
             from .tts_cosyvoice_client import get_tts_client
             self._tts_client = get_tts_client()
         return self._tts_client
+    
+    @property
+    def summary_compressor(self):
+        """Get SummaryCompressor for context management"""
+        if self._summary_compressor is None:
+            from .summary_compressor import get_summary_compressor
+            self._summary_compressor = get_summary_compressor(self.session_id)
+        return self._summary_compressor
     
     def is_valid_input(self, text: str) -> bool:
         """Check if the input is valid (not noise)"""
@@ -150,7 +183,7 @@ class ConversationService:
         }
         
         # Save to conversation history
-        self.mysql_service.save_conversation(
+        self.mysql_service.save_chat(
             session_id=self.session_id,
             role="system",
             content=f"[唤醒词: {keyword}]"
@@ -162,7 +195,8 @@ class ConversationService:
         """
         Handle user input after wake word activation.
         
-        Returns response with GLM answer and optional TTS audio.
+        Returns response with VLM answer and optional TTS audio.
+        Uses compressed summaries as context for efficient token usage.
         """
         self.last_activity_time = time.time()
         
@@ -178,55 +212,34 @@ class ConversationService:
         self.set_mode("processing")
         
         # Save user message
-        self.mysql_service.save_conversation(
+        self.mysql_service.save_chat(
             session_id=self.session_id,
             role="user",
             content=text
         )
         
-        # Get surgical context from MySQL
-        surgical_context = self.mysql_service.get_recent_surgr1_context(
-            session_id=self.session_id,
-            limit=10
-        )
+        # Get surgical context from compressed summaries
+        # This includes all compressed summaries + recent uncompressed windows
+        surgical_context = self.summary_compressor.get_context_for_chat()
         
-        # Also get recent GLM summaries
-        glm_context = self.mysql_service.get_recent_glm_context(
-            session_id=self.session_id,
-            limit=5
-        )
+        logger.info(f"[ConversationService] Context length: {len(surgical_context)} chars")
         
-        full_context = surgical_context
-        if glm_context:
-            full_context += "\n\n" + glm_context
-        
-        # Get GLM response
+        # Get VLM response (uses configured provider: gemini/qwen/glm)
         try:
-            glm_result = await self.glm_client.chat_with_context(
+            vlm_result = await self.vlm_client.chat_with_context(
                 user_query=text,
-                surgical_context=full_context,
+                surgical_context=surgical_context,
                 disable_thinking=True  # 禁用思考模式加速
             )
             
-            if glm_result.get("success"):
-                response_text = glm_result.get("text", "")
-                
-                # Save GLM response to MySQL
-                glm_id = self.mysql_service.save_glm_summary(
-                    session_id=self.session_id,
-                    summary_text=response_text,
-                    summary_type="conversation",
-                    user_query=text,
-                    tokens_used=glm_result.get("tokens_used"),
-                    thinking_disabled=True
-                )
+            if vlm_result.get("success"):
+                response_text = vlm_result.get("text", "")
                 
                 # Save assistant message
-                self.mysql_service.save_conversation(
+                self.mysql_service.save_chat(
                     session_id=self.session_id,
                     role="assistant",
-                    content=response_text,
-                    glm_summary_id=glm_id
+                    content=response_text
                 )
                 
                 # Generate TTS audio
@@ -242,7 +255,7 @@ class ConversationService:
                     "response_text": response_text,
                     "audio_base64": audio_base64,
                     "audio_format": "wav",
-                    "glm_id": glm_id,
+                    "provider": self.provider,
                     "timestamp": time.time()
                 }
                 
@@ -252,7 +265,7 @@ class ConversationService:
                 return result
                 
             else:
-                error_msg = glm_result.get("error", "GLM响应失败")
+                error_msg = vlm_result.get("error", "VLM响应失败")
                 self.set_mode("listening")
                 return {
                     "type": "error",

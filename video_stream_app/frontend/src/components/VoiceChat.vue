@@ -3,8 +3,8 @@
     <!-- Header -->
     <div class="voice-chat-header" @click="toggleCollapse">
       <div class="voice-chat-title">
-        <span class="voice-icon">🎤</span>
-        <span>语音助手</span>
+        <span class="voice-icon">🤖</span>
+        <span>智能助手</span>
         <span class="mode-badge" :class="mode">
           {{ modeLabel }}
         </span>
@@ -59,8 +59,27 @@
         <div v-if="messages.length === 0 && !interimText" class="chat-empty">
           <div class="empty-icon">💬</div>
           <div class="empty-text">开始对话</div>
-          <div class="empty-hint">点击下方麦克风按钮，或说出唤醒词</div>
+          <div class="empty-hint">输入文字或点击麦克风进行语音对话</div>
         </div>
+      </div>
+      
+      <!-- Text Input -->
+      <div class="text-input-area">
+        <input
+          type="text"
+          v-model="textInput"
+          @keyup.enter="sendTextMessage"
+          placeholder="输入消息..."
+          class="text-input"
+          :disabled="isSending"
+        />
+        <button 
+          class="send-btn"
+          @click="sendTextMessage"
+          :disabled="!textInput.trim() || isSending"
+        >
+          {{ isSending ? '⏳' : '📤' }}
+        </button>
       </div>
       
       <!-- Voice Controls -->
@@ -90,27 +109,23 @@
             :class="{ recording: isRecording, listening: isListening, disabled: !asrStatus.available }"
             @click="toggleRecording"
             :disabled="!asrStatus.available && !isRecording && !isListening"
-            :title="!asrStatus.available ? 'ASR 服务不可用' : ''"
           >
             <span class="record-icon">
               {{ isRecording ? '⏹️' : isListening ? '👂' : '🎤' }}
             </span>
             <span class="record-label">
-              {{ !asrStatus.available ? 'ASR 不可用' : recordButtonLabel }}
+              {{ recordButtonLabel }}
             </span>
           </button>
         </div>
         
         <!-- Status -->
-        <div class="voice-status">
+        <div class="voice-status" v-if="isRecording || isListening">
           <span v-if="isRecording" class="status-recording">
             🔴 录音中...
           </span>
           <span v-else-if="isListening" class="status-listening">
             👂 监听唤醒词中...
-          </span>
-          <span v-else class="status-idle">
-            ⚪ 就绪
           </span>
         </div>
       </div>
@@ -155,6 +170,8 @@ const interimText = ref('')
 const keywords = ref(['你好小助', '小助小助', '开始识别'])
 const currentPlayingIdx = ref(-1)
 const currentAudio = ref(null)
+const textInput = ref('')
+const isSending = ref(false)
 
 // Service status (only ASR needed for button state)
 const asrStatus = ref({ available: true, checking: false })
@@ -532,6 +549,61 @@ const formatTime = (timestamp) => {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+// Send text message
+const sendTextMessage = async () => {
+  const text = textInput.value.trim()
+  if (!text || isSending.value) return
+  
+  isSending.value = true
+  textInput.value = ''
+  
+  // Add user message
+  addMessage({
+    role: 'user',
+    content: text,
+    timestamp: Date.now() / 1000
+  })
+  
+  try {
+    // Call chat API with ChatMessage format
+    const response = await axios.post(`/api/voice/chat/${props.sessionId}/send`, {
+      role: 'user',
+      content: text,
+      timestamp: Date.now() / 1000
+    })
+    
+    if (response.data.success && response.data.response) {
+      const assistantResponse = response.data.response
+      addMessage({
+        role: 'assistant',
+        content: assistantResponse.content,
+        timestamp: assistantResponse.timestamp || Date.now() / 1000,
+        audio_base64: assistantResponse.audio_base64
+      })
+      
+      // Auto-play the response if audio is available
+      if (assistantResponse.audio_base64) {
+        playResponseAudio(assistantResponse.audio_base64)
+      }
+    } else {
+      addMessage({
+        role: 'assistant',
+        content: `错误: ${response.data.error || '未知错误'}`,
+        timestamp: Date.now() / 1000
+      })
+    }
+  } catch (error) {
+    console.error('Chat error:', error)
+    addMessage({
+      role: 'assistant',
+      content: `发送失败: ${error.response?.data?.detail || error.message || '网络错误'}`,
+      timestamp: Date.now() / 1000
+    })
+  } finally {
+    isSending.value = false
+  }
+}
+
 // Check ASR status for button state
 const checkAsrStatus = async () => {
   try {
@@ -885,6 +957,63 @@ onUnmounted(() => {
   background: var(--bg-elevated);
   border-radius: var(--radius-sm);
   color: var(--warning);
+}
+
+/* Text Input Area */
+.text-input-area {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-tertiary);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.text-input {
+  flex: 1;
+  padding: 0.6rem 1rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.text-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.text-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.text-input:disabled {
+  background: var(--bg-tertiary);
+  cursor: not-allowed;
+}
+
+.send-btn {
+  padding: 0.6rem 1rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: scale(1.05);
+}
+
+.send-btn:disabled {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
 }
 
 @keyframes pulse {
