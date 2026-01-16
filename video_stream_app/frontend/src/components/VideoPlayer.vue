@@ -193,7 +193,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop'])
+const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed'])
 
 const videoRef = ref(null)
 const streamImgRef = ref(null)
@@ -217,18 +217,39 @@ let loopPlaybackTimer = null  // Timer for simulating playback
 const loopFrameCache = ref([])  // Cached frames for the loop window
 const loopCacheLoading = ref(false)  // Whether we're loading the frame cache
 
-// Computed: check if it's an HTTP stream URL
-const isHttpStream = computed(() => {
+// Computed: check if it's an HTTP stream URL (MJPEG from stream server)
+const isHttpMjpegStream = computed(() => {
   if (!props.session?.video_path) return false
   const path = props.session.video_path
   return path.startsWith('http://') || path.startsWith('https://')
 })
 
-// Computed: get the stream URL directly
+// Computed: check if it's an RTSP stream (needs proxy for MJPEG conversion)
+const isRtspStream = computed(() => {
+  if (!props.session?.video_path) return false
+  return props.session.video_path.startsWith('rtsp://')
+})
+
+// Combined: is any type of live stream (HTTP/HTTPS/RTSP)
+const isHttpStream = computed(() => isHttpMjpegStream.value || isRtspStream.value)
+
+// Computed: get the stream URL
+// - HTTP/HTTPS streams (like stream_simulator) are already MJPEG, use directly
+// - RTSP streams need our proxy for MJPEG conversion
 const streamUrl = computed(() => {
-  if (isHttpStream.value) {
+  if (!props.session?.session_id) return ''
+  
+  if (isRtspStream.value) {
+    // RTSP needs proxy for MJPEG conversion with frame pacing
+    return `/api/video/mjpeg-proxy/${props.session.session_id}?fps=25&quality=85`
+  }
+  
+  if (isHttpMjpegStream.value) {
+    // HTTP streams (like stream_simulator) are already MJPEG with frame pacing
+    // Use directly to avoid double-encoding overhead
     return props.session.video_path
   }
+  
   return ''
 })
 
@@ -412,188 +433,418 @@ const isLoopPlaybackMode = computed(() => {
   return props.mode === 'stream' && isHttpStream.value && props.loopWindow !== null
 })
 
-// Load frames for the loop window from backend - preload all saved frames
+// Background loading state
+let backgroundLoadingAborted = false
+
+// Preload a single image with optional createImageBitmap for better performance
+const preloadImage = async (url) => {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = async () => {
+      // Use createImageBitmap if available for pre-decoded bitmap (faster rendering)
+      if (typeof createImageBitmap !== 'undefined') {
+        try {
+          await createImageBitmap(img)
+        } catch (e) {
+          // Ignore bitmap creation errors, image is still cached
+        }
+      }
+      resolve(true)
+    }
+    img.onerror = () => resolve(false)
+    img.src = url
+  })
+}
+
+// Load frames for the loop window - optimized with preview frames and batch loading
 const loadLoopWindowFrames = async () => {
-  if (!props.session || !props.loopWindow) return
+  if (!props.session || !props.loopWindow) return false
   
   loopCacheLoading.value = true
   loopFrameCache.value = []
+  backgroundLoadingAborted = false
   
-  console.log(`[LoopPlayback] Loading saved frames for window ${props.loopWindow.window_id} (${props.loopWindow.start_time}-${props.loopWindow.end_time}s)`)
+  const windowDuration = props.loopWindow.end_time - props.loopWindow.start_time
+  // Request enough frames to cover the entire window
+  // Backend may have 10-15 fps, so request 15 fps worth of frames
+  // Allow up to 300 frames for a 20-second window
+  const maxFrames = Math.min(Math.ceil(windowDuration * 15), 300)
+  
+  console.log(`[LoopPlayback] Loading frames for window ${props.loopWindow.window_id} (${props.loopWindow.start_time.toFixed(1)}-${props.loopWindow.end_time.toFixed(1)}s, max ${maxFrames} frames)`)
   
   try {
-    // First, get the list of actually saved frames in this time range
-    const listResponse = await fetch(
-      `/api/analysis/frames-in-range/${props.session.session_id}?start=${props.loopWindow.start_time}&end=${props.loopWindow.end_time}`
+    // Use batch API with URL mode and preview frames (faster - smaller files, ~40KB vs ~600KB)
+    const batchResponse = await fetch(
+      `/api/analysis/frames-batch/${props.session.session_id}?start=${props.loopWindow.start_time}&end=${props.loopWindow.end_time}&max_frames=${maxFrames}&use_url=true&use_preview=true`
     )
     
-    if (!listResponse.ok) {
-      console.warn('[LoopPlayback] Failed to get frames list')
-      return
-    }
-    
-    const listData = await listResponse.json()
-    const savedFrames = listData.frames || []
-    
-    console.log(`[LoopPlayback] Found ${savedFrames.length} saved frames in range`)
-    
-    if (savedFrames.length === 0) {
-      console.log('[LoopPlayback] No saved frames - will show loading state')
-      return
-    }
-    
-    // Load frame images in batches
-    const batchSize = 10
-    const loadedFrames = []
-    
-    for (let i = 0; i < savedFrames.length; i += batchSize) {
-      const batch = savedFrames.slice(i, i + batchSize)
-      const promises = batch.map(async (frameInfo) => {
-        try {
-          const response = await fetch(
-            `/api/analysis/frame-at-timestamp/${props.session.session_id}?timestamp=${frameInfo.timestamp}&tolerance=0.2`
-          )
-          if (response.ok) {
-            const data = await response.json()
-            if (data.image_base64 && data.has_saved_frame) {
-              return { 
-                timestamp: frameInfo.timestamp, 
-                image_base64: data.image_base64,
-                is_saved: true
-              }
-            }
+    if (batchResponse.ok) {
+      const batchData = await batchResponse.json()
+      if (batchData.success && batchData.frames && batchData.frames.length > 0) {
+        // Frames with URLs - sort by timestamp and remove duplicates
+        // Duplicates can occur when a session is analyzed multiple times
+        const sortedFrames = batchData.frames
+          .map(f => ({
+            timestamp: f.timestamp,
+            url: f.url  // Direct URL to static file
+          }))
+          .sort((a, b) => a.timestamp - b.timestamp)
+        
+        // Remove duplicate timestamps - keep first occurrence (most recent file)
+        const seenTimestamps = new Set()
+        const loadedFrames = sortedFrames.filter(f => {
+          // Round to 2 decimal places to handle floating point comparison
+          const tsKey = Math.round(f.timestamp * 100)
+          if (seenTimestamps.has(tsKey)) {
+            return false
           }
-        } catch (e) {
-          console.warn(`[LoopPlayback] Failed to load frame at ${frameInfo.timestamp}:`, e)
+          seenTimestamps.add(tsKey)
+          return true
+        })
+        
+        if (sortedFrames.length !== loadedFrames.length) {
+          console.log(`[LoopPlayback] Removed ${sortedFrames.length - loadedFrames.length} duplicate timestamp frames`)
         }
-        return null
-      })
-      
-      const results = await Promise.all(promises)
-      loadedFrames.push(...results.filter(f => f !== null))
-      
-      // Show progress by displaying first loaded frame
-      if (i === 0 && loadedFrames.length > 0) {
-        loopPlaybackFrame.value = `data:image/jpeg;base64,${loadedFrames[0].image_base64}`
+        
+        loopFrameCache.value = loadedFrames
+        
+        // Show first frame immediately using URL
+        loopPlaybackFrame.value = loadedFrames[0].url
+        
+        const subfolder = batchData.subfolder || 'preview'
+        console.log(`[LoopPlayback] Got ${loadedFrames.length} ${subfolder} frame URLs, preloading images...`)
+        
+        // Preload images in batches for smooth playback
+        // First batch: 30 frames (~3 seconds of content) - enough for smooth start
+        // Rest loaded in background while playing
+        const FIRST_BATCH_SIZE = 30
+        const firstBatchSize = Math.min(FIRST_BATCH_SIZE, loadedFrames.length)
+        
+        // Preload first batch in parallel
+        const firstBatchPromises = loadedFrames.slice(0, firstBatchSize).map(frame => preloadImage(frame.url))
+        await Promise.all(firstBatchPromises)
+        
+        // Check if loading was aborted while waiting
+        if (backgroundLoadingAborted) {
+          console.log('[LoopPlayback] Loading aborted during first batch')
+          return false
+        }
+        
+        console.log(`[LoopPlayback] First ${firstBatchSize} images preloaded, starting playback`)
+        loopCacheLoading.value = false
+        
+        // Continue loading rest in background (don't await)
+        if (loadedFrames.length > firstBatchSize) {
+          const loadRemainingFrames = async () => {
+            const remaining = loadedFrames.slice(firstBatchSize)
+            let loaded = 0
+            
+            // Load in smaller batches to avoid overwhelming the browser
+            const BATCH_SIZE = 20
+            for (let i = 0; i < remaining.length; i += BATCH_SIZE) {
+              if (backgroundLoadingAborted) {
+                console.log(`[LoopPlayback] Background loading aborted at ${loaded}/${remaining.length}`)
+                return
+              }
+              
+              const batch = remaining.slice(i, i + BATCH_SIZE)
+              await Promise.all(batch.map(frame => preloadImage(frame.url)))
+              loaded += batch.length
+            }
+            
+            console.log(`[LoopPlayback] All ${loadedFrames.length} images preloaded`)
+          }
+          
+          // Fire and forget - don't block playback start
+          loadRemainingFrames()
+        }
+        
+        return true
       }
     }
     
-    // Sort by timestamp
-    loadedFrames.sort((a, b) => a.timestamp - b.timestamp)
-    loopFrameCache.value = loadedFrames
+    // Fallback: try without URL mode (base64), still use preview
+    console.log('[LoopPlayback] URL mode failed, trying base64 fallback...')
     
-    console.log(`[LoopPlayback] Loaded ${loadedFrames.length} saved frames for playback`)
+    const fallbackResponse = await fetch(
+      `/api/analysis/frames-batch/${props.session.session_id}?start=${props.loopWindow.start_time}&end=${props.loopWindow.end_time}&max_frames=${maxFrames}&use_url=false&use_preview=true`
+    )
+    
+    if (fallbackResponse.ok) {
+      const fallbackData = await fallbackResponse.json()
+      if (fallbackData.success && fallbackData.frames && fallbackData.frames.length > 0) {
+        const sortedFrames = fallbackData.frames
+          .filter(f => f.image_base64)
+          .map(f => ({
+            timestamp: f.timestamp,
+            url: `data:image/jpeg;base64,${f.image_base64}`
+          }))
+          .sort((a, b) => a.timestamp - b.timestamp)
+        
+        // Remove duplicate timestamps
+        const seenTimestamps = new Set()
+        const loadedFrames = sortedFrames.filter(f => {
+          const tsKey = Math.round(f.timestamp * 100)
+          if (seenTimestamps.has(tsKey)) return false
+          seenTimestamps.add(tsKey)
+          return true
+        })
+        
+        if (loadedFrames.length > 0) {
+          loopFrameCache.value = loadedFrames
+          loopPlaybackFrame.value = loadedFrames[0].url
+          console.log(`[LoopPlayback] Loaded ${loadedFrames.length} frames via base64 fallback`)
+          loopCacheLoading.value = false
+          return true
+        }
+      }
+    }
+    
+    emit('loopLoadFailed', '无法加载帧')
+    emit('exitLoop')
+    return false
+    
   } catch (e) {
-    console.error('[LoopPlayback] Failed to preload frames:', e)
-  } finally {
-    loopCacheLoading.value = false
+    console.error('[LoopPlayback] Failed to load frames:', e)
+    emit('loopLoadFailed', '加载帧时发生错误')
+    emit('exitLoop')
+    return false
   }
 }
 
-// Get the frame closest to the current playback time from preloaded cache
-const getCurrentLoopFrame = () => {
-  if (!props.loopWindow || loopFrameCache.value.length === 0) return null
+// Binary search to find closest frame - O(log n) instead of O(n)
+const findClosestFrameIndex = (frames, targetTime) => {
+  if (frames.length === 0) return -1
+  if (frames.length === 1) return 0
   
-  const targetTime = loopPlaybackTime.value
+  let left = 0
+  let right = frames.length - 1
   
-  // Find the closest frame from preloaded cache
-  let closestFrame = loopFrameCache.value[0]
-  let minDiff = Math.abs(closestFrame.timestamp - targetTime)
-  
-  for (const frame of loopFrameCache.value) {
-    const diff = Math.abs(frame.timestamp - targetTime)
-    if (diff < minDiff) {
-      minDiff = diff
-      closestFrame = frame
+  while (left < right) {
+    const mid = Math.floor((left + right) / 2)
+    if (frames[mid].timestamp < targetTime) {
+      left = mid + 1
+    } else {
+      right = mid
     }
   }
   
-  return closestFrame
+  // Check if left-1 is closer
+  if (left > 0) {
+    const diffLeft = Math.abs(frames[left].timestamp - targetTime)
+    const diffPrev = Math.abs(frames[left - 1].timestamp - targetTime)
+    if (diffPrev < diffLeft) return left - 1
+  }
+  
+  return left
 }
 
-// Start loop playback timer
+// Get the frame closest to the current playback time using binary search
+const getCurrentLoopFrame = () => {
+  if (!props.loopWindow || loopFrameCache.value.length === 0) return null
+  
+  const idx = findClosestFrameIndex(loopFrameCache.value, loopPlaybackTime.value)
+  return idx >= 0 ? loopFrameCache.value[idx] : null
+}
+
+// Start loop playback with fixed frame rate for smooth playback
 const startLoopPlayback = async () => {
   if (loopPlaybackTimer) {
-    clearInterval(loopPlaybackTimer)
+    cancelAnimationFrame(loopPlaybackTimer)
+    loopPlaybackTimer = null
   }
   
   if (!props.loopWindow) return
   
-  // Initialize playback time to start of window
+  // Initialize playback time to start of window BEFORE loading frames
   loopPlaybackTime.value = props.loopWindow.start_time
   
   // Preload all frames for this window first
-  await loadLoopWindowFrames()
+  const loadSuccess = await loadLoopWindowFrames()
   
-  // After preloading, start the playback timer
-  // Using higher framerate since frames are preloaded (no network delay)
-  let lastFrameTime = Date.now()
-  const frameInterval = 100  // 100ms = 10 fps, matches preload target
-  
-  loopPlaybackTimer = setInterval(() => {
-    if (!props.loopWindow || !props.isPlaying) return
-    
-    const now = Date.now()
-    const elapsed = (now - lastFrameTime) / 1000  // seconds
-    lastFrameTime = now
-    
-    // Advance time based on actual elapsed time
-    loopPlaybackTime.value += elapsed
-    
-    // Check if we need to loop
-    if (loopPlaybackTime.value >= props.loopWindow.end_time) {
-      loopPlaybackTime.value = props.loopWindow.start_time
-    }
-    
-    // Emit time update to parent
-    emit('timeupdate', loopPlaybackTime.value)
-    
-    // Get frame from preloaded cache (synchronous, no network delay)
-    const frame = getCurrentLoopFrame()
-    if (frame && frame.image_base64) {
-      loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
-    }
-  }, frameInterval)
-  
-  // Show first frame immediately
-  const firstFrame = getCurrentLoopFrame()
-  if (firstFrame && firstFrame.image_base64) {
-    loopPlaybackFrame.value = `data:image/jpeg;base64,${firstFrame.image_base64}`
+  // If loading failed or no frames, don't start timer
+  if (!loadSuccess || loopFrameCache.value.length === 0) {
+    console.log('[LoopPlayback] No frames loaded, not starting timer')
+    return
   }
+  
+  // Show first frame IMMEDIATELY after loading (before starting timer)
+  const firstFrame = loopFrameCache.value[0]
+  if (firstFrame && firstFrame.url) {
+    loopPlaybackFrame.value = firstFrame.url
+    console.log(`[LoopPlayback] Showing first frame at ${firstFrame.timestamp}s`)
+  }
+  
+  // Calculate fixed frame rate based on frame count and window duration
+  // This ensures smooth, consistent playback regardless of original frame timestamps
+  const windowDuration = props.loopWindow.end_time - props.loopWindow.start_time
+  const frameCount = loopFrameCache.value.length
+  
+  // Protect against invalid window duration (too small or zero)
+  if (windowDuration < 0.5) {
+    console.warn(`[LoopPlayback] Window duration too small (${windowDuration}s), using minimum 0.5s`)
+  }
+  const safeWindowDuration = Math.max(windowDuration, 0.5)
+  
+  // If too few frames, warn user and extend minimum loop time
+  // A loop should take at least 2 seconds to feel natural
+  const MIN_LOOP_DURATION_MS = 2000
+  
+  // Calculate natural frame rate with bounds (min 1 fps, max 30 fps)
+  // This prevents abnormally fast playback when window is small or frames are many
+  const naturalFps = frameCount / safeWindowDuration
+  let targetFps = Math.max(1, Math.min(naturalFps, 30))  // Clamp between 1-30 fps
+  
+  // Ensure minimum loop duration: if loop would be too fast, slow down the fps
+  const naturalLoopDurationMs = (frameCount / targetFps) * 1000
+  if (naturalLoopDurationMs < MIN_LOOP_DURATION_MS && frameCount > 1) {
+    // Adjust fps to make loop last at least MIN_LOOP_DURATION_MS
+    targetFps = (frameCount * 1000) / MIN_LOOP_DURATION_MS
+    console.warn(`[LoopPlayback] Loop too fast (${naturalLoopDurationMs.toFixed(0)}ms), slowing to ${targetFps.toFixed(1)} fps for ${MIN_LOOP_DURATION_MS}ms loop`)
+  }
+  
+  const msPerFrame = 1000 / targetFps  // Milliseconds per frame
+  const actualLoopDuration = (frameCount / targetFps * 1000).toFixed(0)
+  
+  console.log(`[LoopPlayback] Fixed rate: ${targetFps.toFixed(1)} fps (natural: ${naturalFps.toFixed(1)}), ${msPerFrame.toFixed(1)}ms/frame, ${frameCount} frames, loop=${actualLoopDuration}ms`)
+  
+  // Use fixed frame index playback for consistent frame rate
+  let currentFrameIndex = 0
+  let lastFrameChangeTime = performance.now()
+  let lastEmittedTime = loopPlaybackTime.value
+  
+  const playbackLoop = (currentTime) => {
+    // Check if playback should continue
+    if (!props.loopWindow || !props.isPlaying) {
+      // Request next frame but don't update (paused state)
+      loopPlaybackTimer = requestAnimationFrame(playbackLoop)
+      return
+    }
+    
+    // Calculate elapsed time since last frame change
+    const elapsedSinceLastFrame = currentTime - lastFrameChangeTime
+    
+    // Check if it's time to advance to the next frame
+    if (elapsedSinceLastFrame >= msPerFrame) {
+      // Calculate how many frames to advance (usually 1, but can be more if tab was inactive)
+      const framesToAdvance = Math.floor(elapsedSinceLastFrame / msPerFrame)
+      currentFrameIndex = (currentFrameIndex + framesToAdvance) % frameCount
+      lastFrameChangeTime = currentTime - (elapsedSinceLastFrame % msPerFrame)  // Keep remainder for timing accuracy
+      
+      // Update frame display
+      const frame = loopFrameCache.value[currentFrameIndex]
+      if (frame && frame.url) {
+        loopPlaybackFrame.value = frame.url
+        loopPlaybackTime.value = frame.timestamp
+        
+        // Emit time update periodically (not every frame to reduce overhead)
+        if (Math.abs(frame.timestamp - lastEmittedTime) > 0.1) {
+          lastEmittedTime = frame.timestamp
+          emit('timeupdate', frame.timestamp)
+        }
+      }
+    }
+    
+    // Continue the loop
+    loopPlaybackTimer = requestAnimationFrame(playbackLoop)
+  }
+  
+  // Start the animation loop
+  loopPlaybackTimer = requestAnimationFrame(playbackLoop)
+  emit('timeupdate', loopPlaybackTime.value)
+}
+
+// Start loop playback timer only (when frames are already cached)
+const startLoopPlaybackTimer = () => {
+  if (loopPlaybackTimer) {
+    cancelAnimationFrame(loopPlaybackTimer)
+    loopPlaybackTimer = null
+  }
+  
+  if (!props.loopWindow || loopFrameCache.value.length === 0) return
+  
+  // Calculate fixed frame rate based on frame count and window duration
+  const windowDuration = props.loopWindow.end_time - props.loopWindow.start_time
+  const frameCount = loopFrameCache.value.length
+  
+  // Protect against invalid window duration (too small or zero)
+  const safeWindowDuration = Math.max(windowDuration, 0.5)
+  
+  // Minimum loop duration to avoid unnaturally fast loops
+  const MIN_LOOP_DURATION_MS = 2000
+  
+  // Calculate natural frame rate with bounds (min 1 fps, max 30 fps)
+  const naturalFps = frameCount / safeWindowDuration
+  let targetFps = Math.max(1, Math.min(naturalFps, 30))
+  
+  // Ensure minimum loop duration
+  const naturalLoopDurationMs = (frameCount / targetFps) * 1000
+  if (naturalLoopDurationMs < MIN_LOOP_DURATION_MS && frameCount > 1) {
+    targetFps = (frameCount * 1000) / MIN_LOOP_DURATION_MS
+  }
+  
+  const msPerFrame = 1000 / targetFps
+  
+  // Find current frame index based on current playback time
+  let currentFrameIndex = findClosestFrameIndex(loopFrameCache.value, loopPlaybackTime.value)
+  if (currentFrameIndex < 0) currentFrameIndex = 0
+  
+  let lastFrameChangeTime = performance.now()
+  let lastEmittedTime = loopPlaybackTime.value
+  
+  const playbackLoop = (currentTime) => {
+    if (!props.loopWindow || !props.isPlaying) {
+      loopPlaybackTimer = requestAnimationFrame(playbackLoop)
+      return
+    }
+    
+    const elapsedSinceLastFrame = currentTime - lastFrameChangeTime
+    
+    if (elapsedSinceLastFrame >= msPerFrame) {
+      const framesToAdvance = Math.floor(elapsedSinceLastFrame / msPerFrame)
+      currentFrameIndex = (currentFrameIndex + framesToAdvance) % frameCount
+      lastFrameChangeTime = currentTime - (elapsedSinceLastFrame % msPerFrame)
+      
+      const frame = loopFrameCache.value[currentFrameIndex]
+      if (frame && frame.url) {
+        loopPlaybackFrame.value = frame.url
+        loopPlaybackTime.value = frame.timestamp
+        
+        if (Math.abs(frame.timestamp - lastEmittedTime) > 0.1) {
+          lastEmittedTime = frame.timestamp
+          emit('timeupdate', frame.timestamp)
+        }
+      }
+    }
+    
+    loopPlaybackTimer = requestAnimationFrame(playbackLoop)
+  }
+  
+  loopPlaybackTimer = requestAnimationFrame(playbackLoop)
 }
 
 // Stop loop playback
 const stopLoopPlayback = () => {
+  // Abort any background frame loading
+  backgroundLoadingAborted = true
+  
   if (loopPlaybackTimer) {
-    clearInterval(loopPlaybackTimer)
+    cancelAnimationFrame(loopPlaybackTimer)
     loopPlaybackTimer = null
   }
   loopPlaybackFrame.value = null
   loopPlaybackTime.value = 0
   loopFrameCache.value = []
+  loopCacheLoading.value = false
 }
 
 // Watch for loopWindow changes to start/stop loop playback
-watch(() => props.loopWindow, (newVal, oldVal) => {
+watch(() => props.loopWindow, async (newVal, oldVal) => {
   if (props.mode === 'stream' && isHttpStream.value) {
     if (newVal) {
       console.log('[LoopPlayback] Loop window set for', newVal.window_id)
-      // Only start playback if already playing, otherwise wait for isPlaying to become true
-      if (props.isPlaying) {
-        console.log('[LoopPlayback] Starting loop playback immediately (already playing)')
-        startLoopPlayback()
-      } else {
-        // Load frames in advance but don't start timer until playing
-        console.log('[LoopPlayback] Loading frames, waiting for play state...')
-        loadLoopWindowFrames()
-        // Show first frame immediately so user sees something
-        loopPlaybackTime.value = newVal.start_time
-        getCurrentLoopFrame().then(frame => {
-          if (frame && frame.image_base64) {
-            loopPlaybackFrame.value = `data:image/jpeg;base64,${frame.image_base64}`
-          }
-        })
-      }
+      // Always start playback (it will handle loading frames)
+      await startLoopPlayback()
     } else if (oldVal && !newVal) {
       console.log('[LoopPlayback] Stopping loop playback')
       stopLoopPlayback()
@@ -605,15 +856,20 @@ watch(() => props.loopWindow, (newVal, oldVal) => {
 watch(() => props.isPlaying, (playing) => {
   if (isLoopPlaybackMode.value) {
     if (playing) {
-      // If playing and timer exists but was paused, restart it to reset timing
-      // This ensures frames start updating immediately without time jumps
-      if (loopPlaybackTimer) {
-        clearInterval(loopPlaybackTimer)
-        loopPlaybackTimer = null
+      // If we have cached frames, just restart the timer (don't reload)
+      if (loopFrameCache.value.length > 0) {
+        if (loopPlaybackTimer) {
+          cancelAnimationFrame(loopPlaybackTimer)
+          loopPlaybackTimer = null
+        }
+        // Restart playback timer without reloading frames
+        startLoopPlaybackTimer()
+      } else {
+        // No cached frames, need to load them
+        startLoopPlayback()
       }
-      startLoopPlayback()
     } else if (!playing && loopPlaybackTimer) {
-      clearInterval(loopPlaybackTimer)
+      cancelAnimationFrame(loopPlaybackTimer)
       loopPlaybackTimer = null
     }
   }

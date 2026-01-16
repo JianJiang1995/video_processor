@@ -62,6 +62,7 @@
             @load="handleLoad"
             @sam3TimeUpdate="handleSam3TimeUpdate"
             @exitLoop="exitLoopMode"
+            @loopLoadFailed="handleLoopLoadFailed"
           />
           <ControlBar
             :currentTime="currentTime"
@@ -82,6 +83,7 @@
             :showSam3="showSam3"
             :surgr1Processing="surgr1ProcessingStatus"
             :sam3Time="sam3Time"
+            :windowDuration="windowDuration"
             @play="handlePlay"
             @pause="handlePause"
             @seek="handleSeek"
@@ -128,6 +130,14 @@
         @message="handleVoiceMessage"
         @transcript="handleVoiceTranscript"
       />
+      
+      <!-- Toast Message -->
+      <Transition name="toast">
+        <div v-if="toastVisible" class="toast-message">
+          <span class="toast-icon">⚠️</span>
+          <span class="toast-text">{{ toastMessage }}</span>
+        </div>
+      </Transition>
     </template>
   </div>
 </template>
@@ -195,6 +205,7 @@ let streamTimerInterval = null
 let streamEndCheckInterval = null  // Check if stream has ended
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
 const streamEnded = ref(false)  // Whether the video stream has ended
+const streamWasActive = ref(false)  // Track if stream was ever active (for reliable end detection)
 
 // Global AbortController for session-related requests
 // When goHome is called, this will abort all pending requests
@@ -224,8 +235,19 @@ const abortAllSessionRequests = () => {
   }
 }
 
-// Window duration (5 seconds)
-const WINDOW_DURATION = 5
+// Window duration (从后端配置获取，默认5秒)
+const windowDuration = ref(5)
+
+// 获取后端配置
+const fetchConfig = async () => {
+  try {
+    const res = await axios.get('/api/config')
+    windowDuration.value = res.data.window_duration || 5
+    console.log('[Config] Window duration:', windowDuration.value)
+  } catch (e) {
+    console.warn('[Config] Failed to fetch config, using defaults:', e.message)
+  }
+}
 
 // Computed: current summary based on time
 // When in loop playback mode, always show the loop window's summary to avoid flickering
@@ -238,7 +260,7 @@ const currentSummary = computed(() => {
     return summaries.value.find(s => s.window_id === loopWindow.value.window_id) || null
   }
   
-  const windowId = Math.floor(currentTime.value / WINDOW_DURATION)
+  const windowId = Math.floor(currentTime.value / windowDuration.value)
   return summaries.value.find(s => s.window_id === windowId) || null
 })
 
@@ -262,11 +284,25 @@ const handleModeSelect = (selectedMode) => {
 const handleResumeSession = (session) => {
   currentSession.value = session
   duration.value = session.duration
-  mode.value = 'local'
+  
+  // Detect if this is a stream session based on video_path
+  const isStreamSession = session.video_path && (
+    session.video_path.startsWith('http://') || 
+    session.video_path.startsWith('https://') ||
+    session.video_path.startsWith('rtsp://')
+  )
+  
+  mode.value = isStreamSession ? 'stream' : 'local'
   currentView.value = 'main'
   loadExistingSummaries(session.session_id)
   // Restart service status polling when resuming session
   restartAnalysisStatusInterval()
+  
+  // If resuming a stream session, also set playing state
+  if (isStreamSession) {
+    isPlaying.value = true
+    streamStartTime.value = Date.now()
+  }
 }
 
 const handleStreamConnect = ({ session, autoAnalyze }) => {
@@ -356,6 +392,7 @@ const goHome = () => {
   loopWindow.value = null
   frameAnalysisPopup.value = { visible: false, data: null, isLoading: false, position: { x: 0, y: 0 } }
   streamEnded.value = false
+  streamWasActive.value = false
   
   console.log('[goHome] Cleanup complete')
 }
@@ -365,7 +402,9 @@ const handleTimeUpdate = (time) => {
   currentTime.value = time
   
   // Check if we need to loop within window
-  if (loopWindow.value && isPlaying.value) {
+  // IMPORTANT: For stream mode with HTTP stream, VideoPlayer.vue handles looping internally
+  // via loopPlaybackTimer. We only handle looping here for local video mode.
+  if (loopWindow.value && isPlaying.value && mode.value === 'local') {
     // If time has passed or is about to pass the end of the loop window, seek back to start
     if (time >= loopWindow.value.end_time - 0.1) {
       console.log(`[Loop] Reached end of window ${loopWindow.value.window_id}, looping back to ${loopWindow.value.start_time}`)
@@ -433,6 +472,29 @@ const exitLoopMode = () => {
     userSelectedWindow.value = false
     highlightedWindowId.value = -1
   }
+}
+
+// Handle loop load failure - show toast message
+const handleLoopLoadFailed = (message) => {
+  console.warn('[Loop] Load failed:', message)
+  // Show temporary toast message
+  showToast(message)
+}
+
+// Toast message state
+const toastMessage = ref('')
+const toastVisible = ref(false)
+let toastTimer = null
+
+const showToast = (message) => {
+  toastMessage.value = message
+  toastVisible.value = true
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+  }
+  toastTimer = setTimeout(() => {
+    toastVisible.value = false
+  }, 3000)
 }
 
 const handleVolumeChange = (vol) => {
@@ -734,8 +796,12 @@ const startStreamTimer = () => {
   
   // Reset stream ended state
   streamEnded.value = false
+  streamWasActive.value = false
   
   streamTimerInterval = setInterval(() => {
+    // Don't update time if in loop playback mode (VideoPlayer handles time updates)
+    if (loopWindow.value) return
+    
     if (!isPlaying.value || !streamStartTime.value || streamEnded.value) return
     
     // Calculate elapsed time since stream started
@@ -759,8 +825,20 @@ const startStreamEndCheck = () => {
     clearInterval(streamEndCheckInterval)
   }
   
+  // Reset the streamWasActive flag for new stream
+  streamWasActive.value = false
+  
+  // Backup detection: track last time currentTime updated
+  let lastKnownTime = currentTime.value
+  let staleTimeCounter = 0
+  const STALE_TIME_THRESHOLD = 5  // 5 consecutive checks (10 seconds) without time change
+  
   streamEndCheckInterval = setInterval(async () => {
     if (!currentSession.value || streamEnded.value) return
+    
+    // Skip stream end check if in loop playback mode (uses cached frames)
+    // But still track stale time for backup detection
+    const inLoopMode = loopWindow.value !== null
     
     try {
       // Get the stream URL from session
@@ -778,25 +856,75 @@ const startStreamEndCheck = () => {
       
       if (response.ok) {
         const info = await response.json()
-        // Check if video_ended flag is set by the server
-        if (info.video_ended && currentTime.value > 5) {
-          console.log('[Stream] Video stream has ended (video_ended flag)')
+        
+        // Track if stream becomes active (at least 1 connection)
+        if (info.active_streams > 0) {
+          streamWasActive.value = true
+        }
+        
+        // Only consider video ended if:
+        // 1. video_ended flag is set
+        // 2. We've been playing for at least 20 seconds (allow time for first window analysis)
+        // 3. Stream was active at some point (to avoid false positives from stale state)
+        // 4. active_streams is 0 (all connections closed, indicating real end)
+        const isReallyEnded = info.video_ended && 
+          currentTime.value > 20 && 
+          streamWasActive.value && 
+          info.active_streams === 0
+        
+        if (isReallyEnded) {
+          console.log('[Stream] Video stream has ended (video_ended flag, active_streams=0)')
           handleStreamEnded()
+          return
         }
       }
     } catch (e) {
       // Ignore timeout/network errors, just means stream server may be unavailable
+    }
+    
+    // Backup detection: check if time is stale (not in loop mode)
+    // In loop mode, time updates are from cached frames, not stream
+    // Only trigger after 30 seconds to avoid false positives
+    if (!inLoopMode && isPlaying.value && currentTime.value > 30) {
+      if (Math.abs(currentTime.value - lastKnownTime) < 0.1) {
+        staleTimeCounter++
+        if (staleTimeCounter >= STALE_TIME_THRESHOLD) {
+          console.log('[Stream] Time stale for too long, assuming stream ended')
+          handleStreamEnded()
+          return
+        }
+      } else {
+        staleTimeCounter = 0
+        lastKnownTime = currentTime.value
+      }
     }
   }, 2000)  // Check every 2 seconds
 }
 
 // Handle when stream ends
 const handleStreamEnded = () => {
+  // Prevent multiple calls
+  if (streamEnded.value) return
+  
   streamEnded.value = true
   isPlaying.value = false
   
   // Stop the timer
   stopStreamTimer()
+  
+  // Stop the stream end check interval
+  if (streamEndCheckInterval) {
+    clearInterval(streamEndCheckInterval)
+    streamEndCheckInterval = null
+  }
+  
+  // Exit loop playback mode if active
+  if (loopWindow.value) {
+    console.log('[Stream] Exiting loop mode due to stream end')
+    loopWindow.value = null
+    userSelectedWindow.value = false
+    highlightedWindowId.value = -1
+  }
   
   // Stop SurgR1 continuous processing
   if (currentSession.value) {
@@ -1100,7 +1228,7 @@ watch(isDragging, (newVal) => {
 
 // Update highlighted window when seeking
 watch(currentTime, (newTime) => {
-  const windowId = Math.floor(newTime / WINDOW_DURATION)
+  const windowId = Math.floor(newTime / windowDuration.value)
   if (summaries.value.find(s => s.window_id === windowId)) {
     // Don't auto-highlight during playback, only during seek
     if (!isPlaying.value && highlightedWindowId.value === -1) {
@@ -1170,7 +1298,10 @@ const handleBeforeUnload = () => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 首先获取配置
+  await fetchConfig()
+  
   checkAnalysisServices()
   // Refresh status every 30 seconds
   analysisStatusInterval = setInterval(checkAnalysisServices, 30000)
@@ -1259,5 +1390,44 @@ onUnmounted(() => {
 
 .logo {
   cursor: pointer;
+}
+
+/* Toast Message */
+.toast-message {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 193, 7, 0.95);
+  color: #1a1a1a;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-md, 8px);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  font-size: 0.9rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  z-index: 9999;
+}
+
+.toast-icon {
+  font-size: 1.1rem;
+}
+
+.toast-text {
+  max-width: 400px;
+}
+
+/* Toast animation */
+.toast-enter-active,
+.toast-leave-active {
+  transition: all 0.3s ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(20px);
 }
 </style>

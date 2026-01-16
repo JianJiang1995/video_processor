@@ -21,15 +21,15 @@ vllm:
 model:
   # 模型目录路径 (相对于 tts_api 目录或绝对路径)
   # 方案1: CosyVoice-300M-SFT - 支持预训练音色，无需 vLLM，更稳定
-  model_dir: "pretrained_models/CosyVoice-300M-SFT"
-  # 方案2: Fun-CosyVoice3-0.5B - 需要 vLLM，当前性能有问题
-  # model_dir: "pretrained_models/FunAudioLLM/Fun-CosyVoice3-0___5B-2512"
-  # 是否启用 vLLM 加速 (仅 CosyVoice3 支持)
-  load_vllm: false
+  # model_dir: "pretrained_models/CosyVoice-300M-SFT"
+  # 方案2: Fun-CosyVoice3-0.5B - 支持 vLLM 加速
+  model_dir: "pretrained_models/FunAudioLLM/Fun-CosyVoice3-0___5B-2512"
+  # 是否启用 vLLM 加速 (仅 CosyVoice2/3 支持)
+  load_vllm: true
   # 是否启用 TensorRT
   load_trt: false
   # 是否使用 FP16
-  fp16: false
+  fp16: true
 
 # 音频处理配置
 audio:

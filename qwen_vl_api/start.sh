@@ -80,3 +80,5 @@ echo ""
 # ===============================
 exec python3 "${SCRIPT_DIR}/server.py" --config "${CONFIG_FILE}"
 
+
+

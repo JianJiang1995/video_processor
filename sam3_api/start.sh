@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
 export SAM3_CHECKPOINT="${SAM3_CHECKPOINT:-$(pwd)/ckpt/sam3.pt}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-9004}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
 
 # 关闭占用端口的现有服务
 echo "检查端口 $PORT 是否被占用..."

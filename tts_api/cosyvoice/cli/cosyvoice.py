@@ -229,7 +229,12 @@ def AutoModel(**kwargs):
     if not os.path.exists(kwargs['model_dir']):
         kwargs['model_dir'] = snapshot_download(kwargs['model_dir'])
     if os.path.exists('{}/cosyvoice.yaml'.format(kwargs['model_dir'])):
-        return CosyVoice(**kwargs)
+        # CosyVoice v1 不支持 load_vllm 和 vllm_config 参数，需要过滤掉
+        v1_unsupported_keys = ['load_vllm', 'vllm_config']
+        v1_kwargs = {k: v for k, v in kwargs.items() if k not in v1_unsupported_keys}
+        if kwargs.get('load_vllm'):
+            logging.warning('CosyVoice v1 模型不支持 vLLM，请使用 CosyVoice2 或 CosyVoice3 模型。忽略 load_vllm 参数。')
+        return CosyVoice(**v1_kwargs)
     elif os.path.exists('{}/cosyvoice2.yaml'.format(kwargs['model_dir'])):
         return CosyVoice2(**kwargs)
     elif os.path.exists('{}/cosyvoice3.yaml'.format(kwargs['model_dir'])):

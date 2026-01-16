@@ -5,7 +5,7 @@ Provides WebRTC signaling endpoints for video streaming.
 This allows the frontend to receive video streams via WebRTC protocol.
 
 For the full WebRTC stream simulator, see:
-    /data2/jj/proj/video_processor/rtc_simulator/
+    /data2/jj/proj/video_processor/stream_simulator/
 """
 
 import asyncio
@@ -170,7 +170,7 @@ async def webrtc_status():
             "info": external_info
         },
         "message": "aiortc is available" if AIORTC_AVAILABLE else "aiortc not installed - run: pip install aiortc",
-        "help": "For full stream simulation, run: cd /data2/jj/proj/video_processor/rtc_simulator && python run.py all"
+        "help": "For full stream simulation, run: cd /data2/jj/proj/video_processor/stream_simulator && python run.py all"
     }
 
 

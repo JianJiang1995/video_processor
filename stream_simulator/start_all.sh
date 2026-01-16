@@ -5,8 +5,9 @@
 # Starts HTTP/MJPEG and WebRTC stream servers for testing video_stream_app
 #
 # Usage:
-#   ./start_all.sh                    # Use default test video
-#   ./start_all.sh /path/to/video.mp4 # Use specific video
+#   ./start_all.sh                         # 真实场景模拟（视频播放一次后停止）
+#   ./start_all.sh /path/to/video.mp4      # 使用指定视频
+#   ./start_all.sh /path/to/video.mp4 loop # 循环模式（测试用）
 #
 
 set -e
@@ -14,6 +15,16 @@ cd "$(dirname "$0")"
 
 # Default video path
 VIDEO_PATH="${1:-/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4}"
+
+# Check for loop mode (second argument)
+LOOP_MODE=""
+LOOP_FLAG=""
+if [ "$2" = "loop" ] || [ "$2" = "--loop" ]; then
+    LOOP_MODE="[循环模式]"
+    LOOP_FLAG="--loop"
+else
+    LOOP_MODE="[真实场景模拟 - 播放一次后停止]"
+fi
 
 # Ports
 HTTP_PORT=9001
@@ -23,6 +34,7 @@ WEBRTC_PORT=9002
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo ""
@@ -31,6 +43,7 @@ echo -e "${CYAN}║              Stream Simulator - Multi-Protocol              
 echo -e "${CYAN}╠══════════════════════════════════════════════════════════════╣${NC}"
 echo -e "${CYAN}║${NC}                                                              ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}  Video: ${GREEN}$(basename "$VIDEO_PATH")${NC}"
+echo -e "${CYAN}║${NC}  Mode:  ${YELLOW}${LOOP_MODE}${NC}"
 echo -e "${CYAN}║${NC}                                                              ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}  ${YELLOW}HTTP/MJPEG${NC}  http://localhost:${HTTP_PORT}/stream              ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}  ${YELLOW}WebRTC${NC}      http://localhost:${WEBRTC_PORT}                       ${CYAN}║${NC}"
@@ -38,6 +51,8 @@ echo -e "${CYAN}║${NC}                                                        
 echo -e "${CYAN}║${NC}  Use in video_stream_app:                                    ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}    1. Select \"实时视频流\" mode                                ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}    2. Enter: http://localhost:${HTTP_PORT}/stream               ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}                                                              ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}  ${RED}提示:${NC} 加 'loop' 参数启用循环: ./start_all.sh video.mp4 loop  ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}                                                              ${CYAN}║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
@@ -81,8 +96,8 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # Start HTTP/MJPEG server
-echo "Starting HTTP/MJPEG server on port $HTTP_PORT..."
-python http_server.py --video "$VIDEO_PATH" --port $HTTP_PORT &
+echo "Starting HTTP/MJPEG server on port $HTTP_PORT... $LOOP_MODE"
+python http_server.py --video "$VIDEO_PATH" --port $HTTP_PORT $LOOP_FLAG &
 HTTP_PID=$!
 
 # Wait a moment

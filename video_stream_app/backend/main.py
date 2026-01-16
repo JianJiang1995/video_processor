@@ -55,6 +55,12 @@ frontend_path = Path(__file__).parent.parent / "frontend" / "dist"
 if frontend_path.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_path / "assets")), name="assets")
 
+# Static files for session frames (direct access for fast playback)
+sessions_path = Path(__file__).parent.parent / "sessions"
+if sessions_path.exists():
+    app.mount("/sessions", StaticFiles(directory=str(sessions_path)), name="sessions")
+    logger.info(f"Mounted sessions folder: {sessions_path}")
+
 
 @app.on_event("startup")
 async def startup_event():

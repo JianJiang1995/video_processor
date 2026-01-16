@@ -20,7 +20,7 @@
     "server": {
         "host": "0.0.0.0",
         "port": 9003,
-        "comment": "API server configuration (避免与rtc_simulator 9001冲突)"
+        "comment": "API server configuration (避免与stream_simulator 9001冲突)"
     },
     "questions": {
         "surgical_phase": "Given the laparoscopic cholecystectomy image <image>, which surgical phase is being performed?",

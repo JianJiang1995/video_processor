@@ -9,7 +9,7 @@ Supported protocols:
 - RTSP: (via FFmpeg/MediaMTX)
 
 Usage:
-    from rtc_simulator import VideoSource, HTTPStreamServer, WebRTCServer
+    from stream_simulator import VideoSource, HTTPStreamServer, WebRTCServer
 """
 
 from .video_source import VideoSource, VideoInfo, encode_frame_jpeg, encode_frame_png

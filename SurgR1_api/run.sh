@@ -76,8 +76,8 @@ echo "🚀 Starting SurgR1 API server..."
 echo "═══════════════════════════════════════════════════════════════════════════════"
 echo ""
 
-# Use GPU 4 by default (can be overridden: CUDA_VISIBLE_DEVICES=X bash run.sh)
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4}"
+# Use GPU 3 by default (can be overridden: CUDA_VISIBLE_DEVICES=X bash run.sh)
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3}"
 echo "🎮 Using GPU: $CUDA_VISIBLE_DEVICES"
 
 # Run the server

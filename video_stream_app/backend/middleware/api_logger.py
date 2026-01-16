@@ -79,7 +79,7 @@ class APILoggingMiddleware(BaseHTTPMiddleware):
     """
     
     # Paths to skip logging (static assets, etc.)
-    SKIP_PATHS = {'/assets', '/favicon.ico', '/_next', '/static'}
+    SKIP_PATHS = {'/assets', '/favicon.ico', '/_next', '/static', '/sessions'}
     
     # Paths to log body content
     LOG_BODY_PATHS = {'/api/analysis', '/api/video', '/api/model', '/api/voice'}

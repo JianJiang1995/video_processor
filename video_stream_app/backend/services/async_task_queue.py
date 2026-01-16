@@ -559,15 +559,15 @@ class GLMTaskQueue(AsyncTaskQueue):
     """
     
     def __init__(self, max_concurrent: int = 3):
-        super().__init__(max_concurrent=max_concurrent, name="GLM")
-        self._glm_client = None
+        super().__init__(max_concurrent=max_concurrent, name="VLM")
+        self._vlm_client = None
     
     async def _get_client(self):
-        """获取 GLM 客户端"""
-        if self._glm_client is None:
-            from .glm_client import ensure_glm_available
-            self._glm_client = await ensure_glm_available()
-        return self._glm_client
+        """获取 VLM 客户端 (Gemini or GLM based on config)"""
+        if self._vlm_client is None:
+            from .vlm_factory import ensure_vlm_available
+            self._vlm_client = await ensure_vlm_available()
+        return self._vlm_client
     
     async def summarize_window(
         self,

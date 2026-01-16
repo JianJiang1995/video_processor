@@ -3,6 +3,8 @@ Video Streaming and Control API Routes
 """
 import os
 import asyncio
+import time
+import logging
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Query
@@ -11,6 +13,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import json
 import cv2
+
+logger = logging.getLogger(__name__)
 
 from ..database import get_db, create_video_session, get_video_session, get_all_sessions, update_session_status
 from ..services.video_processor import VideoProcessor, ProcessingState
@@ -37,6 +41,7 @@ class VideoUploadResponse(BaseModel):
 class SessionInfo(BaseModel):
     session_id: str
     video_name: str
+    video_path: Optional[str] = None
     duration: float
     status: str
     current_position: float
@@ -51,6 +56,246 @@ class ControlRequest(BaseModel):
 class StreamConnectRequest(BaseModel):
     stream_url: str
     auto_analyze: bool = True
+
+
+class CaptureDeviceConnectRequest(BaseModel):
+    """Request to connect to a local capture card device"""
+    device_id: int = 0  # Device index (0, 1, 2, ...)
+    device_name: str = ""  # Optional device name for Windows DirectShow
+    auto_analyze: bool = True
+
+
+def _list_capture_devices():
+    """
+    List available video capture devices.
+    Returns a list of device info dicts.
+    """
+    devices = []
+    
+    # Try to detect devices by index (works on Linux and Windows)
+    for i in range(10):  # Check first 10 indices
+        try:
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                # Get device info
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                
+                # Try to read a frame to verify it's a real device
+                ret, _ = cap.read()
+                cap.release()
+                
+                if ret and width > 0 and height > 0:
+                    devices.append({
+                        "device_id": i,
+                        "device_name": f"Capture Device {i}",
+                        "width": width,
+                        "height": height,
+                        "fps": fps,
+                        "backend": "default"
+                    })
+        except Exception:
+            pass
+    
+    # On Linux, also check /dev/video* devices
+    import platform
+    if platform.system() == "Linux":
+        import glob
+        v4l2_devices = glob.glob("/dev/video*")
+        for dev_path in v4l2_devices:
+            try:
+                # Extract device number
+                dev_num = int(dev_path.replace("/dev/video", ""))
+                # Check if already in list
+                if not any(d["device_id"] == dev_num for d in devices):
+                    cap = cv2.VideoCapture(dev_path, cv2.CAP_V4L2)
+                    if cap.isOpened():
+                        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                        ret, _ = cap.read()
+                        cap.release()
+                        
+                        if ret and width > 0 and height > 0:
+                            devices.append({
+                                "device_id": dev_num,
+                                "device_name": f"V4L2 Device ({dev_path})",
+                                "device_path": dev_path,
+                                "width": width,
+                                "height": height,
+                                "fps": fps,
+                                "backend": "v4l2"
+                            })
+            except Exception:
+                pass
+    
+    return devices
+
+
+def _open_capture_device(device_id: int, device_name: str = ""):
+    """
+    Open a capture device by ID or name.
+    Supports Windows DirectShow and Linux V4L2.
+    """
+    import platform
+    
+    cap = None
+    error = None
+    
+    try:
+        if platform.system() == "Windows" and device_name:
+            # Windows DirectShow with device name
+            cap = cv2.VideoCapture(f"video={device_name}", cv2.CAP_DSHOW)
+        elif platform.system() == "Linux":
+            # Linux V4L2
+            dev_path = f"/dev/video{device_id}"
+            cap = cv2.VideoCapture(dev_path, cv2.CAP_V4L2)
+        else:
+            # Default: use device index
+            cap = cv2.VideoCapture(device_id)
+        
+        if not cap or not cap.isOpened():
+            return None, f"无法打开采集设备 {device_id}"
+        
+        # Verify by reading a frame
+        ret, _ = cap.read()
+        if not ret:
+            cap.release()
+            return None, f"无法从采集设备 {device_id} 读取帧"
+        
+        return cap, None
+        
+    except Exception as e:
+        if cap:
+            cap.release()
+        return None, str(e)
+
+
+@router.get("/capture-devices")
+async def list_capture_devices():
+    """
+    List available video capture devices (capture cards, webcams, etc.)
+    
+    Returns a list of detected devices with their capabilities.
+    """
+    loop = asyncio.get_event_loop()
+    
+    try:
+        devices = await asyncio.wait_for(
+            loop.run_in_executor(None, _list_capture_devices),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        devices = []
+    
+    return {
+        "success": True,
+        "devices": devices,
+        "count": len(devices),
+        "hint": "使用 device_id 连接采集卡，如: POST /api/video/connect-capture"
+    }
+
+
+@router.post("/connect-capture")
+async def connect_to_capture_device(
+    request: CaptureDeviceConnectRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Connect to a local video capture device (capture card, webcam).
+    
+    This allows direct capture from devices like Blackmagic DeckLink
+    without needing to convert to RTSP/HTTP stream first.
+    
+    Args:
+        device_id: Device index (0, 1, 2, ...)
+        device_name: Optional device name for Windows DirectShow
+        auto_analyze: Whether to start analysis automatically
+    """
+    loop = asyncio.get_event_loop()
+    
+    try:
+        cap, error = await asyncio.wait_for(
+            loop.run_in_executor(
+                None, 
+                _open_capture_device, 
+                request.device_id, 
+                request.device_name
+            ),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(408, f"连接采集设备超时 (10秒)")
+    
+    if error or cap is None:
+        raise HTTPException(400, f"无法连接采集设备: {error or '未知错误'}")
+    
+    # Get device properties
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    
+    # Create a device URL for internal use
+    # Format: device://{device_id} or device://{device_name}
+    device_url = f"device://{request.device_id}"
+    if request.device_name:
+        device_url = f"device://{request.device_name}"
+    
+    device_display_name = request.device_name or f"Capture Device {request.device_id}"
+    
+    # Create database session
+    session = create_video_session(
+        db=db,
+        video_path=device_url,
+        video_name=f"📹 {device_display_name}",
+        duration=0,  # Live capture has no fixed duration
+        fps=fps,
+        width=width,
+        height=height,
+        total_frames=0
+    )
+    
+    session_id = session["session_id"]
+    video_name = f"📹 {device_display_name}"
+    
+    # Create session storage folder
+    frame_storage = get_frame_storage_service()
+    storage_path = frame_storage.create_session_folder(session_id, device_display_name)
+    
+    # Save to MySQL with storage path
+    mysql_service = get_mysql_service()
+    try:
+        mysql_service.create_video_session(
+            session_id=session_id,
+            video_name=video_name,
+            video_path=device_url,
+            video_type="capture",  # New type for capture devices
+            fps=fps,
+            width=width,
+            height=height,
+            storage_path=storage_path
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save capture session to MySQL: {e}")
+    
+    # Mark as processing (live)
+    update_session_status(db, session_id, "processing")
+    
+    logger.info(f"[Capture] Connected to device {request.device_id}: {width}x{height} @ {fps}fps")
+    
+    return {
+        "session_id": session_id,
+        "video_name": video_name,
+        "video_path": device_url,
+        "duration": 0,
+        "fps": fps,
+        "width": width,
+        "height": height,
+        "storage_path": storage_path,
+        "message": f"成功连接采集设备: {device_display_name}"
+    }
 
 
 @router.post("/upload", response_model=VideoUploadResponse)
@@ -299,6 +544,7 @@ async def list_sessions(
         SessionInfo(
             session_id=s["session_id"],
             video_name=s["video_name"],
+            video_path=s.get("video_path"),
             duration=s.get("duration", 0),
             status=s.get("status", "unknown"),
             current_position=s.get("current_position", 0),
@@ -406,6 +652,151 @@ async def stream_video(
     )
 
 
+@router.get("/mjpeg-proxy/{session_id}")
+async def mjpeg_proxy_stream(
+    session_id: str,
+    fps: float = Query(25.0, ge=1.0, le=60.0, description="Target FPS for streaming"),
+    quality: int = Query(85, ge=50, le=100, description="JPEG quality (50-100)"),
+    db: Session = Depends(get_db)
+):
+    """
+    MJPEG proxy stream with real-time frame pacing.
+    
+    Converts any video source (RTSP, HTTP, local file) to MJPEG format
+    with proper timing for smooth playback in browsers.
+    
+    Args:
+        session_id: Video session ID
+        fps: Target frames per second (default 25)
+        quality: JPEG compression quality (default 85)
+    """
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    video_path = session.get("video_path", "")
+    if not video_path:
+        raise HTTPException(400, "No video path for session")
+    
+    # Get source FPS for reference
+    source_fps = session.get("fps", 25.0) or 25.0
+    
+    def _open_video_for_mjpeg(path: str):
+        """Open video source for MJPEG proxy, supporting device:// URLs"""
+        import platform
+        
+        if path.startswith("device://"):
+            device_spec = path.replace("device://", "")
+            try:
+                device_id = int(device_spec)
+                if platform.system() == "Linux":
+                    cap = cv2.VideoCapture(f"/dev/video{device_id}", cv2.CAP_V4L2)
+                else:
+                    cap = cv2.VideoCapture(device_id)
+            except ValueError:
+                # Device name (Windows DirectShow)
+                if platform.system() == "Windows":
+                    cap = cv2.VideoCapture(f"video={device_spec}", cv2.CAP_DSHOW)
+                else:
+                    cap = cv2.VideoCapture(0)
+        else:
+            cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+        
+        return cap
+    
+    async def generate_mjpeg_frames():
+        """Generator that yields MJPEG frames with real-time pacing"""
+        cap = None
+        try:
+            # Open video source (works for files, RTSP, HTTP streams, device://)
+            cap = _open_video_for_mjpeg(video_path)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)  # Minimize buffer for lower latency
+            
+            if not cap.isOpened():
+                logger.error(f"[MJPEG Proxy] Cannot open video: {video_path}")
+                return
+            
+            # Calculate frame interval for real-time pacing
+            actual_fps = cap.get(cv2.CAP_PROP_FPS) or source_fps
+            target_fps = min(fps, actual_fps)  # Don't exceed source FPS
+            frame_interval = 1.0 / target_fps
+            
+            logger.info(f"[MJPEG Proxy] Starting stream for {session_id} at {target_fps:.1f} FPS")
+            
+            start_time = time.time()
+            frame_idx = 0
+            consecutive_errors = 0
+            
+            while True:
+                ret, frame = cap.read()
+                
+                if not ret:
+                    consecutive_errors += 1
+                    if consecutive_errors > 10:
+                        logger.warning(f"[MJPEG Proxy] Too many read errors, stopping")
+                        break
+                    # For streams, try to continue
+                    await asyncio.sleep(0.01)
+                    continue
+                
+                consecutive_errors = 0
+                
+                # Real-time pacing: wait until it's time for this frame
+                target_time = start_time + (frame_idx * frame_interval)
+                current_time = time.time()
+                wait_time = target_time - current_time
+                
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
+                elif wait_time < -0.5:
+                    # We're falling behind - skip frames to catch up
+                    start_time = current_time - (frame_idx * frame_interval)
+                
+                # Encode frame as JPEG
+                encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+                success, jpeg_data = cv2.imencode('.jpg', frame, encode_params)
+                
+                if not success:
+                    continue
+                
+                # Yield MJPEG frame with proper headers
+                jpeg_bytes = jpeg_data.tobytes()
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n"
+                    b"\r\n" + jpeg_bytes + b"\r\n"
+                )
+                
+                frame_idx += 1
+                
+                # Log progress periodically
+                if frame_idx % 250 == 0:
+                    elapsed = time.time() - start_time
+                    actual_rate = frame_idx / elapsed if elapsed > 0 else 0
+                    logger.debug(f"[MJPEG Proxy] {session_id}: {frame_idx} frames, {actual_rate:.1f} fps")
+        
+        except asyncio.CancelledError:
+            logger.info(f"[MJPEG Proxy] Stream cancelled for {session_id}")
+        except Exception as e:
+            logger.error(f"[MJPEG Proxy] Error: {e}")
+        finally:
+            if cap is not None:
+                cap.release()
+            logger.info(f"[MJPEG Proxy] Stream ended for {session_id}")
+    
+    return StreamingResponse(
+        generate_mjpeg_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
+
+
 @router.get("/frame/{session_id}")
 async def get_frame(
     session_id: str,
@@ -466,5 +857,69 @@ async def get_thumbnail(
         "thumbnail": thumb_base64,
         "width": thumb.width,
         "height": thumb.height
+    }
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """Delete a video session and all its associated data (analysis results, chat history, storage files)"""
+    
+    # Check if session exists
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    
+    # Stop any active processing
+    if session_id in active_processors:
+        active_processors[session_id].stop()
+        del active_processors[session_id]
+    
+    # Delete from MySQL (includes storage folder cleanup)
+    mysql_service = get_mysql_service()
+    result = mysql_service.delete_video_session(session_id)
+    
+    # Also clean from in-memory cache
+    from ..database.crud import delete_session_data
+    delete_session_data(db, session_id)
+    
+    return {
+        "success": True,
+        "message": f"Session {session_id} deleted successfully",
+        "details": result
+    }
+
+
+@router.delete("/sessions/all")
+async def delete_all_sessions(
+    db: Session = Depends(get_db)
+):
+    """Delete ALL video sessions and their associated data (analysis results, chat history, storage files)
+    
+    WARNING: This action is irreversible!
+    """
+    
+    # Stop all active processors
+    for session_id in list(active_processors.keys()):
+        try:
+            active_processors[session_id].stop()
+            del active_processors[session_id]
+        except Exception:
+            pass
+    
+    # Delete all from MySQL (includes storage folder cleanup)
+    mysql_service = get_mysql_service()
+    result = mysql_service.delete_all_video_sessions()
+    
+    # Clear in-memory cache
+    from ..database.models import _sessions_cache
+    _sessions_cache.clear()
+    
+    return {
+        "success": True,
+        "message": "All sessions deleted successfully",
+        "details": result
     }
 

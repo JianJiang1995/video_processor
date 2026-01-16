@@ -5,6 +5,17 @@ cd "$(dirname "$0")"
 
 PORT=8001
 
+# 处理 Ctrl+C 信号
+cleanup() {
+    echo ""
+    echo "Stopping backend..."
+    kill -TERM $UVICORN_PID 2>/dev/null
+    wait $UVICORN_PID 2>/dev/null
+    echo "Backend stopped."
+    exit 0
+}
+trap cleanup SIGINT SIGTERM
+
 # Kill existing process on the port
 echo "Checking for existing service on port $PORT..."
 PID=$(lsof -t -i:$PORT 2>/dev/null)
@@ -31,7 +42,10 @@ echo "  Video Stream Analyzer Backend"
 echo "=========================================="
 echo "API: http://localhost:$PORT"
 echo "Docs: http://localhost:$PORT/api/docs"
+echo "Press Ctrl+C to stop"
 echo ""
 
-python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT --reload
+python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT --reload &
+UVICORN_PID=$!
+wait $UVICORN_PID
 

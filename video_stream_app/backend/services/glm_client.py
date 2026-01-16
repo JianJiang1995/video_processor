@@ -1169,20 +1169,31 @@ Output only the summary, no additional formatting."""
 工具中文名：Grasper→抓钳, Hook→电钩, Scissors→剪刀, Clipper→钛夹钳, Irrigator→冲吸器, Bipolar→双极电凝"""
             logger.warning("[GLMClient] Using fallback system prompt")
         
-        # 构建用户消息，强调历史上下文
+        # 构建用户消息，强调历史上下文和阶段约束
         prompt_parts = []
         
-        # 如果有历史上下文（上一窗口信息），优先展示
+        # 如果有历史上下文，强调阶段顺序约束
         if history_context:
-            # 提取上一窗口的关键信息
-            prev_info = history_context.strip()
-            if "摘要：" in prev_info:
-                prev_summary = prev_info.split("摘要：")[-1].strip()[:150]
-            else:
-                prev_summary = prev_info[:150]
-            prompt_parts.append(f"【上一窗口分析】{prev_summary}")
-            prompt_parts.append("（注意：当前窗口应保持阶段连续性，除非有明显变化）")
+            logger.info(f"[GLMClient] integrate_analysis_results: history_context length = {len(history_context)} chars")
+            prompt_parts.append("## 历史窗口分析（必须参考以判断阶段连续性）")
+            prompt_parts.append(history_context.strip())
             prompt_parts.append("")
+            
+            # 提取历史中出现过的阶段，添加明确的约束提醒
+            phase_constraints = []
+            if "胆囊取出" in history_context:
+                phase_constraints.append("⚠️ 历史已出现「胆囊取出」，当前窗口禁止标注为「胆囊牵拉」或「准备阶段」")
+            if any(p in history_context for p in ["肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "胆囊取出", "清洁凝血"]):
+                phase_constraints.append("⚠️ 手术已进入正式阶段，当前窗口禁止回退到「准备阶段」")
+            
+            if phase_constraints:
+                prompt_parts.append("**⚠️ 阶段约束提醒（必须严格遵守！）：**")
+                for constraint in phase_constraints:
+                    prompt_parts.append(constraint)
+                prompt_parts.append("")
+                logger.info(f"[GLMClient] Added phase constraints: {phase_constraints}")
+        else:
+            logger.info("[GLMClient] integrate_analysis_results: NO history_context provided")
         
         # 添加当前窗口的帧分析数据
         prompt_parts.append("【R1帧标注】（器械检测通常准确，请在叙事中体现）")
@@ -1516,20 +1527,22 @@ Output only the summary, no additional formatting."""
     async def summarize_windows_concurrent(
         self,
         windows: List[Dict[str, Any]],
-        max_concurrent: int = None
+        max_concurrent: int = None,
+        session_id: str = None
     ) -> List[Dict[str, Any]]:
         """
-        并发摘要多个窗口 - 高性能版本
+        按顺序摘要多个窗口 - 保持阶段连续性版本
         
-        使用 asyncio.gather + Semaphore 并发处理多个窗口，
-        比串行处理快 N 倍（N = 并发数）
+        为了确保手术阶段的顺序约束（如准备阶段不可回退、胆囊取出后不能出现胆囊牵拉），
+        窗口必须按顺序处理，每个窗口都能获取到之前窗口的历史上下文。
         
         Args:
             windows: 窗口列表，每个包含:
                 - window_id: 窗口 ID
                 - frame_analyses: 帧分析结果列表
                 - images: 可选图片列表（多模态）
-            max_concurrent: 最大并发数，None 使用默认配置
+            max_concurrent: 已忽略（为了阶段连续性必须串行）
+            session_id: 会话ID，用于获取历史上下文管理器
             
         Returns:
             摘要结果列表（按原始顺序）
@@ -1537,83 +1550,145 @@ Output only the summary, no additional formatting."""
         if not windows:
             return []
         
-        # 使用指定的并发数或默认配置
-        semaphore = self._semaphore
-        if max_concurrent and max_concurrent != self.concurrent_config.max_concurrent:
-            semaphore = asyncio.Semaphore(max_concurrent)
-        
         start_time = time.time()
-        
-        async def summarize_with_semaphore(window: Dict[str, Any], index: int) -> Tuple[int, Dict[str, Any]]:
-            """带信号量控制的单窗口摘要"""
-            async with semaphore:
-                try:
-                    window_id = window.get("window_id")
-                    frame_count = len(window.get("frame_analyses", []))
-                    logger.info(f"[GLMClient] Processing window {window_id} with {frame_count} frames")
-                    
-                    result = await self.integrate_analysis_results(
-                        frame_analyses=window.get("frame_analyses", []),
-                        images=window.get("images")
-                    )
-                    
-                    logger.info(f"[GLMClient] Window {window_id} completed: success={result.get('success')}")
-                    return index, {
-                        "window_id": window.get("window_id"),
-                        "success": result.get("success", False),
-                        "summary": result.get("summary", ""),
-                        "tokens_used": result.get("tokens_used", 0),
-                        "error": result.get("error")
-                    }
-                except Exception as e:
-                    logger.warning(f"[GLMClient] Concurrent summarization failed for window {window.get('window_id')}: {e}")
-                    return index, {
-                        "window_id": window.get("window_id"),
-                        "success": False,
-                        "summary": f"[Error: {str(e)}]",
-                        "error": str(e)
-                    }
-        
-        # 创建所有任务并并发执行
-        tasks = [
-            summarize_with_semaphore(window, i) 
-            for i, window in enumerate(windows)
-        ]
-        
-        # 并发执行
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 按原始顺序排序结果
-        sorted_results = [None] * len(windows)
+        results = []
         success_count = 0
         
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error(f"[GLMClient] Unexpected error in concurrent summarization: {result}")
-                continue
-            
-            index, data = result
-            sorted_results[index] = data
-            if data.get("success"):
-                success_count += 1
+        # 获取或创建历史上下文管理器
+        if session_id:
+            from . import glm_client as glm_module
+            if not hasattr(glm_module, '_session_history_managers'):
+                glm_module._session_history_managers = {}
+            if session_id not in glm_module._session_history_managers:
+                glm_module._session_history_managers[session_id] = WindowHistoryManager()
+            history_manager = glm_module._session_history_managers[session_id]
+        else:
+            # 没有session_id时，创建临时的历史管理器
+            history_manager = WindowHistoryManager()
         
-        # 填充失败的结果
-        for i, r in enumerate(sorted_results):
-            if r is None:
-                sorted_results[i] = {
-                    "window_id": windows[i].get("window_id"),
+        # 按window_id排序确保顺序处理
+        sorted_windows = sorted(windows, key=lambda w: w.get("window_id", 0))
+        
+        for window in sorted_windows:
+            window_id = window.get("window_id")
+            frame_count = len(window.get("frame_analyses", []))
+            
+            try:
+                # 获取当前历史记录数量
+                current_history = await history_manager.get_history()
+                logger.info(f"[GLMClient] Processing window {window_id} with {frame_count} frames, history_count={len(current_history)}")
+                
+                # 构建历史上下文 - 包含之前所有窗口的阶段信息
+                history_context = await history_manager.build_history_context()
+                
+                if history_context:
+                    # 显示历史中最后一个阶段
+                    last_phase = current_history[-1].dominant_phase if current_history else "N/A"
+                    logger.info(f"[GLMClient] Window {window_id} history: {len(current_history)} windows, last_phase={last_phase}")
+                else:
+                    logger.info(f"[GLMClient] Window {window_id} has NO history context (first window or empty)")
+                
+                result = await self.integrate_analysis_results(
+                    frame_analyses=window.get("frame_analyses", []),
+                    images=window.get("images"),
+                    history_context=history_context  # 传递历史上下文
+                )
+                
+                summary = result.get("summary", "")
+                
+                # 从摘要中提取阶段信息并添加到历史
+                dominant_phase = self._extract_phase_from_summary(summary)
+                
+                # ========== 阶段约束后处理：检查并纠正违规阶段 ==========
+                if dominant_phase and current_history:
+                    last_phase = current_history[-1].dominant_phase if current_history else None
+                    
+                    # 获取已出现过的所有阶段
+                    history_phases = [h.dominant_phase for h in current_history]
+                    
+                    # 规则1：准备阶段不可回退
+                    if dominant_phase == "Preparation" and any(p != "Preparation" for p in history_phases):
+                        logger.warning(f"[GLMClient] Window {window_id} PHASE VIOLATION: 准备阶段不可回退！GLM输出={dominant_phase}, 历史已进入正式阶段")
+                        # 强制使用上一个窗口的阶段
+                        dominant_phase = last_phase
+                        summary = summary.replace("【准备阶段】", f"【{WindowHistoryManager.PHASE_CN_NAMES.get(last_phase, last_phase)}】")
+                        logger.info(f"[GLMClient] Corrected to phase: {dominant_phase}")
+                    
+                    # 规则2：胆囊取出后不能出现胆囊牵拉
+                    if dominant_phase == "GallbladderRetraction" and "GallbladderPackaging" in history_phases:
+                        logger.warning(f"[GLMClient] Window {window_id} PHASE VIOLATION: 胆囊取出后不能出现胆囊牵拉！")
+                        # 强制使用上一个窗口的阶段或清洁凝血
+                        dominant_phase = last_phase if last_phase else "CleaningCoagulation"
+                        summary = summary.replace("【胆囊牵拉阶段】", f"【{WindowHistoryManager.PHASE_CN_NAMES.get(dominant_phase, dominant_phase)}】")
+                        logger.info(f"[GLMClient] Corrected to phase: {dominant_phase}")
+                
+                if dominant_phase:
+                    # 计算窗口时间范围
+                    frame_analyses = window.get("frame_analyses", [])
+                    timestamps = [fa.get("timestamp", 0) for fa in frame_analyses if fa.get("timestamp")]
+                    start = min(timestamps) if timestamps else window_id * 15.0
+                    end = max(timestamps) if timestamps else (window_id + 1) * 15.0
+                    
+                    # 添加到历史
+                    await history_manager.add_summary(WindowSummary(
+                        window_id=window_id,
+                        start_time=start,
+                        end_time=end,
+                        dominant_phase=dominant_phase,
+                        tools=[],
+                        cvs_status="",
+                        summary=summary[:200]  # 只保存摘要的前200字符
+                    ))
+                
+                logger.info(f"[GLMClient] Window {window_id} completed: success={result.get('success')}, phase={dominant_phase}")
+                
+                results.append({
+                    "window_id": window_id,
+                    "success": result.get("success", False),
+                    "summary": summary,
+                    "tokens_used": result.get("tokens_used", 0),
+                    "error": result.get("error")
+                })
+                
+                if result.get("success"):
+                    success_count += 1
+                    
+            except Exception as e:
+                logger.warning(f"[GLMClient] Sequential summarization failed for window {window_id}: {e}")
+                results.append({
+                    "window_id": window_id,
                     "success": False,
-                    "summary": "[Unknown error]",
-                    "error": "Unknown error"
-                }
+                    "summary": f"[Error: {str(e)}]",
+                    "error": str(e)
+                })
         
         elapsed = time.time() - start_time
         logger.info(
-            f"[GLMClient] Concurrent summarization completed: "
+            f"[GLMClient] Sequential summarization completed: "
             f"{success_count}/{len(windows)} windows in {elapsed:.2f}s"
         )
         
-        return sorted_results
+        return results
+    
+    def _extract_phase_from_summary(self, summary: str) -> str:
+        """从摘要文本中提取手术阶段"""
+        phase_mapping = {
+            "准备阶段": "Preparation",
+            "准备期": "Preparation",
+            "肝胆三角解剖": "CalotTriangleDissection",
+            "Calot三角": "CalotTriangleDissection",
+            "夹闭切断": "ClippingCutting",
+            "胆囊分离": "GallbladderDissection",
+            "胆囊取出": "GallbladderPackaging",
+            "清洁凝血": "CleaningCoagulation",
+            "胆囊牵拉": "GallbladderRetraction",
+        }
+        
+        for cn_name, en_name in phase_mapping.items():
+            if cn_name in summary:
+                return en_name
+        
+        return "Unknown"
     
     async def chat_concurrent(
         self,

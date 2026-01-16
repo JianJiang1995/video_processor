@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Simulator Test</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            background: #0a0a0f;
+            color: #e0e0e5;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: #22d3ee;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+        .test-box {
+            background: #12121a;
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .test-box h2 {
+            font-size: 1rem;
+            color: #a78bfa;
+            margin-bottom: 1rem;
+        }
+        .stream-container {
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            position: relative;
+        }
+        .stream-container img {
+            width: 100%;
+            display: block;
+        }
+        .stats {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+        }
+        .stats .fps { color: #22d3ee; font-weight: bold; }
+        .stats .frames { color: #a78bfa; }
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #22d3ee, #0099cc);
+            color: #000;
+            font-weight: 600;
+        }
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        .status {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+        }
+        .status-label { color: #888; }
+        .status-value { color: #22d3ee; }
+        .log {
+            background: #000;
+            border-radius: 8px;
+            padding: 1rem;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 0.8rem;
+            margin-top: 1rem;
+        }
+        .log-entry { margin: 0.25rem 0; color: #666; }
+        .log-entry.info { color: #22d3ee; }
+        .log-entry.success { color: #10b981; }
+        .log-entry.error { color: #ef4444; }
+        .conclusion {
+            margin-top: 2rem;
+            padding: 1.5rem;
+            background: linear-gradient(135deg, rgba(34,211,238,0.1), rgba(167,139,250,0.1));
+            border-radius: 12px;
+            border: 1px solid rgba(34,211,238,0.3);
+        }
+        .conclusion h3 {
+            color: #22d3ee;
+            margin-bottom: 1rem;
+        }
+        .conclusion p {
+            color: #aaa;
+            line-height: 1.6;
+        }
+        .conclusion .result {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-top: 1rem;
+        }
+        .conclusion .result.good { color: #10b981; }
+        .conclusion .result.bad { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Stream Simulator Unit Test</h1>
+        <p style="color: #888; margin-bottom: 2rem;">
+            This page tests the stream_simulator directly to isolate performance issues.
+        </p>
+        
+        <div class="test-grid">
+            <!-- Direct Stream Test -->
+            <div class="test-box">
+                <h2>Test 1: Direct MJPEG Stream</h2>
+                <p style="color: #666; font-size: 0.85rem; margin-bottom: 1rem;">
+                    Direct connection to http://localhost:9001/stream
+                </p>
+                <div class="stream-container" id="stream1Container">
+                    <img id="stream1" alt="Stream not connected">
+                    <div class="stats">
+                        <span class="fps" id="fps1">-- FPS</span>
+                        <span class="frames" id="frames1">0 frames</span>
+                    </div>
+                </div>
+                <div class="controls">
+                    <button class="btn-primary" onclick="startStream1()">▶ Start</button>
+                    <button class="btn-secondary" onclick="stopStream1()">⏹ Stop</button>
+                </div>
+                <div class="status" id="status1">
+                    <div class="status-item">
+                        <span class="status-label">Status:</span>
+                        <span class="status-value" id="state1">Ready</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Load Events:</span>
+                        <span class="status-value" id="loadCount1">0</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Avg Frame Interval:</span>
+                        <span class="status-value" id="avgInterval1">-- ms</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Image Refresh Test -->
+            <div class="test-box">
+                <h2>Test 2: Image Refresh Method</h2>
+                <p style="color: #666; font-size: 0.85rem; margin-bottom: 1rem;">
+                    Manually refreshing single frames (like seeking)
+                </p>
+                <div class="stream-container" id="stream2Container">
+                    <img id="stream2" alt="Stream not connected">
+                    <div class="stats">
+                        <span class="fps" id="fps2">-- FPS</span>
+                        <span class="frames" id="frames2">0 frames</span>
+                    </div>
+                </div>
+                <div class="controls">
+                    <button class="btn-primary" onclick="startStream2()">▶ Start (25 FPS)</button>
+                    <button class="btn-secondary" onclick="stopStream2()">⏹ Stop</button>
+                </div>
+                <div class="status" id="status2">
+                    <div class="status-item">
+                        <span class="status-label">Status:</span>
+                        <span class="status-value" id="state2">Ready</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Refresh Count:</span>
+                        <span class="status-value" id="loadCount2">0</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Avg Latency:</span>
+                        <span class="status-value" id="avgInterval2">-- ms</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Log -->
+        <div class="test-box">
+            <h2>Performance Log</h2>
+            <div class="log" id="log"></div>
+        </div>
+        
+        <!-- Conclusion -->
+        <div class="conclusion" id="conclusion" style="display: none;">
+            <h3>📊 Test Conclusion</h3>
+            <p id="conclusionText"></p>
+            <p class="result" id="conclusionResult"></p>
+        </div>
+    </div>
+    
+    <script>
+        // Test 1: Direct MJPEG Stream
+        let stream1Running = false;
+        let stream1Frames = 0;
+        let stream1StartTime = 0;
+        let stream1LastTime = 0;
+        let stream1Intervals = [];
+        
+        function startStream1() {
+            const img = document.getElementById('stream1');
+            stream1Running = true;
+            stream1Frames = 0;
+            stream1StartTime = performance.now();
+            stream1LastTime = stream1StartTime;
+            stream1Intervals = [];
+            
+            document.getElementById('state1').textContent = 'Connecting...';
+            log('Test 1: Starting direct MJPEG stream...', 'info');
+            
+            img.onload = function() {
+                const now = performance.now();
+                if (stream1LastTime > 0) {
+                    const interval = now - stream1LastTime;
+                    stream1Intervals.push(interval);
+                    if (stream1Intervals.length > 100) stream1Intervals.shift();
+                }
+                stream1LastTime = now;
+                stream1Frames++;
+                
+                updateStats1();
+            };
+            
+            img.onerror = function() {
+                log('Test 1: Stream error', 'error');
+                document.getElementById('state1').textContent = 'Error';
+            };
+            
+            // Connect to MJPEG stream
+            img.src = 'http://localhost:9001/stream?' + Date.now();
+            document.getElementById('state1').textContent = 'Connected';
+            log('Test 1: Connected to MJPEG stream', 'success');
+        }
+        
+        function stopStream1() {
+            stream1Running = false;
+            const img = document.getElementById('stream1');
+            img.src = '';
+            document.getElementById('state1').textContent = 'Stopped';
+            log('Test 1: Stopped', 'info');
+            analyzeResults();
+        }
+        
+        function updateStats1() {
+            const elapsed = (performance.now() - stream1StartTime) / 1000;
+            const fps = elapsed > 0 ? (stream1Frames / elapsed).toFixed(1) : 0;
+            
+            document.getElementById('fps1').textContent = fps + ' FPS';
+            document.getElementById('frames1').textContent = stream1Frames + ' frames';
+            document.getElementById('loadCount1').textContent = stream1Frames;
+            
+            if (stream1Intervals.length > 0) {
+                const avg = stream1Intervals.reduce((a, b) => a + b, 0) / stream1Intervals.length;
+                document.getElementById('avgInterval1').textContent = avg.toFixed(1) + ' ms';
+            }
+        }
+        
+        // Test 2: Image Refresh Method
+        let stream2Running = false;
+        let stream2Timer = null;
+        let stream2Frames = 0;
+        let stream2StartTime = 0;
+        let stream2Latencies = [];
+        
+        function startStream2() {
+            stream2Running = true;
+            stream2Frames = 0;
+            stream2StartTime = performance.now();
+            stream2Latencies = [];
+            
+            document.getElementById('state2').textContent = 'Running';
+            log('Test 2: Starting image refresh test at 25 FPS...', 'info');
+            
+            refreshFrame2();
+        }
+        
+        function refreshFrame2() {
+            if (!stream2Running) return;
+            
+            const img = document.getElementById('stream2');
+            const startLoad = performance.now();
+            
+            img.onload = function() {
+                const latency = performance.now() - startLoad;
+                stream2Latencies.push(latency);
+                if (stream2Latencies.length > 100) stream2Latencies.shift();
+                stream2Frames++;
+                updateStats2();
+            };
+            
+            img.onerror = function() {
+                log('Test 2: Frame load error', 'error');
+            };
+            
+            // Load single frame snapshot
+            img.src = 'http://localhost:9001/stream.jpg?' + Date.now();
+            
+            // Schedule next frame at ~25 FPS (40ms interval)
+            stream2Timer = setTimeout(refreshFrame2, 40);
+        }
+        
+        function stopStream2() {
+            stream2Running = false;
+            if (stream2Timer) {
+                clearTimeout(stream2Timer);
+                stream2Timer = null;
+            }
+            document.getElementById('state2').textContent = 'Stopped';
+            log('Test 2: Stopped', 'info');
+            analyzeResults();
+        }
+        
+        function updateStats2() {
+            const elapsed = (performance.now() - stream2StartTime) / 1000;
+            const fps = elapsed > 0 ? (stream2Frames / elapsed).toFixed(1) : 0;
+            
+            document.getElementById('fps2').textContent = fps + ' FPS';
+            document.getElementById('frames2').textContent = stream2Frames + ' frames';
+            document.getElementById('loadCount2').textContent = stream2Frames;
+            
+            if (stream2Latencies.length > 0) {
+                const avg = stream2Latencies.reduce((a, b) => a + b, 0) / stream2Latencies.length;
+                document.getElementById('avgInterval2').textContent = avg.toFixed(1) + ' ms';
+            }
+        }
+        
+        // Logging
+        function log(message, type = '') {
+            const logEl = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        // Analysis
+        function analyzeResults() {
+            if (stream1Frames < 50 && stream2Frames < 50) return;
+            
+            const conclusion = document.getElementById('conclusion');
+            const conclusionText = document.getElementById('conclusionText');
+            const conclusionResult = document.getElementById('conclusionResult');
+            
+            conclusion.style.display = 'block';
+            
+            // Calculate actual FPS
+            const elapsed1 = (performance.now() - stream1StartTime) / 1000;
+            const fps1 = elapsed1 > 0 ? stream1Frames / elapsed1 : 0;
+            
+            const elapsed2 = (performance.now() - stream2StartTime) / 1000;
+            const fps2 = elapsed2 > 0 ? stream2Frames / elapsed2 : 0;
+            
+            // Check frame intervals for smoothness
+            let smooth1 = true;
+            if (stream1Intervals.length > 10) {
+                const avg1 = stream1Intervals.reduce((a, b) => a + b, 0) / stream1Intervals.length;
+                const variance1 = stream1Intervals.reduce((sum, v) => sum + Math.pow(v - avg1, 2), 0) / stream1Intervals.length;
+                const stdDev1 = Math.sqrt(variance1);
+                smooth1 = stdDev1 < avg1 * 0.5; // Less than 50% variance
+                log(`Test 1: Avg interval ${avg1.toFixed(1)}ms, StdDev ${stdDev1.toFixed(1)}ms`, 'info');
+            }
+            
+            if (fps1 >= 20 && smooth1) {
+                conclusionText.innerHTML = `
+                    <strong>Test 1 (Direct MJPEG):</strong> ${fps1.toFixed(1)} FPS - Stream simulator is delivering smooth frames.<br>
+                    <strong>Test 2 (Image Refresh):</strong> ${fps2.toFixed(1)} FPS - Manual refresh working.<br><br>
+                    <strong>Analysis:</strong> The stream_simulator is working correctly at ~${fps1.toFixed(0)} FPS.
+                    If your web app is still choppy, the issue is likely in the web app's rendering code,
+                    not the stream source.
+                `;
+                conclusionResult.textContent = '✅ Stream Simulator is SMOOTH - Issue is in Web App code';
+                conclusionResult.className = 'result good';
+            } else {
+                conclusionText.innerHTML = `
+                    <strong>Test 1 (Direct MJPEG):</strong> ${fps1.toFixed(1)} FPS - ${smooth1 ? 'Smooth' : 'Choppy/Inconsistent'}<br>
+                    <strong>Test 2 (Image Refresh):</strong> ${fps2.toFixed(1)} FPS<br><br>
+                    <strong>Analysis:</strong> The stream_simulator appears to have performance issues.
+                    The low FPS or inconsistent frame timing suggests the issue is in the stream server,
+                    not the web app.
+                `;
+                conclusionResult.textContent = '⚠️ Stream Simulator has issues - Need to optimize it';
+                conclusionResult.className = 'result bad';
+            }
+        }
+        
+        log('Test page loaded. Click "Start" to begin tests.', 'info');
+    </script>
+</body>
+</html>

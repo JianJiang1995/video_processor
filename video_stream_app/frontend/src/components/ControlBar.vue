@@ -25,8 +25,8 @@
               highlighted: highlightedWindowId === i - 1
             }"
             :style="{ 
-              left: (((i - 1) * WINDOW_DURATION) / duration * 100) + '%',
-              width: (WINDOW_DURATION / duration * 100) + '%'
+              left: (((i - 1) * windowDuration) / duration * 100) + '%',
+              width: (windowDuration / duration * 100) + '%'
             }"
             @click.stop="handleWindowClick($event, i - 1)"
             @mouseenter="handleWindowMouseEnter($event, i - 1)"
@@ -148,8 +148,8 @@
           <span v-if="surgr1Processing.running" class="frame-count">{{ surgr1Processing.framesAnalyzed }}</span>
         </div>
         
-        <!-- GLM: 大脑/神经网络图标 -->
-        <div class="service-badge" :class="{ available: glmStatus.available }" title="GLM 智能总结">
+        <!-- LLM: 大脑/神经网络图标 -->
+        <div class="service-badge" :class="{ available: glmStatus.available }" title="LLM 智能总结">
           <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <!-- 大脑轮廓 -->
             <path d="M12 4C8 4 5 6.5 5 10C5 12 6 13.5 6.5 14.5C6 15.5 5.5 17 6.5 18.5C7.5 20 9 20.5 10.5 20C11 20.5 11.5 21 12 21" />
@@ -166,7 +166,7 @@
             <circle cx="16" cy="14" r="0.8" fill="currentColor" />
             <circle cx="12" cy="17" r="0.8" fill="currentColor" />
           </svg>
-          <span class="service-label">GLM</span>
+          <span class="service-label">LLM</span>
         </div>
         
         <!-- SAM3: 放大镜+手术刀图标 -->
@@ -274,8 +274,6 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 
-const WINDOW_DURATION = 5
-
 const props = defineProps({
   currentTime: {
     type: Number,
@@ -345,6 +343,10 @@ const props = defineProps({
   sam3Time: {
     type: Number,
     default: null
+  },
+  windowDuration: {
+    type: Number,
+    default: 5
   }
 })
 
@@ -392,17 +394,21 @@ const isTooltipLocked = computed(() => lockedWindowId.value >= 0)
 
 const progressPercent = computed(() => {
   if (!props.duration) return 0
-  return (props.currentTime / props.duration) * 100
+  // Clamp values to ensure valid percentage
+  const safeTime = Math.max(0, Math.min(props.currentTime, props.duration))
+  const percent = (safeTime / props.duration) * 100
+  // Clamp final percentage to prevent visual glitches
+  return Math.max(0, Math.min(100, percent))
 })
 
 const windowCount = computed(() => {
   // Ensure duration is positive to avoid negative window count
   const safeDuration = Math.max(0, props.duration || 0)
-  return Math.max(0, Math.ceil(safeDuration / WINDOW_DURATION))
+  return Math.max(0, Math.ceil(safeDuration / props.windowDuration))
 })
 
 const currentWindowId = computed(() => {
-  return Math.floor(props.currentTime / WINDOW_DURATION)
+  return Math.floor(props.currentTime / props.windowDuration)
 })
 
 const togglePlay = () => {
@@ -499,7 +505,7 @@ onUnmounted(() => {
 })
 
 const seekToWindow = (windowId) => {
-  const time = windowId * WINDOW_DURATION
+  const time = windowId * props.windowDuration
   emit('seek', time)
   emit('seekToWindow', windowId)
 }
@@ -515,8 +521,8 @@ const handleWindowClick = (event, windowId) => {
       // Update tooltip position for locked state
       if (progressRef.value) {
         const rect = progressRef.value.getBoundingClientRect()
-        const windowStart = (windowId * WINDOW_DURATION) / props.duration
-        const windowCenter = windowStart + (WINDOW_DURATION / props.duration / 2)
+        const windowStart = (windowId * props.windowDuration) / props.duration
+        const windowCenter = windowStart + (props.windowDuration / props.duration / 2)
         let xPos = windowCenter * rect.width
         xPos = Math.max(100, Math.min(rect.width - 100, xPos))
         tooltipPosition.value = { x: xPos }
@@ -534,8 +540,8 @@ const handleWindowMouseEnter = (event, windowId) => {
     // Calculate tooltip position based on window segment position
     if (progressRef.value) {
       const rect = progressRef.value.getBoundingClientRect()
-      const windowStart = (windowId * WINDOW_DURATION) / props.duration
-      const windowCenter = windowStart + (WINDOW_DURATION / props.duration / 2)
+      const windowStart = (windowId * props.windowDuration) / props.duration
+      const windowCenter = windowStart + (props.windowDuration / props.duration / 2)
       // Position tooltip at center of window, but keep within bounds
       let xPos = windowCenter * rect.width
       // Clamp to ensure tooltip stays within progress bar
@@ -561,12 +567,12 @@ const closeTooltip = () => {
 }
 
 const skipBack = () => {
-  const newTime = Math.max(0, props.currentTime - WINDOW_DURATION)
+  const newTime = Math.max(0, props.currentTime - props.windowDuration)
   emit('seek', newTime)
 }
 
 const skipForward = () => {
-  const newTime = Math.min(props.duration, props.currentTime + WINDOW_DURATION)
+  const newTime = Math.min(props.duration, props.currentTime + props.windowDuration)
   emit('seek', newTime)
 }
 
@@ -588,12 +594,20 @@ const toggleMute = () => {
 }
 
 const formatTime = (seconds) => {
+  // Handle negative, NaN, or infinite values
+  if (seconds < 0 || isNaN(seconds) || !isFinite(seconds)) {
+    seconds = 0
+  }
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
 
 const formatTimeOffset = (seconds) => {
+  // Handle NaN or infinite values
+  if (isNaN(seconds) || !isFinite(seconds)) {
+    return '<1秒'
+  }
   const absSeconds = Math.abs(seconds)
   if (absSeconds < 1) return '<1秒'
   if (absSeconds < 60) return `${Math.round(absSeconds)}秒`

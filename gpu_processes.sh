@@ -109,7 +109,7 @@ ss -tlnp 2>/dev/null | grep -E 'LISTEN' | while read line; do
     case $port in
         8000) echo "  Port $port -> glm_api (GLM-4.6V-Flash)" ;;
         8001) echo "  Port $port -> glm_api (alternate)" ;;
-        9001) echo "  Port $port -> rtc_simulator" ;;
+        9001) echo "  Port $port -> stream_simulator" ;;
         9003) echo "  Port $port -> SurgR1_api (Surgical Analysis)" ;;
         50000) echo "  Port $port -> tts_api (CosyVoice TTS)" ;;
         50001) echo "  Port $port -> tts_api (alternate)" ;;

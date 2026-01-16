@@ -67,6 +67,7 @@ class SurgR1Client:
     - analyze_frames_concurrent: 使用 asyncio.gather 并发分析
     - 自动 Semaphore 控制并发数防止过载
     - 支持失败重试
+    - 支持按会话取消正在进行的请求
     
     配置从 config.json 的 services.surgr1 读取:
     - max_concurrent: 最大并发数
@@ -100,6 +101,9 @@ class SurgR1Client:
         )
         self._semaphore = asyncio.Semaphore(actual_max_concurrent)
         
+        # 会话取消标志: session_id -> bool (True = 已取消)
+        self._cancelled_sessions: Dict[str, bool] = {}
+        
         logger.info(f"[SurgR1Client] Initialized with API: {self.api_url}, max_concurrent: {actual_max_concurrent}, retry_count: {config_retry_count}")
     
     @property
@@ -114,6 +118,27 @@ class SurgR1Client:
         if self._client:
             await self._client.aclose()
             self._client = None
+    
+    async def cancel_session(self, session_id: str):
+        """
+        取消指定会话的所有待处理请求
+        
+        这会设置一个取消标志，使得后续的分析请求会立即返回取消状态。
+        注意：已经在 vLLM 中处理的请求无法取消，但可以防止新请求被发送。
+        
+        Args:
+            session_id: 要取消的会话 ID
+        """
+        self._cancelled_sessions[session_id] = True
+        logger.info(f"[SurgR1Client] Session {session_id} marked as cancelled")
+    
+    def is_session_cancelled(self, session_id: str) -> bool:
+        """检查会话是否已被取消"""
+        return self._cancelled_sessions.get(session_id, False)
+    
+    def clear_cancellation(self, session_id: str):
+        """清除会话的取消标志（用于开始新的处理）"""
+        self._cancelled_sessions.pop(session_id, None)
     
     async def check_health(self) -> bool:
         """Check if SurgR1 service is available"""
@@ -308,6 +333,18 @@ class SurgR1Client:
         if not frames:
             return []
         
+        # Check if session is cancelled before processing
+        if session_id and self.is_session_cancelled(session_id):
+            logger.info(f"[SurgR1Client] Skipping batch - session {session_id} cancelled")
+            return [{
+                "frame_idx": f.get("frame_idx"),
+                "timestamp": f.get("timestamp"),
+                "phase": "[Cancelled]",
+                "action": "",
+                "tools": "",
+                "cancelled": True
+            } for f in frames]
+        
         # Convert all images to temp file paths
         image_paths = []
         cleanup_paths = []
@@ -426,6 +463,16 @@ class SurgR1Client:
         Returns:
             Dict with analysis results
         """
+        # Check if session is cancelled before processing
+        if session_id and self.is_session_cancelled(session_id):
+            logger.debug(f"[SurgR1Client] Skipping frame analysis - session {session_id} cancelled")
+            return {
+                "phase": "[Cancelled]",
+                "action": "",
+                "tools": "",
+                "cancelled": True
+            }
+        
         # Convert image to path if needed
         if isinstance(image, (Image.Image, bytes)):
             image_path = self._save_temp_image(image)
@@ -523,6 +570,19 @@ class SurgR1Client:
         """
         if not frames:
             return []
+        
+        # Check if session is cancelled before starting
+        if session_id and self.is_session_cancelled(session_id):
+            logger.info(f"[SurgR1Client] Skipping batch analysis - session {session_id} cancelled")
+            return [{
+                "frame_idx": f.get("frame_idx"),
+                "timestamp": f.get("timestamp"),
+                "success": False,
+                "cancelled": True,
+                "phase": "[Cancelled]",
+                "action": "",
+                "tools": ""
+            } for f in frames]
         
         # 使用指定的并发数或默认配置
         semaphore = self._semaphore

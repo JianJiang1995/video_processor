@@ -47,6 +47,10 @@ class HTTPStreamServer:
     This is the most compatible streaming format for testing
     with video_stream_app, as it works with OpenCV's VideoCapture
     and most browsers.
+    
+    Uses a SHARED frame broadcaster to ensure consistent frame timing
+    across all connected clients - avoids I/O competition from multiple
+    VideoSource instances.
     """
     
     def __init__(
@@ -71,12 +75,79 @@ class HTTPStreamServer:
         self.active_streams = 0
         # Track if video playback has ended (for non-loop mode)
         self.video_ended = False
+        
+        # Shared frame broadcaster for consistent playback across all clients
+        self._shared_source: Optional[VideoSource] = None
+        self._shared_frame: Optional[bytes] = None  # Current JPEG frame
+        self._shared_frame_lock = asyncio.Lock()
+        self._broadcaster_task: Optional[asyncio.Task] = None
+        self._broadcast_started = False
     
     def _setup_routes(self):
         """Setup HTTP routes"""
         self.app.router.add_get("/", self.index)
         self.app.router.add_get("/stream", self.mjpeg_stream)
         self.app.router.add_get("/stream.jpg", self.snapshot)
+    
+    async def _start_broadcaster(self):
+        """Start the shared frame broadcaster if not already running"""
+        async with self._shared_frame_lock:
+            if self._broadcast_started:
+                return
+            
+            logger.info("Starting shared frame broadcaster")
+            self._shared_source = VideoSource(self.video_path, loop=self.loop)
+            self._broadcast_started = True
+            self._broadcaster_task = asyncio.create_task(self._broadcaster_loop())
+    
+    async def _stop_broadcaster(self):
+        """Stop the shared frame broadcaster"""
+        async with self._shared_frame_lock:
+            if not self._broadcast_started:
+                return
+            
+            logger.info("Stopping shared frame broadcaster")
+            self._broadcast_started = False
+            if self._shared_source:
+                self._shared_source.stop()
+                self._shared_source.close()
+                self._shared_source = None
+            if self._broadcaster_task:
+                self._broadcaster_task.cancel()
+                try:
+                    await self._broadcaster_task
+                except asyncio.CancelledError:
+                    pass
+                self._broadcaster_task = None
+    
+    async def _broadcaster_loop(self):
+        """Main loop that reads frames and broadcasts to all clients"""
+        try:
+            async for frame in self._shared_source.frames_async(realtime=True):
+                # Encode frame as JPEG
+                jpeg_data = encode_frame_jpeg(frame, self.jpeg_quality)
+                self._shared_frame = jpeg_data
+            
+            # Video ended
+            self.video_ended = True
+            logger.info("Broadcaster: Video playback completed")
+            
+            # Create end frame
+            end_frame = self._create_end_frame(self._shared_source.width, self._shared_source.height)
+            self._shared_frame = encode_frame_jpeg(end_frame, self.jpeg_quality)
+            
+        except asyncio.CancelledError:
+            logger.info("Broadcaster cancelled")
+        except Exception as e:
+            logger.error(f"Broadcaster error: {e}")
+        finally:
+            self._broadcast_started = False
+    
+    async def _restart_broadcaster(self):
+        """Restart the broadcaster from the beginning"""
+        await self._stop_broadcaster()
+        self.video_ended = False
+        await self._start_broadcaster()
         self.app.router.add_get("/info", self.video_info)
         self.app.router.add_get("/health", self.health)
         self.app.router.add_post("/upload", self.upload_video)
@@ -615,7 +686,10 @@ class HTTPStreamServer:
     
     async def mjpeg_stream(self, request: web.Request) -> web.StreamResponse:
         """
-        Stream video as Motion JPEG.
+        Stream video as Motion JPEG using shared frame broadcaster.
+        
+        All clients receive the same frames at the same time, ensuring
+        consistent playback and avoiding I/O competition.
         
         This format is widely supported:
         - Works in browsers with <img src="/stream">
@@ -637,61 +711,66 @@ class HTTPStreamServer:
         await response.prepare(request)
         
         self.active_streams += 1
-        # Reset video_ended when first stream starts
-        if self.active_streams == 1:
+        # Always reset video_ended when a new stream starts and start broadcaster
+        if self.video_ended:
+            logger.info("Resetting video_ended flag for new stream connection")
             self.video_ended = False
         logger.info(f"Stream started (active: {self.active_streams})")
         
-        # Create video source for this stream
-        source = VideoSource(self.video_path, loop=self.loop)
-        video_ended = False
+        # Start the shared broadcaster if not already running
+        await self._start_broadcaster()
+        
+        # Calculate frame interval for consistent timing
+        frame_interval = 1.0 / 25.0  # Default 25 FPS target for delivery
+        if self._shared_source:
+            frame_interval = self._shared_source.frame_interval
+        
+        last_frame = None
         
         try:
-            async for frame in source.frames_async(realtime=True):
-                # Encode frame as JPEG
-                jpeg_data = encode_frame_jpeg(frame, self.jpeg_quality)
+            while self._broadcast_started or not self.video_ended:
+                # Get current shared frame
+                jpeg_data = self._shared_frame
                 
-                # Write multipart frame
+                if jpeg_data and jpeg_data != last_frame:
+                    last_frame = jpeg_data
+                    
+                    # Write multipart frame
+                    await response.write(
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(jpeg_data)).encode() + b"\r\n"
+                        b"\r\n" + jpeg_data + b"\r\n"
+                    )
+                
+                # Wait for next frame interval
+                await asyncio.sleep(frame_interval)
+                
+                # Check if video ended
+                if self.video_ended and self._shared_frame == last_frame:
+                    break
+            
+            # Send end signal
+            if self.video_ended:
+                logger.info("Video playback completed for this client")
                 await response.write(
                     b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Content-Length: " + str(len(jpeg_data)).encode() + b"\r\n"
-                    b"\r\n" + jpeg_data + b"\r\n"
+                    b"X-Stream-Status: ended\r\n"
+                    b"\r\n"
                 )
-            
-            # Video ended naturally (not looping)
-            video_ended = True
-            self.video_ended = True  # Mark that video has ended for /info endpoint
-            logger.info("Video playback completed, sending end frame")
-            
-            # Create an "end frame" with text - a dark frame indicating video ended
-            end_frame = self._create_end_frame(source.width, source.height)
-            jpeg_data = encode_frame_jpeg(end_frame, self.jpeg_quality)
-            
-            # Send the end frame
-            await response.write(
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n"
-                b"Content-Length: " + str(len(jpeg_data)).encode() + b"\r\n"
-                b"\r\n" + jpeg_data + b"\r\n"
-            )
-            
-            # Send a special header to signal end (some clients may read this)
-            await response.write(
-                b"--frame\r\n"
-                b"X-Stream-Status: ended\r\n"
-                b"\r\n"
-            )
                 
         except asyncio.CancelledError:
             pass
         except ConnectionResetError:
             pass
         finally:
-            source.close()
             self.active_streams -= 1
-            status = "completed" if video_ended else "disconnected"
+            status = "completed" if self.video_ended else "disconnected"
             logger.info(f"Stream ended ({status}, active: {self.active_streams})")
+            
+            # Stop broadcaster if no more clients
+            if self.active_streams == 0:
+                await self._stop_broadcaster()
         
         return response
     
@@ -831,13 +910,14 @@ class HTTPStreamServer:
                 self.video_path = new_video
                 logger.info(f"Switched video to: {new_video}")
             
-            # Note: Active streams will pick up the new video on next loop
-            logger.info("Stream restart requested")
+            # Restart the broadcaster with new/same video
+            await self._restart_broadcaster()
+            logger.info("Stream restart completed")
             
             return web.json_response({
                 "success": True,
                 "video_path": self.video_path,
-                "message": "Stream will restart with new video"
+                "message": "Stream restarted successfully"
             })
             
         except Exception as e:

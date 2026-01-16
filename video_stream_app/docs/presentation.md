@@ -474,7 +474,7 @@ Server -> Client:
    $ npm run dev
 
 5. (可选) 启动视频流模拟器
-   $ ./rtc_simulator/start_all.sh
+   $ ./stream_simulator/start_all.sh
 ```
 
 ## 7.3 配置文件

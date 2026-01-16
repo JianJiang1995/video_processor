@@ -17,6 +17,15 @@ from .tts_cosyvoice_client import CosyVoiceTTSClient, get_tts_client, ensure_tts
 from .asr_funasr_client import FunASRClient, get_asr_client, ensure_asr_available, ASRMonitoringSession
 from .glm_client import GLMClient, get_glm_client, ensure_glm_available
 
+# Gemini 3.0 Flash - Google multimodal analysis
+from .gemini_client import GeminiClient, get_gemini_client, ensure_gemini_available
+
+# VLM Factory - Unified interface for window analysis (Gemini/Qwen/GLM)
+from .vlm_factory import (
+    get_vlm_client, ensure_vlm_available, check_vlm_health,
+    get_summarization_provider, get_history_manager, cleanup_session_resources
+)
+
 # MySQL database service for analysis storage
 from .mysql_service import MySQLService, get_mysql_service, init_mysql
 
@@ -45,6 +54,13 @@ __all__ = [
     
     # GLM - Text summarization
     "GLMClient", "get_glm_client", "ensure_glm_available",
+    
+    # Gemini - Google multimodal analysis
+    "GeminiClient", "get_gemini_client", "ensure_gemini_available",
+    
+    # VLM Factory - Unified interface (selects Gemini/Qwen/GLM based on config)
+    "get_vlm_client", "ensure_vlm_available", "check_vlm_health",
+    "get_summarization_provider", "get_history_manager", "cleanup_session_resources",
     
     # MySQL - Analysis storage
     "MySQLService", "get_mysql_service", "init_mysql",

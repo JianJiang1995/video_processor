@@ -161,6 +161,18 @@ async def inference_zero_shot(
         # 保存上传文件到临时路径（CosyVoice 内部需要文件路径）
         temp_path = save_upload_to_temp(prompt_wav)
         
+        # 验证音频文件是否有效（避免空文件或损坏文件导致生成器内部崩溃）
+        try:
+            file_size = os.path.getsize(temp_path)
+            if file_size == 0:
+                raise HTTPException(status_code=422, detail="音频文件为空")
+            # 尝试加载音频以验证格式
+            _, _ = librosa.load(temp_path, sr=None, duration=0.1)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"无效的音频文件: {str(e)}")
+        
         # 使用临时文件路径调用推理
         model_output = cosyvoice.inference_zero_shot(tts_text, prompt_text, temp_path, stream=True)
         
@@ -174,6 +186,11 @@ async def inference_zero_shot(
                     os.unlink(temp_path)
         
         return StreamingResponse(generate_with_cleanup())
+    except HTTPException:
+        # HTTPException 直接抛出，不要再包装
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
     except Exception as e:
         # 出错时也要清理临时文件
         if temp_path and os.path.exists(temp_path):
