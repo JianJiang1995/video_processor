@@ -59,13 +59,15 @@ class HTTPStreamServer:
         port: int = 8080,
         host: str = "0.0.0.0",
         jpeg_quality: int = 80,
-        loop: bool = False  # Default: stop at video end
+        loop: bool = False,  # Default: stop at video end
+        fps_override: Optional[float] = None
     ):
         self.video_path = video_path
         self.port = port
         self.host = host
         self.jpeg_quality = jpeg_quality
         self.loop = loop
+        self.fps_override = fps_override
         
         self.video_source: Optional[VideoSource] = None
         self.app = web.Application()
@@ -88,6 +90,11 @@ class HTTPStreamServer:
         self.app.router.add_get("/", self.index)
         self.app.router.add_get("/stream", self.mjpeg_stream)
         self.app.router.add_get("/stream.jpg", self.snapshot)
+        self.app.router.add_get("/info", self.video_info)
+        self.app.router.add_get("/health", self.health)
+        self.app.router.add_post("/upload", self.upload_video)
+        self.app.router.add_post("/restart", self.restart_stream)
+        self.app.router.add_get("/videos", self.list_videos)
     
     async def _start_broadcaster(self):
         """Start the shared frame broadcaster if not already running"""
@@ -96,7 +103,11 @@ class HTTPStreamServer:
                 return
             
             logger.info("Starting shared frame broadcaster")
-            self._shared_source = VideoSource(self.video_path, loop=self.loop)
+            self._shared_source = VideoSource(
+                self.video_path,
+                loop=self.loop,
+                fps_override=self.fps_override
+            )
             self._broadcast_started = True
             self._broadcaster_task = asyncio.create_task(self._broadcaster_loop())
     
@@ -148,11 +159,6 @@ class HTTPStreamServer:
         await self._stop_broadcaster()
         self.video_ended = False
         await self._start_broadcaster()
-        self.app.router.add_get("/info", self.video_info)
-        self.app.router.add_get("/health", self.health)
-        self.app.router.add_post("/upload", self.upload_video)
-        self.app.router.add_post("/restart", self.restart_stream)
-        self.app.router.add_get("/videos", self.list_videos)
     
     async def index(self, request: web.Request) -> web.Response:
         """Serve the stream test page"""
@@ -803,7 +809,7 @@ class HTTPStreamServer:
     async def snapshot(self, request: web.Request) -> web.Response:
         """Return a single JPEG frame"""
         
-        source = VideoSource(self.video_path, loop=False)
+        source = VideoSource(self.video_path, loop=False, fps_override=self.fps_override)
         frame = source.read_frame()
         source.close()
         
@@ -824,7 +830,7 @@ class HTTPStreamServer:
     async def video_info(self, request: web.Request) -> web.Response:
         """Return video information as JSON"""
         
-        source = VideoSource(self.video_path)
+        source = VideoSource(self.video_path, fps_override=self.fps_override)
         info = source.info
         source.close()
         
@@ -1009,6 +1015,12 @@ def main():
         action="store_true",
         help="Loop the video (default: stop at end)"
     )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Override FPS for streaming (default: use video FPS)"
+    )
     
     args = parser.parse_args()
     
@@ -1021,7 +1033,8 @@ def main():
         port=args.port,
         host=args.host,
         jpeg_quality=args.quality,
-        loop=args.loop  # Default is False (stop at end), use --loop to enable looping
+        loop=args.loop,  # Default is False (stop at end), use --loop to enable looping
+        fps_override=args.fps
     )
     
     try:
