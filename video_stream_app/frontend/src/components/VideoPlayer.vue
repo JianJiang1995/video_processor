@@ -804,42 +804,22 @@ const startLoopPlayback = async () => {
   }
   const actualFps = avgFrameInterval > 0 ? (1 / avgFrameInterval).toFixed(1) : 'N/A'
   
-  // Use WINDOW duration for playback timing (not frame timestamp range)
-  // This ensures the loop covers the full window even if frames don't span it entirely
+  // Get frame timestamps for calculating actual playback range
   const frames = loopFrameCache.value
   const firstFrameTs = frames[0]?.timestamp || windowStart
   const lastFrameTs = frames[frameCount - 1]?.timestamp || windowEnd
   
-  console.log(`[LoopPlayback] Window-based mode: ${frameCount} frames, window ${windowStart.toFixed(1)}-${windowEnd.toFixed(1)}s (${windowDuration.toFixed(1)}s), frames span ${firstFrameTs.toFixed(2)}-${lastFrameTs.toFixed(2)}s`)
+  // Use the ACTUAL frame span for looping, not the window duration
+  // This prevents freezing on last frame when frames don't cover the full window
+  const frameSpan = lastFrameTs - firstFrameTs
+  const effectiveLoopDuration = frameSpan > 0 ? frameSpan : windowDuration
+  
+  console.log(`[LoopPlayback] Frame-based loop: ${frameCount} frames, span ${firstFrameTs.toFixed(2)}-${lastFrameTs.toFixed(2)}s (${effectiveLoopDuration.toFixed(2)}s), window ${windowStart.toFixed(1)}-${windowEnd.toFixed(1)}s`)
   
   // Playback state
   let playbackStartTime = performance.now()
   let lastDisplayedFrameIndex = -1
-  let lastEmittedTime = windowStart
-  
-  // Find frame for a given video time using binary search
-  const findFrameForTime = (videoTime) => {
-    if (frames.length === 0) return -1
-    if (frames.length === 1) return 0
-    
-    // If before first frame, show first frame
-    if (videoTime < frames[0].timestamp) return 0
-    // If after last frame, show last frame
-    if (videoTime >= frames[frames.length - 1].timestamp) return frames.length - 1
-    
-    // Binary search for largest timestamp <= videoTime
-    let left = 0, right = frames.length - 1, result = 0
-    while (left <= right) {
-      const mid = Math.floor((left + right) / 2)
-      if (frames[mid].timestamp <= videoTime) {
-        result = mid
-        left = mid + 1
-      } else {
-        right = mid - 1
-      }
-    }
-    return result
-  }
+  let lastEmittedTime = firstFrameTs
   
   const playbackLoop = (realTime) => {
     if (!props.loopWindow) {
@@ -848,26 +828,31 @@ const startLoopPlayback = async () => {
     }
     
     if (!props.isPlaying) {
-      // When paused, reset so we resume from current video time
-      const currentVideoTime = loopPlaybackTime.value || windowStart
-      const offsetMs = (currentVideoTime - windowStart) * 1000
+      // When paused, keep current position
+      const currentVideoTime = loopPlaybackTime.value || firstFrameTs
+      const offsetMs = (currentVideoTime - firstFrameTs) * 1000
       playbackStartTime = realTime - offsetMs
       loopPlaybackTimer = requestAnimationFrame(playbackLoop)
       return
     }
     
-    // Calculate current video time (1 real second = 1 video second)
+    // Calculate elapsed time and loop within frame span
     const elapsedMs = realTime - playbackStartTime
     const elapsedSec = elapsedMs / 1000
     
-    // Loop back to window start when we exceed window end
-    let currentVideoTime = windowStart + (elapsedSec % windowDuration)
+    // Loop within the actual frame time range
+    const loopPosition = elapsedSec % effectiveLoopDuration
+    const currentVideoTime = firstFrameTs + loopPosition
     
-    // Find the appropriate frame for this video time
-    const frameIndex = findFrameForTime(currentVideoTime)
+    // Simple sequential frame selection based on loop progress
+    // This ensures smooth playback through all frames
+    const frameProgress = loopPosition / effectiveLoopDuration
+    let frameIndex = Math.floor(frameProgress * frameCount)
+    if (frameIndex >= frameCount) frameIndex = frameCount - 1
+    if (frameIndex < 0) frameIndex = 0
     
     // Update display if frame changed
-    if (frameIndex !== lastDisplayedFrameIndex && frameIndex >= 0) {
+    if (frameIndex !== lastDisplayedFrameIndex) {
       const frame = frames[frameIndex]
       if (frame && frame.url) {
         loopPlaybackFrame.value = frame.url
@@ -875,8 +860,8 @@ const startLoopPlayback = async () => {
       }
     }
     
-    // Always update playback time for UI
-    loopPlaybackTime.value = currentVideoTime
+    // Update playback time for UI (show actual frame timestamp)
+    loopPlaybackTime.value = frames[frameIndex]?.timestamp || currentVideoTime
     
     // Emit time update periodically
     if (Math.abs(currentVideoTime - lastEmittedTime) > 0.1) {
@@ -892,7 +877,7 @@ const startLoopPlayback = async () => {
 }
 
 // Start loop playback timer only (when frames are already cached)
-// Uses window-based timing: 1 real second = 1 video second within window
+// Uses frame-based timing: loops through all available frames smoothly
 const startLoopPlaybackTimer = () => {
   if (loopPlaybackTimer) {
     cancelAnimationFrame(loopPlaybackTimer)
@@ -902,37 +887,20 @@ const startLoopPlaybackTimer = () => {
   if (!props.loopWindow || loopFrameCache.value.length === 0) return
   
   const frames = loopFrameCache.value
-  const windowStart = props.loopWindow.start_time
-  const windowEnd = props.loopWindow.end_time
-  // Use configured window duration from props (from backend config)
-  const windowDuration = props.windowDuration
+  const frameCount = frames.length
+  const firstFrameTs = frames[0]?.timestamp || props.loopWindow.start_time
+  const lastFrameTs = frames[frameCount - 1]?.timestamp || props.loopWindow.end_time
   
-  // Start from current playback position
-  const currentVideoTime = loopPlaybackTime.value || windowStart
-  const offsetMs = (currentVideoTime - windowStart) * 1000
-  let playbackStartTime = performance.now() - offsetMs
+  // Use actual frame span for looping
+  const frameSpan = lastFrameTs - firstFrameTs
+  const effectiveLoopDuration = frameSpan > 0 ? frameSpan : props.windowDuration
+  
+  // Start from current position within the frame range
+  const currentTime = loopPlaybackTime.value || firstFrameTs
+  const offsetInLoop = Math.max(0, currentTime - firstFrameTs)
+  let playbackStartTime = performance.now() - (offsetInLoop * 1000)
   let lastDisplayedFrameIndex = -1
-  let lastEmittedTime = currentVideoTime
-  
-  // Find frame for a given video time
-  const findFrameForTime = (videoTime) => {
-    if (frames.length === 0) return -1
-    if (frames.length === 1) return 0
-    if (videoTime < frames[0].timestamp) return 0
-    if (videoTime >= frames[frames.length - 1].timestamp) return frames.length - 1
-    
-    let left = 0, right = frames.length - 1, result = 0
-    while (left <= right) {
-      const mid = Math.floor((left + right) / 2)
-      if (frames[mid].timestamp <= videoTime) {
-        result = mid
-        left = mid + 1
-      } else {
-        right = mid - 1
-      }
-    }
-    return result
-  }
+  let lastEmittedTime = currentTime
   
   const playbackLoop = (realTime) => {
     if (!props.loopWindow) {
@@ -941,22 +909,27 @@ const startLoopPlaybackTimer = () => {
     }
     
     if (!props.isPlaying) {
-      const curTime = loopPlaybackTime.value || windowStart
-      const offset = (curTime - windowStart) * 1000
+      // Keep current position when paused
+      const curTime = loopPlaybackTime.value || firstFrameTs
+      const offset = Math.max(0, curTime - firstFrameTs) * 1000
       playbackStartTime = realTime - offset
       loopPlaybackTimer = requestAnimationFrame(playbackLoop)
       return
     }
     
-    // Calculate current video time
+    // Calculate loop position
     const elapsedMs = realTime - playbackStartTime
     const elapsedSec = elapsedMs / 1000
-    let currentVideoTime = windowStart + (elapsedSec % windowDuration)
+    const loopPosition = elapsedSec % effectiveLoopDuration
     
-    // Find and display appropriate frame
-    const frameIndex = findFrameForTime(currentVideoTime)
+    // Sequential frame selection based on progress
+    const frameProgress = loopPosition / effectiveLoopDuration
+    let frameIndex = Math.floor(frameProgress * frameCount)
+    if (frameIndex >= frameCount) frameIndex = frameCount - 1
+    if (frameIndex < 0) frameIndex = 0
     
-    if (frameIndex !== lastDisplayedFrameIndex && frameIndex >= 0) {
+    // Update display if frame changed
+    if (frameIndex !== lastDisplayedFrameIndex) {
       const frame = frames[frameIndex]
       if (frame && frame.url) {
         loopPlaybackFrame.value = frame.url
@@ -964,6 +937,8 @@ const startLoopPlaybackTimer = () => {
       }
     }
     
+    // Update playback time
+    const currentVideoTime = frames[frameIndex]?.timestamp || (firstFrameTs + loopPosition)
     loopPlaybackTime.value = currentVideoTime
     
     if (Math.abs(currentVideoTime - lastEmittedTime) > 0.1) {
