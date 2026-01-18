@@ -157,7 +157,18 @@ class VideoSource:
         if wait_time > 0:
             await asyncio.sleep(wait_time)
         
-        return await self.read_frame_async()
+        # #region agent log
+        t0 = time.time()
+        # #endregion
+        frame = await self.read_frame_async()
+        # #region agent log
+        t1 = time.time()
+        read_ms = (t1 - t0) * 1000
+        drift_ms = (t1 - expected_time) * 1000 if expected_time else 0
+        if self._frame_idx % 30 == 0:  # Log every 30 frames
+            import json; open('/data2/jj/proj/video_processor/.cursor/debug.log','a').write(json.dumps({"location":"video_source.py:read_frame_realtime_async","message":"frame_timing","data":{"frame_idx":self._frame_idx,"read_ms":round(read_ms,2),"drift_ms":round(drift_ms,2),"wait_ms":round(wait_time*1000,2),"fps":self.fps},"timestamp":int(t1*1000),"hypothesisId":"B,E"})+'\n')
+        # #endregion
+        return frame
     
     def seek(self, timestamp: float):
         """Seek to timestamp (seconds)"""

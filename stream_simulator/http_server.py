@@ -84,6 +84,8 @@ class HTTPStreamServer:
         self._shared_frame_lock = asyncio.Lock()
         self._broadcaster_task: Optional[asyncio.Task] = None
         self._broadcast_started = False
+        # Event to notify clients when a new frame is available
+        self._new_frame_event: Optional[asyncio.Event] = None
     
     def _setup_routes(self):
         """Setup HTTP routes"""
@@ -109,6 +111,8 @@ class HTTPStreamServer:
                 fps_override=self.fps_override
             )
             self._broadcast_started = True
+            # Create event for frame notification
+            self._new_frame_event = asyncio.Event()
             self._broadcaster_task = asyncio.create_task(self._broadcaster_loop())
     
     async def _stop_broadcaster(self):
@@ -138,6 +142,10 @@ class HTTPStreamServer:
                 # Encode frame as JPEG
                 jpeg_data = encode_frame_jpeg(frame, self.jpeg_quality)
                 self._shared_frame = jpeg_data
+                # Notify all waiting clients that a new frame is available
+                if self._new_frame_event:
+                    self._new_frame_event.set()
+                    self._new_frame_event.clear()
             
             # Video ended
             self.video_ended = True
@@ -735,12 +743,21 @@ class HTTPStreamServer:
         
         try:
             while self._broadcast_started or not self.video_ended:
+                # Wait for new frame notification with timeout (prevents hanging if broadcaster stops)
+                if self._new_frame_event:
+                    try:
+                        await asyncio.wait_for(self._new_frame_event.wait(), timeout=frame_interval * 2)
+                    except asyncio.TimeoutError:
+                        pass  # Timeout is OK, check if video ended
+                else:
+                    # Fallback if event not available
+                    await asyncio.sleep(frame_interval)
+                
                 # Get current shared frame
                 jpeg_data = self._shared_frame
                 
                 if jpeg_data and jpeg_data != last_frame:
                     last_frame = jpeg_data
-                    
                     # Write multipart frame
                     await response.write(
                         b"--frame\r\n"
@@ -748,9 +765,6 @@ class HTTPStreamServer:
                         b"Content-Length: " + str(len(jpeg_data)).encode() + b"\r\n"
                         b"\r\n" + jpeg_data + b"\r\n"
                     )
-                
-                # Wait for next frame interval
-                await asyncio.sleep(frame_interval)
                 
                 # Check if video ended
                 if self.video_ended and self._shared_frame == last_frame:
