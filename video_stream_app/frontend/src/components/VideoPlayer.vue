@@ -201,7 +201,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed'])
+const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning'])
 
 const videoRef = ref(null)
 const streamImgRef = ref(null)
@@ -485,10 +485,8 @@ const loadLoopWindowFrames = async () => {
   const maxFrames = Math.min(Math.ceil(windowDuration * 25), 500)
   const useLocalCache = isElectron()
   // Electron: prefer full frames for real-time & coherent playback (preview may be partial)
-  const usePreview = !useLocalCache
-  
-  console.log(`[LoopPlayback] Loading frames for window ${props.loopWindow.window_id} (${props.loopWindow.start_time.toFixed(1)}-${props.loopWindow.end_time.toFixed(1)}s, max ${maxFrames} frames, localCache=${useLocalCache})`)
-  
+  const usePreview = !useLocalCache  
+  console.log(`[LoopPlayback] Loading frames for window ${props.loopWindow.window_id} (${props.loopWindow.start_time.toFixed(1)}-${props.loopWindow.end_time.toFixed(1)}s, max ${maxFrames} frames, localCache=${useLocalCache})`)  
   try {
     // Step 1: Get frame list from backend (metadata only)
     const batchResponse = await fetch(
@@ -502,6 +500,23 @@ const loadLoopWindowFrames = async () => {
     const batchData = await batchResponse.json()
     if (!batchData.success || !batchData.frames || batchData.frames.length === 0) {
       throw new Error('No frames found in response')
+    }    
+    // 【解耦增强】检查帧覆盖率信息
+    if (batchData.coverage) {
+      const coverage = batchData.coverage
+      console.log(`[LoopPlayback] Coverage info: ${coverage.frame_count} frames, ${(coverage.coverage_ratio * 100).toFixed(1)}% coverage, actual range ${coverage.actual_start?.toFixed(2)}-${coverage.actual_end?.toFixed(2)}s`)
+      
+      // 如果覆盖率过低，发出警告
+      if (coverage.coverage_ratio < 0.5) {
+        console.warn(`[LoopPlayback] Low frame coverage (${(coverage.coverage_ratio * 100).toFixed(1)}%), playback may be choppy`)
+        emit('loopCoverageWarning', {
+          coverage_ratio: coverage.coverage_ratio,
+          frame_count: coverage.frame_count,
+          expected_frames: coverage.expected_frames,
+          actual_start: coverage.actual_start,
+          actual_end: coverage.actual_end
+        })
+      }
     }
     
     // Process and deduplicate frames
@@ -623,24 +638,22 @@ const loadLoopWindowFrames = async () => {
       console.log(`[LoopPlayback] First batch: ${validFrames.length} valid frames (cache: ${cacheHits} hits, ${cacheMisses} misses)`)
       loopCacheLoading.value = false
       
-      // Load remaining frames in background
+      // Load ALL remaining frames (wait for completion to ensure full window coverage)
       if (uniqueFrames.length > FIRST_BATCH_SIZE) {
-        const loadRemaining = async () => {
-          const remaining = uniqueFrames.slice(FIRST_BATCH_SIZE)
-          for (let i = 0; i < remaining.length; i += 10) {
-            if (backgroundLoadingAborted) {
-              console.log(`[LoopPlayback] Background loading aborted`)
-              return
-            }
-            const batch = remaining.slice(i, i + 10)
-            await Promise.all(batch.map(processFrame))
+        console.log(`[LoopPlayback] Loading remaining ${uniqueFrames.length - FIRST_BATCH_SIZE} frames...`)
+        const remaining = uniqueFrames.slice(FIRST_BATCH_SIZE)
+        for (let i = 0; i < remaining.length; i += 10) {
+          if (backgroundLoadingAborted) {
+            console.log(`[LoopPlayback] Background loading aborted`)
+            return false
           }
-          // Update cache with only valid frames
-          const allValidFrames = uniqueFrames.filter(f => f.url)
-          loopFrameCache.value = allValidFrames
-          console.log(`[LoopPlayback] All frames loaded: ${allValidFrames.length} valid (cache: ${cacheHits} hits, ${cacheMisses} misses)`)
+          const batch = remaining.slice(i, i + 10)
+          await Promise.all(batch.map(processFrame))
         }
-        loadRemaining()  // Fire and forget
+        // Update cache with only valid frames
+        const allValidFrames = uniqueFrames.filter(f => f.url)
+        loopFrameCache.value = allValidFrames
+        console.log(`[LoopPlayback] All frames loaded: ${allValidFrames.length} valid (cache: ${cacheHits} hits, ${cacheMisses} misses)`)
       }
       
       return true
@@ -815,7 +828,6 @@ const startLoopPlayback = async () => {
   const effectiveLoopDuration = frameSpan > 0 ? frameSpan : windowDuration
   
   console.log(`[LoopPlayback] Frame-based loop: ${frameCount} frames, span ${firstFrameTs.toFixed(2)}-${lastFrameTs.toFixed(2)}s (${effectiveLoopDuration.toFixed(2)}s), window ${windowStart.toFixed(1)}-${windowEnd.toFixed(1)}s`)
-  
   // Playback state
   let playbackStartTime = performance.now()
   let lastDisplayedFrameIndex = -1

@@ -127,21 +127,22 @@ export const getCachedFrame = async (sessionId, filename) => {
  * @param {string} subfolder - 子文件夹（'frames' 或 'preview'）
  * @returns {Blob|null}
  */
-export const getLocalFrame = async (sessionId, filename, subfolder = 'frames') => {
-  if (!isElectron()) {
+export const getLocalFrame = async (sessionId, filename, subfolder = 'frames') => {  if (!isElectron()) {
     return { success: false, data: null, error: 'Not in Electron environment' }
   }
   
-  const result = await window.electronAPI.getLocalFrame(sessionId, filename, subfolder)
-  
-  if (result.success && result.data) {
-    // 将 Buffer 数据转换为 Blob
-    const uint8Array = new Uint8Array(result.data.data || result.data)
-    const blob = new Blob([uint8Array], { type: 'image/jpeg' })
-    return { success: true, data: blob, path: result.path }
+  try {
+    const result = await window.electronAPI.getLocalFrame(sessionId, filename, subfolder)    
+    if (result.success && result.data) {
+      // 将 Buffer 数据转换为 Blob
+      const uint8Array = new Uint8Array(result.data.data || result.data)
+      const blob = new Blob([uint8Array], { type: 'image/jpeg' })
+      return { success: true, data: blob, path: result.path }
+    }
+    
+    return result
+  } catch (e) {    return { success: false, data: null, error: e.message }
   }
-  
-  return result
 }
 
 /**

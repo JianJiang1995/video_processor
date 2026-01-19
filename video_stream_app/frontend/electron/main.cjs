@@ -101,7 +101,7 @@ ipcMain.handle('get-cached-frame', async (event, sessionId, filename) => {
   }
 })
 
-// 查找包含 sessionId 的 session 目录
+// 查找包含 sessionId 的 session 目录（返回最新的）
 async function findSessionDir(sessionsPath, sessionId) {
   try {
     // 先尝试直接路径
@@ -111,11 +111,16 @@ async function findSessionDir(sessionsPath, sessionId) {
     }
     
     // 搜索包含 sessionId 的目录（处理短 ID 情况）
+    // 返回最新的目录（按目录名排序，因为格式是 YYYYMMDD_HHMMSS_sessionId_xxx）
     const entries = fsSync.readdirSync(sessionsPath, { withFileTypes: true })
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name.includes(sessionId)) {
-        return path.join(sessionsPath, entry.name)
-      }
+    const matchingDirs = entries
+      .filter(entry => entry.isDirectory() && entry.name.includes(sessionId))
+      .map(entry => entry.name)
+      .sort()  // 按字母排序，时间戳格式保证最新的在最后
+    
+    if (matchingDirs.length > 0) {
+      // 返回最新的目录（最后一个）
+      return path.join(sessionsPath, matchingDirs[matchingDirs.length - 1])
     }
     
     return null
@@ -126,7 +131,7 @@ async function findSessionDir(sessionsPath, sessionId) {
 }
 
 // 直接从后端 session 目录读取帧（不经过 HTTP）
-ipcMain.handle('get-local-frame', async (event, sessionId, filename, subfolder = 'frames') => {
+ipcMain.handle('get-local-frame', async (event, sessionId, filename, subfolder = 'frames') => {  
   try {
     const sessionsPath = store.get('sessionsStoragePath')
     
@@ -139,8 +144,10 @@ ipcMain.handle('get-local-frame', async (event, sessionId, filename, subfolder =
     
     // 2. 查找包含 sessionId 的目录（处理短 ID 如 dd4f34e6）
     const sessionDir = await findSessionDir(sessionsPath, sessionId)
+    
     if (sessionDir) {
       const framePath = path.join(sessionDir, subfolder, filename)
+      
       if (fsSync.existsSync(framePath)) {
         const data = await fs.readFile(framePath)
         return { success: true, data, path: framePath }

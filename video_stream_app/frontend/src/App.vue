@@ -541,8 +541,7 @@ const handleLoad = async (path) => {
 const loadExistingSummaries = async (sessionId) => {
   try {
     const response = await axios.get(`/api/analysis/summaries/${sessionId}`)
-    summaries.value = response.data
-  } catch (error) {
+    summaries.value = response.data  } catch (error) {
     console.error('Failed to load summaries:', error)
   }
 }
@@ -849,37 +848,49 @@ const startStreamEndCheck = () => {
       const urlObj = new URL(streamUrl)
       const baseUrl = `${urlObj.protocol}//${urlObj.host}`
       
-      // Check stream info
-      const response = await fetch(`${baseUrl}/info`, { 
-        signal: AbortSignal.timeout(2000) 
-      })
+      // Check if this is a direct external stream (stream_simulator) vs proxy stream
+      // Proxy streams go through our backend (localhost:5174 or localhost:8001) and don't have /info endpoint
+      // Direct streams (e.g., localhost:9001) from stream_simulator have /info endpoint
+      const isProxyStream = urlObj.pathname.includes('/api/video/') || 
+                            urlObj.pathname.includes('/mjpeg-proxy/') ||
+                            urlObj.host.includes(':5174') ||  // Vite dev server
+                            urlObj.host.includes(':8001')     // Backend server
       
-      if (response.ok) {
-        const info = await response.json()
+      // Only check /info for direct external streams (stream_simulator)
+      if (!isProxyStream) {
+        const response = await fetch(`${baseUrl}/info`, { 
+          signal: AbortSignal.timeout(2000) 
+        })
         
-        // Track if stream becomes active (at least 1 connection)
-        if (info.active_streams > 0) {
-          streamWasActive.value = true
+        if (response.ok) {
+          const info = await response.json()
+          
+          // Track if stream becomes active (at least 1 connection)
+          if (info.active_streams > 0) {
+            streamWasActive.value = true
+          }
+          
+          // Only consider video ended if:
+          // 1. video_ended flag is set
+          // 2. We've been playing for at least 20 seconds (allow time for first window analysis)
+          // 3. Stream was active at some point (to avoid false positives from stale state)
+          // 4. active_streams is 0 (all connections closed, indicating real end)
+          const isReallyEnded = info.video_ended && 
+            currentTime.value > 20 && 
+            streamWasActive.value && 
+            info.active_streams === 0
+          
+          if (isReallyEnded) {
+            console.log('[Stream] Video stream has ended (video_ended flag, active_streams=0)')
+            handleStreamEnded()
+            return
+          }
         }
-        
-        // Only consider video ended if:
-        // 1. video_ended flag is set
-        // 2. We've been playing for at least 20 seconds (allow time for first window analysis)
-        // 3. Stream was active at some point (to avoid false positives from stale state)
-        // 4. active_streams is 0 (all connections closed, indicating real end)
-        const isReallyEnded = info.video_ended && 
-          currentTime.value > 20 && 
-          streamWasActive.value && 
-          info.active_streams === 0
-        
-        if (isReallyEnded) {
-          console.log('[Stream] Video stream has ended (video_ended flag, active_streams=0)')
-          handleStreamEnded()
-          return
-        }
+        // Note: 404 or other errors are silently ignored - the endpoint may not exist
       }
     } catch (e) {
-      // Ignore timeout/network errors, just means stream server may be unavailable
+      // Silently ignore all errors (timeout, network, 404, etc.)
+      // This is just a status check, not critical for functionality
     }
     
     // Backup detection: check if time is stale (not in loop mode)
@@ -1057,8 +1068,7 @@ const handleSeekToWindow = (windowId) => {
       start_time: summary.start_time,
       end_time: summary.end_time
     }
-    console.log(`[Loop] Enabled loop playback for window ${windowId}: ${summary.start_time}s - ${summary.end_time}s`)
-    
+    console.log(`[Loop] Enabled loop playback for window ${windowId}: ${summary.start_time}s - ${summary.end_time}s`)    
     // Seek to the start of this window
     isLoopSeek = true
     handleSeek(summary.start_time)
