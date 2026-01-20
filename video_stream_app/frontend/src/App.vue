@@ -20,13 +20,16 @@
       <!-- Header -->
       <header class="app-header">
         <div class="logo" @click="goHome">
-          <div class="logo-icon">🎬</div>
-          <div class="logo-text">Video<span>Analyzer</span></div>
+          <div class="logo-icon">🏥</div>
+          <div class="logo-text">Surg-R1<span>手术助手</span></div>
         </div>
         
         <div class="header-center">
           <span class="mode-badge" :class="mode">
             {{ mode === 'local' ? '📁 本地视频' : '📡 实时视频流' }}
+          </span>
+          <span v-if="currentSession && mode === 'stream'" class="session-id-badge">
+            ID: {{ currentSession.session_id?.substring(0, 8) || '' }}
           </span>
           <span v-if="currentSession" class="session-name">
             {{ currentSession.video_name }}
@@ -106,6 +109,7 @@
             :isProcessing="isProcessing"
             :mode="mode"
             :highlightedWindowId="highlightedWindowId"
+            :sessionId="currentSession?.session_id || ''"
             @tts="handleTTS"
             @sam2="handleSAM2"
             @seek="handleSeek"
@@ -1387,6 +1391,16 @@ onUnmounted(() => {
 .mode-badge.local {
   background: var(--bg-tertiary);
   color: var(--text-secondary);
+}
+
+.session-id-badge {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 193, 7, 0.15);
+  color: #ffc107;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.5px;
 }
 
 .session-name {

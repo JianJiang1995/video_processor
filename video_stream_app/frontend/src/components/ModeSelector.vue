@@ -2,9 +2,9 @@
   <div class="mode-selector">
     <div class="mode-header">
       <div class="logo-large">
-        <div class="logo-icon-lg">🎬</div>
-        <h1>Video<span>Analyzer</span></h1>
-        <p class="subtitle">Real-time Surgical Video Analysis</p>
+        <div class="logo-icon-lg">🏥</div>
+        <h1>Surg-R1<span>手术助手</span></h1>
+        <p class="subtitle">AI-Powered Surgical Video Analysis</p>
       </div>
     </div>
 
