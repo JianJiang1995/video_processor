@@ -242,9 +242,22 @@ class ConversationService:
                     content=response_text
                 )
                 
-                # Generate TTS audio
-                tts_result = await self.tts_client.synthesize(response_text)
-                audio_base64 = tts_result.get("audio_base64") if tts_result.get("success") else None
+                # Check TTS availability and start async TTS if available
+                # Text response is returned immediately, TTS runs in background
+                tts_available = False
+                try:
+                    tts_available = await self.tts_client.check_health()
+                except Exception as e:
+                    logger.warning(f"[ConversationService] TTS health check failed: {e}")
+                
+                if tts_available:
+                    # Start background TTS task (non-blocking)
+                    asyncio.create_task(
+                        self._async_tts_and_notify(self.session_id, response_text)
+                    )
+                    logger.info(f"[ConversationService] TTS available, started background synthesis")
+                else:
+                    logger.info(f"[ConversationService] TTS not available, skipping audio synthesis")
                 
                 self.set_mode("listening")  # Back to listening for follow-up
                 
@@ -253,7 +266,8 @@ class ConversationService:
                     "success": True,
                     "user_query": text,
                     "response_text": response_text,
-                    "audio_base64": audio_base64,
+                    "audio_base64": None,  # Audio will be sent via WebSocket if TTS available
+                    "audio_pending": tts_available,  # Inform frontend if audio will come later
                     "audio_format": "wav",
                     "provider": self.provider,
                     "timestamp": time.time()
@@ -314,6 +328,30 @@ class ConversationService:
     def clear_conversation(self):
         """Clear conversation history"""
         self.mysql_service.clear_conversation(self.session_id)
+    
+    async def _async_tts_and_notify(self, session_id: str, text: str):
+        """
+        Background async TTS synthesis and notification.
+        
+        This runs in background after text response is returned.
+        Audio is pushed to frontend via WebSocket when ready.
+        """
+        try:
+            logger.info(f"[ConversationService] Starting background TTS for session {session_id}")
+            tts_result = await self.tts_client.synthesize(text)
+            
+            if tts_result.get("success"):
+                audio_base64 = tts_result.get("audio_base64")
+                logger.info(f"[ConversationService] TTS completed, audio size: {len(audio_base64) if audio_base64 else 0} bytes")
+                
+                # Notify frontend via WebSocket
+                from .chat_audio_notifier import notify_chat_audio_ready
+                await notify_chat_audio_ready(session_id, audio_base64)
+            else:
+                logger.warning(f"[ConversationService] TTS failed: {tts_result.get('error')}")
+                
+        except Exception as e:
+            logger.error(f"[ConversationService] Background TTS error: {e}")
 
 
 # Factory function

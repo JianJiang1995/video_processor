@@ -172,6 +172,7 @@ const currentPlayingIdx = ref(-1)
 const currentAudio = ref(null)
 const textInput = ref('')
 const isSending = ref(false)
+const pendingAudioMessageIdx = ref(-1)  // Index of message waiting for audio
 
 // Service status (only ASR needed for button state)
 const asrStatus = ref({ available: true, checking: false })
@@ -184,6 +185,7 @@ let audioContext = null
 let mediaStream = null
 let processor = null
 let ws = null
+let audioWs = null  // WebSocket for receiving async audio
 
 // Computed
 const modeLabel = computed(() => {
@@ -549,6 +551,61 @@ const formatTime = (timestamp) => {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+// Connect to audio WebSocket for receiving async TTS audio
+const connectAudioWebSocket = () => {
+  if (audioWs && audioWs.readyState === WebSocket.OPEN) {
+    return  // Already connected
+  }
+  
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsHost = window.location.host
+  const wsUrl = `${wsProtocol}//${wsHost}/api/voice/chat/${props.sessionId}/audio-stream`
+  
+  console.log('[VoiceChat] Connecting audio WebSocket:', wsUrl)
+  audioWs = new WebSocket(wsUrl)
+  
+  audioWs.onopen = () => {
+    console.log('[VoiceChat] Audio WebSocket connected')
+  }
+  
+  audioWs.onmessage = (event) => {
+    const data = JSON.parse(event.data)
+    
+    if (data.type === 'audio_ready' && data.audio_base64) {
+      console.log('[VoiceChat] Received async audio')
+      
+      // Update the pending message with audio
+      if (pendingAudioMessageIdx.value >= 0 && pendingAudioMessageIdx.value < messages.value.length) {
+        messages.value[pendingAudioMessageIdx.value].audio_base64 = data.audio_base64
+        
+        // Auto-play the audio
+        playResponseAudio(data.audio_base64)
+      }
+      
+      pendingAudioMessageIdx.value = -1
+    } else if (data.type === 'ping') {
+      // Keepalive, ignore
+    }
+  }
+  
+  audioWs.onerror = (error) => {
+    console.error('[VoiceChat] Audio WebSocket error:', error)
+  }
+  
+  audioWs.onclose = () => {
+    console.log('[VoiceChat] Audio WebSocket closed')
+    audioWs = null
+  }
+}
+
+// Disconnect audio WebSocket
+const disconnectAudioWebSocket = () => {
+  if (audioWs) {
+    audioWs.close()
+    audioWs = null
+  }
+}
+
 // Send text message
 const sendTextMessage = async () => {
   const text = textInput.value.trim()
@@ -574,15 +631,23 @@ const sendTextMessage = async () => {
     
     if (response.data.success && response.data.response) {
       const assistantResponse = response.data.response
+      
+      // Add assistant message (may not have audio yet)
+      const msgIdx = messages.value.length
       addMessage({
         role: 'assistant',
         content: assistantResponse.content,
         timestamp: assistantResponse.timestamp || Date.now() / 1000,
-        audio_base64: assistantResponse.audio_base64
+        audio_base64: assistantResponse.audio_base64  // Will be null if audio_pending
       })
       
-      // Auto-play the response if audio is available
-      if (assistantResponse.audio_base64) {
+      // If audio is pending, connect WebSocket to receive it
+      if (response.data.audio_pending) {
+        console.log('[VoiceChat] Audio pending, connecting WebSocket...')
+        pendingAudioMessageIdx.value = msgIdx
+        connectAudioWebSocket()
+      } else if (assistantResponse.audio_base64) {
+        // Audio was returned immediately (shouldn't happen with new flow, but handle it)
         playResponseAudio(assistantResponse.audio_base64)
       }
     } else {
@@ -624,6 +689,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopRecording()
+  disconnectAudioWebSocket()
 })
 </script>
 

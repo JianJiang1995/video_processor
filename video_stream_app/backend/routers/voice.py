@@ -17,6 +17,10 @@ from ..services.asr_funasr_client import get_asr_client, ensure_asr_available, A
 from ..services.tts_cosyvoice_client import get_tts_client, ensure_tts_available
 from ..services.conversation_service import ConversationService, create_conversation_service
 from ..services.mysql_service import get_mysql_service, init_mysql
+from ..services.chat_audio_notifier import (
+    register_audio_listener, unregister_audio_listener, 
+    get_pending_audio, has_pending_audio
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -613,13 +617,14 @@ async def send_chat_message(session_id: str, message: ChatMessage):
                     role="assistant",
                     content=result.get("response_text", ""),
                     timestamp=time.time(),
-                    audio_base64=result.get("audio_base64")
+                    audio_base64=result.get("audio_base64")  # Will be None, audio comes via WebSocket
                 )
                 
                 return {
                     "success": True,
                     "user_message": message.model_dump(),
                     "response": response.model_dump(),
+                    "audio_pending": result.get("audio_pending", False),  # Inform frontend to listen for audio
                     "glm_id": result.get("glm_id")
                 }
             else:
@@ -657,6 +662,95 @@ async def clear_chat_history(session_id: str):
     except Exception as e:
         logger.error(f"Failed to clear chat: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# Chat Audio WebSocket and Polling Endpoints
+# ============================================================================
+
+@router.websocket("/chat/{session_id}/audio-stream")
+async def websocket_chat_audio(websocket: WebSocket, session_id: str):
+    """
+    WebSocket endpoint for receiving chat audio notifications.
+    
+    When TTS completes in background, audio is pushed through this WebSocket.
+    Frontend connects after sending a chat message with audio_pending=true.
+    
+    Messages:
+    - Server -> Client: {"type": "audio_ready", "audio_base64": "...", "audio_format": "wav"}
+    - Server -> Client: {"type": "error", "error": "..."}
+    """
+    await websocket.accept()
+    logger.info(f"[ChatAudio] WebSocket connected for session {session_id}")
+    
+    # Queue to receive audio notifications
+    audio_queue = asyncio.Queue()
+    
+    async def audio_callback(audio_base64: str):
+        """Callback when audio is ready"""
+        await audio_queue.put(audio_base64)
+    
+    # Register this WebSocket to receive audio notifications
+    register_audio_listener(session_id, audio_callback)
+    
+    try:
+        while True:
+            try:
+                # Wait for audio with timeout
+                audio_base64 = await asyncio.wait_for(audio_queue.get(), timeout=60.0)
+                
+                await websocket.send_json({
+                    "type": "audio_ready",
+                    "audio_base64": audio_base64,
+                    "audio_format": "wav"
+                })
+                logger.info(f"[ChatAudio] Sent audio to session {session_id}")
+                
+            except asyncio.TimeoutError:
+                # Send keepalive ping
+                await websocket.send_json({"type": "ping"})
+                
+    except WebSocketDisconnect:
+        logger.info(f"[ChatAudio] WebSocket disconnected for session {session_id}")
+    except Exception as e:
+        logger.error(f"[ChatAudio] WebSocket error for session {session_id}: {e}")
+    finally:
+        unregister_audio_listener(session_id, audio_callback)
+
+
+@router.get("/chat/{session_id}/pending-audio")
+async def get_chat_pending_audio(session_id: str):
+    """
+    Polling endpoint to get pending audio for a session.
+    
+    Use this as a fallback if WebSocket is not available.
+    Returns the pending audio and removes it from the queue.
+    """
+    audio_base64 = get_pending_audio(session_id)
+    
+    if audio_base64:
+        return {
+            "success": True,
+            "has_audio": True,
+            "audio_base64": audio_base64,
+            "audio_format": "wav"
+        }
+    else:
+        return {
+            "success": True,
+            "has_audio": False
+        }
+
+
+@router.get("/chat/{session_id}/has-pending-audio")
+async def check_pending_audio(session_id: str):
+    """
+    Check if there's pending audio for a session (without consuming it).
+    """
+    return {
+        "session_id": session_id,
+        "has_pending": has_pending_audio(session_id)
+    }
 
 
 # ============================================================================
