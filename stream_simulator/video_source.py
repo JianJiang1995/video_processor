@@ -100,6 +100,10 @@ class VideoSource:
         Returns BGR frame or None if video ended.
         """
         with self._lock:
+            # Check if video source is still open
+            if self.cap is None or not self.cap.isOpened():
+                return None
+            
             ret, frame = self.cap.read()
             
             if not ret:
@@ -157,22 +161,13 @@ class VideoSource:
         if wait_time > 0:
             await asyncio.sleep(wait_time)
         
-        # #region agent log
-        t0 = time.time()
-        # #endregion
-        frame = await self.read_frame_async()
-        # #region agent log
-        t1 = time.time()
-        read_ms = (t1 - t0) * 1000
-        drift_ms = (t1 - expected_time) * 1000 if expected_time else 0
-        if self._frame_idx % 30 == 0:  # Log every 30 frames
-            import json; open('/data2/jj/proj/video_processor/.cursor/debug.log','a').write(json.dumps({"location":"video_source.py:read_frame_realtime_async","message":"frame_timing","data":{"frame_idx":self._frame_idx,"read_ms":round(read_ms,2),"drift_ms":round(drift_ms,2),"wait_ms":round(wait_time*1000,2),"fps":self.fps},"timestamp":int(t1*1000),"hypothesisId":"B,E"})+'\n')
-        # #endregion
-        return frame
+        return await self.read_frame_async()
     
     def seek(self, timestamp: float):
         """Seek to timestamp (seconds)"""
         with self._lock:
+            if self.cap is None or not self.cap.isOpened():
+                return
             frame_num = int(timestamp * self.original_fps)
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
             self._frame_idx = frame_num
@@ -181,15 +176,19 @@ class VideoSource:
     def reset(self):
         """Reset to beginning"""
         with self._lock:
+            if self.cap is None or not self.cap.isOpened():
+                return
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self._frame_idx = 0
             self._start_time = None
     
     def close(self):
         """Release video capture"""
-        if self.cap:
-            self.cap.release()
-            logger.info("VideoSource closed")
+        with self._lock:
+            if self.cap:
+                self.cap.release()
+                self.cap = None
+                logger.info("VideoSource closed")
     
     def __enter__(self):
         return self

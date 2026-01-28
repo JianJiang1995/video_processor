@@ -90,10 +90,20 @@
     
     <!-- Status Bar -->
     <div class="status-bar">
-      <div class="status-dot" :class="{ active: summaries.length > 0, processing: isProcessing }"></div>
-      <span v-if="isProcessing">SurgR1 + GLM 处理中...</span>
-      <span v-else-if="summaries.length > 0">已分析 {{ summaries.length }} 个片段</span>
-      <span v-else>就绪</span>
+      <div class="status-left">
+        <div class="status-dot" :class="{ active: summaries.length > 0, processing: isProcessing }"></div>
+        <span v-if="isProcessing">SurgR1 + GLM 处理中...</span>
+        <span v-else-if="summaries.length > 0">已分析 {{ summaries.length }} 个片段</span>
+        <span v-else>就绪</span>
+      </div>
+      <button 
+        v-if="summaries.length > 0" 
+        class="export-btn"
+        @click="showExportDialog"
+        :disabled="isExporting"
+      >
+        {{ isExporting ? '⏳ 导出中...' : '📤 导出视频' }}
+      </button>
     </div>
     
     <!-- Full Content Popup -->
@@ -132,12 +142,119 @@
           </div>
         </div>
       </Transition>
+      
+      <!-- Export Dialog -->
+      <Transition name="popup-fade">
+        <div v-if="showExportPopup" class="summary-popup-overlay" @click.self="closeExportDialog">
+          <div class="export-popup">
+            <div class="popup-header">
+              <div class="popup-title">
+                <span class="popup-icon">📤</span>
+                <span>导出分析视频</span>
+              </div>
+              <button class="popup-close" @click="closeExportDialog">✕</button>
+            </div>
+            
+            <div class="export-content">
+              <div class="export-info">
+                选择要导出的窗口，每个窗口将生成带右侧分析文字的独立视频片段。
+              </div>
+              
+              <div class="export-select-all">
+                <label class="checkbox-label">
+                  <input 
+                    type="checkbox" 
+                    :checked="isAllSelected"
+                    @change="toggleSelectAll"
+                  />
+                  <span>{{ isAllSelected ? '取消全选' : '全选所有窗口' }}</span>
+                </label>
+                <span class="selected-count">已选择 {{ selectedWindowIds.length }} / {{ summaries.length }}</span>
+              </div>
+              
+              <div class="export-window-list">
+                <label 
+                  v-for="summary in sortedSummaries" 
+                  :key="summary.window_id"
+                  class="window-checkbox"
+                >
+                  <input 
+                    type="checkbox" 
+                    :value="summary.window_id"
+                    v-model="selectedWindowIds"
+                  />
+                  <div class="window-info">
+                    <div class="window-header">
+                      <span class="window-badge">窗口 {{ summary.window_id + 1 }}</span>
+                      <span class="window-time">
+                        {{ formatTime(summary.start_time) }} - {{ formatTime(summary.end_time) }}
+                      </span>
+                    </div>
+                    <div class="window-preview">
+                      {{ truncate(summary.summary, 80) }}
+                    </div>
+                  </div>
+                </label>
+              </div>
+              
+              <!-- Export Progress -->
+              <div v-if="exportProgress" class="export-progress">
+                <div class="progress-bar">
+                  <div class="progress-fill" :style="{ width: exportProgress.progress + '%' }"></div>
+                </div>
+                <div class="progress-text">
+                  {{ exportProgress.status === 'processing' ? '正在生成视频...' : '' }}
+                  {{ exportProgress.completed || 0 }} / {{ exportProgress.total || 0 }} 完成
+                </div>
+              </div>
+              
+              <!-- Export Results -->
+              <div v-if="exportResults.length > 0" class="export-results">
+                <div class="results-title">导出完成</div>
+                <div 
+                  v-for="result in exportResults" 
+                  :key="result.window_id"
+                  class="result-item"
+                  :class="{ failed: result.status === 'failed' }"
+                >
+                  <span>窗口 {{ result.window_id + 1 }}</span>
+                  <a 
+                    v-if="result.status === 'success'"
+                    :href="result.download_url"
+                    class="download-link"
+                    download
+                  >
+                    ⬇️ 下载
+                  </a>
+                  <span v-else class="failed-badge">失败</span>
+                </div>
+              </div>
+            </div>
+            
+            <div class="export-actions">
+              <button 
+                class="export-cancel-btn" 
+                @click="closeExportDialog"
+              >
+                取消
+              </button>
+              <button 
+                class="export-start-btn"
+                @click="startExport"
+                :disabled="selectedWindowIds.length === 0 || isExporting"
+              >
+                {{ isExporting ? '⏳ 导出中...' : `📤 开始导出 (${selectedWindowIds.length})` }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
     </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, nextTick, shallowRef } from 'vue'
+import { ref, reactive, computed, watch, nextTick, shallowRef, onUnmounted } from 'vue'
 
 const props = defineProps({
   summaries: {
@@ -150,6 +267,10 @@ const props = defineProps({
   highlightedWindowId: {
     type: Number,
     default: -1
+  },
+  sessionId: {
+    type: String,
+    default: ''
   }
 })
 
@@ -162,6 +283,14 @@ const itemRefs = ref({})
 
 // Popup state
 const popupSummary = ref(null)
+
+// Export state
+const showExportPopup = ref(false)
+const selectedWindowIds = ref([])
+const isExporting = ref(false)
+const exportProgress = ref(null)
+const exportResults = ref([])
+let exportPollTimer = null
 
 // Track last scrolled window to prevent repeated scrolling
 const lastScrolledWindowId = ref(-1)
@@ -337,6 +466,121 @@ const truncate = (text, length) => {
   if (text.length <= length) return text
   return text.substring(0, length) + '...'
 }
+
+// ============================================================
+// Export functionality
+// ============================================================
+
+// Check if all windows are selected
+const isAllSelected = computed(() => {
+  return props.summaries.length > 0 && 
+         selectedWindowIds.value.length === props.summaries.length
+})
+
+// Show export dialog
+const showExportDialog = () => {
+  // Default select all windows
+  selectedWindowIds.value = props.summaries.map(s => s.window_id)
+  exportProgress.value = null
+  exportResults.value = []
+  showExportPopup.value = true
+}
+
+// Close export dialog
+const closeExportDialog = () => {
+  showExportPopup.value = false
+  stopExportPolling()
+}
+
+// Toggle select all
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    selectedWindowIds.value = []
+  } else {
+    selectedWindowIds.value = props.summaries.map(s => s.window_id)
+  }
+}
+
+// Start export process
+const startExport = async () => {
+  if (!props.sessionId || selectedWindowIds.value.length === 0) {
+    console.warn('No session ID or no windows selected')
+    return
+  }
+  
+  isExporting.value = true
+  exportProgress.value = { status: 'starting', progress: 0 }
+  exportResults.value = []
+  
+  try {
+    // Call export API
+    const response = await fetch(`/api/analysis/export-clips/${props.sessionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ window_ids: selectedWindowIds.value })
+    })
+    
+    if (!response.ok) {
+      throw new Error(`Export failed: ${response.statusText}`)
+    }
+    
+    const data = await response.json()
+    const taskId = data.task_id
+    
+    // Start polling for progress
+    startExportPolling(taskId)
+    
+  } catch (error) {
+    console.error('Export error:', error)
+    exportProgress.value = { status: 'failed', error: error.message }
+    isExporting.value = false
+  }
+}
+
+// Poll for export progress
+const startExportPolling = (taskId) => {
+  stopExportPolling()
+  
+  const poll = async () => {
+    try {
+      const response = await fetch(`/api/analysis/export-status/${taskId}`)
+      if (!response.ok) throw new Error('Failed to get status')
+      
+      const status = await response.json()
+      exportProgress.value = status
+      
+      if (status.status === 'completed') {
+        exportResults.value = status.results || []
+        isExporting.value = false
+        stopExportPolling()
+      } else if (status.status === 'failed') {
+        isExporting.value = false
+        stopExportPolling()
+      } else {
+        // Continue polling
+        exportPollTimer = setTimeout(poll, 1000)
+      }
+    } catch (error) {
+      console.error('Poll error:', error)
+      exportPollTimer = setTimeout(poll, 2000)
+    }
+  }
+  
+  poll()
+}
+
+// Stop polling
+const stopExportPolling = () => {
+  if (exportPollTimer) {
+    clearTimeout(exportPollTimer)
+    exportPollTimer = null
+  }
+}
+
+// Cleanup on unmount
+onUnmounted(() => {
+  stopExportPolling()
+})
 </script>
 
 <style scoped>
@@ -692,6 +936,330 @@ const truncate = (text, length) => {
 .popup-fade-leave-to .summary-popup {
   transform: scale(0.9) translateY(20px);
   opacity: 0;
+}
+
+/* ============================================================
+   Status Bar & Export Button
+   ============================================================ */
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+}
+
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.export-btn {
+  padding: 0.4rem 0.8rem;
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.15), rgba(0, 212, 170, 0.25));
+  border: 1px solid rgba(0, 212, 170, 0.4);
+  border-radius: var(--radius-md, 8px);
+  color: var(--accent-primary, #00d4aa);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.25), rgba(0, 212, 170, 0.35));
+  border-color: var(--accent-primary, #00d4aa);
+  transform: translateY(-1px);
+}
+
+.export-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ============================================================
+   Export Popup
+   ============================================================ */
+.export-popup {
+  background: linear-gradient(145deg, var(--bg-elevated, #1a1a2e) 0%, var(--bg-primary, #12122a) 100%);
+  border: 2px solid var(--accent-primary, #00d4aa);
+  border-radius: var(--radius-lg, 16px);
+  max-width: 700px;
+  width: 100%;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 40px rgba(0, 212, 170, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  animation: popup-scale-in 0.25s ease-out;
+}
+
+.export-content {
+  flex: 1;
+  padding: 1rem 1.25rem;
+  overflow-y: auto;
+}
+
+.export-info {
+  font-size: 0.9rem;
+  color: var(--text-secondary, #aaa);
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: rgba(0, 212, 170, 0.1);
+  border-radius: var(--radius-md, 8px);
+  border-left: 3px solid var(--accent-primary, #00d4aa);
+}
+
+.export-select-all {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md, 8px);
+  margin-bottom: 1rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  color: var(--text-primary, #fff);
+  font-size: 0.9rem;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent-primary, #00d4aa);
+  cursor: pointer;
+}
+
+.selected-count {
+  font-size: 0.8rem;
+  color: var(--text-tertiary, #888);
+}
+
+.export-window-list {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.export-window-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.export-window-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.export-window-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 170, 0.3);
+  border-radius: 3px;
+}
+
+.window-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.window-checkbox:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(0, 212, 170, 0.3);
+}
+
+.window-checkbox input[type="checkbox"] {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-primary, #00d4aa);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.window-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.window-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+.window-badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+
+.window-time {
+  font-size: 0.75rem;
+  color: var(--text-tertiary, #888);
+  font-family: var(--font-mono, monospace);
+}
+
+.window-preview {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #aaa);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Export Progress */
+.export-progress {
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md, 8px);
+  margin-bottom: 1rem;
+}
+
+.progress-bar {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-primary, #00d4aa), #00bcd4);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #aaa);
+  text-align: center;
+}
+
+/* Export Results */
+.export-results {
+  border: 1px solid rgba(0, 212, 170, 0.3);
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+}
+
+.results-title {
+  padding: 0.75rem 1rem;
+  background: rgba(0, 212, 170, 0.1);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent-primary, #00d4aa);
+}
+
+.result-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.85rem;
+  color: var(--text-primary, #fff);
+}
+
+.result-item:last-child {
+  border-bottom: none;
+}
+
+.result-item.failed {
+  background: rgba(255, 100, 100, 0.1);
+}
+
+.download-link {
+  padding: 0.3rem 0.6rem;
+  background: rgba(0, 212, 170, 0.15);
+  border: 1px solid rgba(0, 212, 170, 0.3);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--accent-primary, #00d4aa);
+  text-decoration: none;
+  font-size: 0.75rem;
+  transition: all 0.2s;
+}
+
+.download-link:hover {
+  background: rgba(0, 212, 170, 0.25);
+  border-color: var(--accent-primary, #00d4aa);
+}
+
+.failed-badge {
+  font-size: 0.75rem;
+  color: #ff6b6b;
+}
+
+/* Export Actions */
+.export-actions {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  background: rgba(0, 0, 0, 0.15);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.export-cancel-btn,
+.export-start-btn {
+  flex: 1;
+  padding: 0.7rem 1rem;
+  border-radius: var(--radius-md, 8px);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.export-cancel-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--text-secondary, #aaa);
+}
+
+.export-cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.export-start-btn {
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.2), rgba(0, 212, 170, 0.3));
+  border: 1px solid rgba(0, 212, 170, 0.4);
+  color: var(--accent-primary, #00d4aa);
+  font-weight: 600;
+}
+
+.export-start-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.3), rgba(0, 212, 170, 0.4));
+  border-color: var(--accent-primary, #00d4aa);
+  transform: translateY(-1px);
+}
+
+.export-start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>
 

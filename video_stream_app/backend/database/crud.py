@@ -164,7 +164,8 @@ def create_window_summary(
     tts_audio_path: str = None,
     dominant_phase: str = None,
     tools_detected: list = None,
-    key_actions: list = None
+    key_actions: list = None,
+    others_data: Dict[str, Any] = None
 ) -> int:
     """Create window summary record and trigger compression check"""
     from ..services.mysql_service import get_mysql_service
@@ -178,7 +179,8 @@ def create_window_summary(
         window_end=end_time,
         analysis_type="window",
         glm_summary=summary_text,
-        surgical_phase=dominant_phase
+        surgical_phase=dominant_phase,
+        others_data=others_data
     )
     
     # Trigger async compression check in background

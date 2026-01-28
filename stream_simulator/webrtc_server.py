@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Active peer connections
 pcs: Set["RTCPeerConnection"] = set()
+fps_override: Optional[float] = None
 
 
 class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
@@ -718,7 +719,7 @@ async def offer(request: web.Request) -> web.Response:
             pcs.discard(pc)
     
     # Add video track
-    track = VideoFileTrack(video_path, loop=False)  # Stop at video end
+    track = VideoFileTrack(video_path, loop=False, fps_override=fps_override)  # Stop at video end
     pc.addTrack(track)
     
     await pc.setRemoteDescription(offer_sdp)
@@ -736,12 +737,14 @@ async def info(request: web.Request) -> web.Response:
     global video_path
     
     cap = cv2.VideoCapture(video_path)
+    detected_fps = cap.get(cv2.CAP_PROP_FPS)
+    effective_fps = fps_override if fps_override else detected_fps
     data = {
         "video_path": video_path,
         "video_name": Path(video_path).name,
         "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
         "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-        "fps": cap.get(cv2.CAP_PROP_FPS),
+        "fps": effective_fps,
         "total_frames": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
         "duration": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) / cap.get(cv2.CAP_PROP_FPS),
         "active_connections": len(pcs)
@@ -887,6 +890,12 @@ def main():
         default="0.0.0.0",
         help="Server host (default: 0.0.0.0)"
     )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Override FPS for streaming (default: use video FPS)"
+    )
     
     args = parser.parse_args()
     
@@ -899,6 +908,8 @@ def main():
         return
     
     video_path = args.video
+    global fps_override
+    fps_override = args.fps
     
     app = web.Application()
     app.router.add_get("/", index)

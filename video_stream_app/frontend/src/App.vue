@@ -1256,35 +1256,64 @@ watch(currentTime, (newTime) => {
 
 // Check all service statuses
 const checkAnalysisServices = async () => {
-  // Check all services in parallel
+  // #region agent log
+  const startTime = Date.now();
+  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:checkAnalysisServices',message:'Service check START',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+  // #endregion
+  
+  // Check all services in parallel with individual timing
   const checks = [
     // SurgR1
-    axios.get('/api/analysis/surgr1/status')
-      .then(res => { surgr1Status.value = { available: res.data.available, checking: false } })
-      .catch(() => { surgr1Status.value = { available: false, checking: false } }),
+    axios.get('/api/analysis/surgr1/status', { timeout: 5000 })
+      .then(res => { 
+        // #region agent log
+        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:surgr1Status',message:'SurgR1 check done',data:{elapsed:Date.now()-startTime,available:res.data.available},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        surgr1Status.value = { available: res.data.available, checking: false } 
+      })
+      .catch((e) => { 
+        // #region agent log
+        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:surgr1Status',message:'SurgR1 check FAILED',data:{elapsed:Date.now()-startTime,error:e.message},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        surgr1Status.value = { available: false, checking: false } 
+      }),
     
     // GLM
-    axios.get('/api/analysis/glm/status')
+    axios.get('/api/analysis/glm/status', { timeout: 5000 })
       .then(res => { glmStatus.value = { available: res.data.available, checking: false } })
       .catch(() => { glmStatus.value = { available: false, checking: false } }),
     
     // SAM3
-    axios.get('/api/analysis/sam3/status')
+    axios.get('/api/analysis/sam3/status', { timeout: 5000 })
       .then(res => { sam3Status.value = { available: res.data.available, checking: false } })
       .catch(() => { sam3Status.value = { available: false, checking: false } }),
     
     // ASR
-    axios.get('/api/voice/asr/status')
+    axios.get('/api/voice/asr/status', { timeout: 5000 })
       .then(res => { asrStatus.value = { available: res.data.available, checking: false } })
       .catch(() => { asrStatus.value = { available: false, checking: false } }),
     
-    // TTS
-    axios.get('/api/voice/tts/status')
-      .then(res => { ttsStatus.value = { available: res.data.available, checking: false } })
-      .catch(() => { ttsStatus.value = { available: false, checking: false } })
+    // TTS - This was causing 60s timeout!
+    axios.get('/api/voice/tts/status', { timeout: 5000 })
+      .then(res => { 
+        // #region agent log
+        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:ttsStatus',message:'TTS check done',data:{elapsed:Date.now()-startTime,available:res.data.available},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        ttsStatus.value = { available: res.data.available, checking: false } 
+      })
+      .catch((e) => { 
+        // #region agent log
+        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:ttsStatus',message:'TTS check FAILED/TIMEOUT',data:{elapsed:Date.now()-startTime,error:e.message},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        ttsStatus.value = { available: false, checking: false } 
+      })
   ]
   
   await Promise.allSettled(checks)
+  
+  // #region agent log
+  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:checkAnalysisServices',message:'Service check END',data:{totalElapsed:Date.now()-startTime},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+  // #endregion
 }
 
 // Status check interval
@@ -1313,8 +1342,16 @@ const handleBeforeUnload = () => {
 }
 
 onMounted(async () => {
+  // #region agent log
+  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:onMounted',message:'App mounted START',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
+  
   // 首先获取配置
   await fetchConfig()
+  
+  // #region agent log
+  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:onMounted',message:'Config fetched, starting service check',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
   
   checkAnalysisServices()
   // Refresh status every 30 seconds
@@ -1322,6 +1359,10 @@ onMounted(async () => {
   
   // Add beforeunload handler for reliable cleanup
   window.addEventListener('beforeunload', handleBeforeUnload)
+  
+  // #region agent log
+  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:onMounted',message:'App mounted END',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+  // #endregion
 })
 
 onUnmounted(() => {

@@ -137,13 +137,21 @@ class WindowSummary:
     dominant_phase: str
     tools: List[str]
     cvs_status: str = "未评估"
+    others: Dict[str, Any] = None  # 新增: 存储结构化分析数据
 
 
 class WindowHistoryManager:
     """
     窗口历史摘要管理器
     使用滑动窗口机制保存最近N个窗口的摘要（N从配置读取）
+    
+    新增功能：
+    - 阶段连续确认机制：连续N个窗口判断为同一阶段后才确认该阶段
+    - 阶段转换验证：使用 ALLOWED_TRANSITIONS 规则表验证阶段转换合法性
     """
+    
+    # 连续确认阈值：连续N个窗口判断为同一阶段后才确认
+    CONSECUTIVE_CONFIRM_THRESHOLD = 2
     
     PHASE_ORDER = {
         "Preparation": 0, "准备阶段": 0,
@@ -166,6 +174,17 @@ class WindowHistoryManager:
         "Unknown": "未知阶段"
     }
     
+    # 阶段转换规则表：定义每个阶段后允许出现的阶段
+    ALLOWED_TRANSITIONS = {
+        "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
+        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction", "Preparation"],
+        "ClippingCutting": ["GallbladderDissection", "CalotTriangleDissection"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderRetraction", "ClippingCutting"],
+        "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
+        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderDissection"],
+        "GallbladderPackaging": ["CleaningCoagulation"],  # 胆囊取出后只允许清洁凝血
+    }
+    
     def __init__(self):
         self._history: List[WindowSummary] = []
         self._lock = asyncio.Lock()
@@ -173,6 +192,10 @@ class WindowHistoryManager:
         config = load_config()
         self._max_history_size = config.get("window_analysis", {}).get("history_window_count", 10)
         logger.info(f"[WindowHistoryManager] Initialized with max_history_size={self._max_history_size}")
+        
+        # 阶段连续确认计数器
+        self._phase_confirm_count: Dict[str, int] = {}
+        self._last_phase: str = None
     
     async def add_summary(self, summary: WindowSummary) -> None:
         async with self._lock:
@@ -187,9 +210,84 @@ class WindowHistoryManager:
     async def clear(self) -> None:
         async with self._lock:
             self._history.clear()
+            self._phase_confirm_count.clear()
+            self._last_phase = None
     
     def get_phase_cn_name(self, phase: str) -> str:
         return self.PHASE_CN_NAMES.get(phase, phase)
+    
+    def update_phase_confirm_count(self, phase: str) -> int:
+        """
+        更新阶段连续确认计数
+        
+        Args:
+            phase: 当前窗口的阶段
+            
+        Returns:
+            该阶段的当前连续确认计数
+        """
+        if phase == self._last_phase:
+            # 与上一个窗口阶段相同，累加计数
+            self._phase_confirm_count[phase] = self._phase_confirm_count.get(phase, 0) + 1
+        else:
+            # 阶段变化，重置当前阶段计数为1
+            self._phase_confirm_count[phase] = 1
+        
+        self._last_phase = phase
+        return self._phase_confirm_count[phase]
+    
+    def is_phase_confirmed(self, phase: str) -> bool:
+        """
+        判断某阶段是否已被连续确认（达到阈值）
+        
+        Args:
+            phase: 要检查的阶段
+            
+        Returns:
+            True 如果该阶段已连续出现达到阈值次数
+        """
+        return self._phase_confirm_count.get(phase, 0) >= self.CONSECUTIVE_CONFIRM_THRESHOLD
+    
+    def validate_phase_transition(self, current_phase: str, history: List[WindowSummary]) -> Tuple[bool, str]:
+        """
+        验证阶段转换是否合法
+        
+        基于 ALLOWED_TRANSITIONS 规则表验证：
+        - 如果某阶段已被连续确认，则后续阶段必须在其允许列表中
+        - 特别地，胆囊取出阶段确认后，只允许清洁凝血阶段
+        
+        Args:
+            current_phase: 当前窗口的阶段
+            history: 历史窗口列表
+            
+        Returns:
+            (is_valid, corrected_phase): 是否合法，以及纠正后的阶段
+        """
+        if not history:
+            return True, current_phase
+        
+        last_phase = history[-1].dominant_phase if history else None
+        
+        # 规则1：准备阶段不可回退（一旦离开就不能回去）
+        history_phases = [h.dominant_phase for h in history]
+        if current_phase == "Preparation" and any(p != "Preparation" for p in history_phases):
+            logger.warning(f"[WindowHistoryManager] PHASE VIOLATION: 准备阶段不可回退")
+            return False, last_phase if last_phase else "CalotTriangleDissection"
+        
+        # 规则2：基于已确认阶段的转换约束
+        # 检查"胆囊取出"是否已被连续确认
+        if self.is_phase_confirmed("GallbladderPackaging"):
+            allowed = self.ALLOWED_TRANSITIONS.get("GallbladderPackaging", [])
+            if current_phase != "GallbladderPackaging" and current_phase not in allowed:
+                logger.warning(
+                    f"[WindowHistoryManager] PHASE VIOLATION: 胆囊取出阶段已确认（连续{self._phase_confirm_count.get('GallbladderPackaging', 0)}次），"
+                    f"当前阶段 {current_phase} 不在允许列表 {allowed} 中"
+                )
+                # 纠正为上一个窗口阶段，如果上一个也是违规则使用清洁凝血
+                corrected = last_phase if last_phase in allowed or last_phase == "GallbladderPackaging" else "CleaningCoagulation"
+                return False, corrected
+        
+        return True, current_phase
     
     async def build_history_context(self) -> str:
         history = await self.get_history()
@@ -551,10 +649,19 @@ class GeminiClient:
                 text = response.text if response.text else ""
                 duration_ms = (time.time() - start_time) * 1000
                 
+                # 检查 finish_reason 以诊断截断问题
+                finish_reason = None
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'finish_reason'):
+                        finish_reason = str(candidate.finish_reason)
+                        if 'MAX_TOKENS' in finish_reason.upper() or 'LENGTH' in finish_reason.upper():
+                            logger.warning(f"[GeminiClient] Output may be truncated! finish_reason={finish_reason}, output_len={len(text)}")
+                
                 if attempt > 0:
-                    logger.info(f"[GeminiClient] Multi-image analysis succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms, {len(limited_images)} images")
+                    logger.info(f"[GeminiClient] Multi-image analysis succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms, {len(limited_images)} images, finish_reason={finish_reason}")
                 else:
-                    logger.info(f"[GeminiClient] Multi-image analysis completed in {duration_ms:.0f}ms, {len(limited_images)} images")
+                    logger.info(f"[GeminiClient] Multi-image analysis completed in {duration_ms:.0f}ms, {len(limited_images)} images, finish_reason={finish_reason}")
                 
                 return {
                     "success": True,
@@ -562,7 +669,8 @@ class GeminiClient:
                     "model": self.model_name,
                     "image_count": len(limited_images),
                     "duration_ms": duration_ms,
-                    "retry_attempts": attempt
+                    "retry_attempts": attempt,
+                    "finish_reason": finish_reason
                 }
                 
             except Exception as e:
@@ -664,10 +772,19 @@ class GeminiClient:
                 text = response.text if response.text else ""
                 duration_ms = (time.time() - start_time) * 1000
                 
+                # 检查 finish_reason 以诊断截断问题
+                finish_reason = None
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'finish_reason'):
+                        finish_reason = str(candidate.finish_reason)
+                        if 'MAX_TOKENS' in finish_reason.upper() or 'LENGTH' in finish_reason.upper():
+                            logger.warning(f"[GeminiClient] Output may be truncated! finish_reason={finish_reason}, output_len={len(text)}")
+                
                 if attempt > 0:
-                    logger.info(f"[GeminiClient] Timestamped analysis succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms")
+                    logger.info(f"[GeminiClient] Timestamped analysis succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms, finish_reason={finish_reason}")
                 else:
-                    logger.info(f"[GeminiClient] Timestamped analysis completed in {duration_ms:.0f}ms")
+                    logger.info(f"[GeminiClient] Timestamped analysis completed in {duration_ms:.0f}ms, finish_reason={finish_reason}")
                 
                 return {
                     "success": True,
@@ -675,7 +792,8 @@ class GeminiClient:
                     "model": self.model_name,
                     "image_count": len(images),
                     "duration_ms": duration_ms,
-                    "retry_attempts": attempt
+                    "retry_attempts": attempt,
+                    "finish_reason": finish_reason
                 }
                 
             except Exception as e:
@@ -781,12 +899,24 @@ class GeminiClient:
         """
         从输出中提取 [others] 部分的数据
         
-        格式: [others]clips=N,gauze=Y/N
+        格式: [others]hem_loc=N,gauze=Y/N,bleeding=Y/N,blur=Y/N,out_of_body=Y/N
         
         Returns:
-            {"clips": int, "gauze": bool}
+            {
+                "hem_loc": int,
+                "gauze": bool,
+                "bleeding": bool,
+                "blur": bool,
+                "out_of_body": bool
+            }
         """
-        others_data = {"clips": 0, "gauze": False}
+        others_data = {
+            "hem_loc": 0,
+            "gauze": False,
+            "bleeding": False,
+            "blur": False,
+            "out_of_body": False
+        }
         
         if not text:
             return others_data
@@ -795,19 +925,37 @@ class GeminiClient:
         others_match = re.search(r'\[others\]\s*(.+?)(?:\n|$)', text, flags=re.IGNORECASE)
         if others_match:
             others_str = others_match.group(1).strip()
-            
-            # 解析 clips=N
-            clips_match = re.search(r'clips\s*=\s*(\d+)', others_str, flags=re.IGNORECASE)
-            if clips_match:
-                others_data["clips"] = int(clips_match.group(1))
+
+            # 解析 hem_loc=N (Hem-o-lok)
+            hem_loc_match = re.search(r'hem_loc\s*=\s*(\d+)', others_str, flags=re.IGNORECASE)
+            if hem_loc_match:
+                others_data["hem_loc"] = int(hem_loc_match.group(1))
             
             # 解析 gauze=Y/N
             gauze_match = re.search(r'gauze\s*=\s*(Y|N|yes|no|true|false)', others_str, flags=re.IGNORECASE)
             if gauze_match:
                 gauze_val = gauze_match.group(1).upper()
                 others_data["gauze"] = gauze_val in ("Y", "YES", "TRUE")
+
+            # 解析 bleeding=Y/N
+            bleeding_match = re.search(r'bleeding\s*=\s*(Y|N|yes|no|true|false)', others_str, flags=re.IGNORECASE)
+            if bleeding_match:
+                bleeding_val = bleeding_match.group(1).upper()
+                others_data["bleeding"] = bleeding_val in ("Y", "YES", "TRUE")
+
+            # 解析 blur=Y/N
+            blur_match = re.search(r'(?:blur|blurry)\s*=\s*(Y|N|yes|no|true|false)', others_str, flags=re.IGNORECASE)
+            if blur_match:
+                blur_val = blur_match.group(1).upper()
+                others_data["blur"] = blur_val in ("Y", "YES", "TRUE")
+
+            # 解析 out_of_body=Y/N
+            oob_match = re.search(r'out_of_body\s*=\s*(Y|N|yes|no|true|false)', others_str, flags=re.IGNORECASE)
+            if oob_match:
+                oob_val = oob_match.group(1).upper()
+                others_data["out_of_body"] = oob_val in ("Y", "YES", "TRUE")
             
-            logger.info(f"[GeminiClient] Extracted others: clips={others_data['clips']}, gauze={others_data['gauze']}")
+            logger.info(f"[GeminiClient] Extracted others: {others_data}")
         
         return others_data
     
@@ -818,7 +966,13 @@ class GeminiClient:
         Returns:
             Tuple[str, Dict]: (summary不含[others], others_data字典)
         """
-        others_data = {"clips": 0, "gauze": False}
+        others_data = {
+            "hem_loc": 0,
+            "gauze": False,
+            "bleeding": False,
+            "blur": False,
+            "out_of_body": False
+        }
         
         if not text:
             return text, others_data
@@ -923,20 +1077,25 @@ class GeminiClient:
 1. 禁止提及"外科医生"、"医生"、"术者"，使用被动语态描述操作
 2. 只描述：当前阶段、器械动作、组织状态
 3. 禁止描述：光线反射、水珠、纹理、阴影等视觉细节
-4. 异常情况（出血/器械碰撞/镜头模糊）仅在发生时提及，否则不提
-5. 必须关注钛夹（蓝色金属夹）和纱布
+4. 异常情况只在发生时描述：出血/器械碰撞/镜头模糊/烟雾仅在实际发生时提及
+   - 禁止描述"无出血"、"无活动性出血"、"无器械碰撞"、"视野清晰"等正常状态
+5. 必须关注Hem-o-lok、纱布（仅在出现时描述）
+6. 全中文输出：禁止出现任何英文，包括括号内的英文注释
 
 【输出格式】
 【阶段】xxx阶段
 简洁操作描述（{max_chars}字以内）
-[others]clips=N,gauze=Y/N
+[others]hem_loc=N,gauze=Y/N,bleeding=Y/N,blur=Y/N,out_of_body=Y/N
 
 【阶段名称】准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
-【工具中文名】Grasper→抓钳, Hook→电钩, Scissors→剪刀, Clipper→钛夹钳, Irrigator→冲吸器, Bipolar→双极电凝
+【工具中文名】抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
 
 【others说明】
-- clips: 可见的钛夹数量（蓝色金属夹，用于夹闭胆囊管/动脉），无则填0
-- gauze: 是否可见纱布（Y/N）"""
+- hem_loc: 可见的Hem-o-lok数量，无则填0
+- gauze: 是否可见纱布（Y/N）
+- bleeding: 是否有明显出血（Y/N）
+- blur: 镜头是否模糊/烟雾遮挡（Y/N）
+- out_of_body: 镜头是否移出体外（Y/N）"""
             logger.warning("[GeminiClient] Using fallback system prompt")
         
         # 构建用户消息
@@ -1093,18 +1252,26 @@ class GeminiClient:
                 summary = result.get("summary", "")
                 dominant_phase = self._extract_phase_from_summary(summary)
                 
-                # 阶段约束后处理
-                if dominant_phase and current_history:
-                    last_phase = current_history[-1].dominant_phase if current_history else None
-                    history_phases = [h.dominant_phase for h in current_history]
+                # ========== 阶段约束后处理：使用连续确认机制和规则表验证 ==========
+                if dominant_phase:
+                    # 更新阶段连续确认计数
+                    confirm_count = history_manager.update_phase_confirm_count(dominant_phase)
+                    logger.debug(f"[GeminiClient] Window {window_id} phase={dominant_phase}, confirm_count={confirm_count}")
                     
-                    if dominant_phase == "Preparation" and any(p != "Preparation" for p in history_phases):
-                        logger.warning(f"[GeminiClient] Window {window_id} PHASE VIOLATION: 准备阶段不可回退！")
-                        dominant_phase = last_phase
+                    # 验证阶段转换合法性
+                    is_valid, corrected_phase = history_manager.validate_phase_transition(dominant_phase, current_history)
                     
-                    if dominant_phase == "GallbladderRetraction" and "GallbladderPackaging" in history_phases:
-                        logger.warning(f"[GeminiClient] Window {window_id} PHASE VIOLATION: 胆囊取出后不能出现胆囊牵拉！")
-                        dominant_phase = last_phase if last_phase else "CleaningCoagulation"
+                    if not is_valid:
+                        original_phase = dominant_phase
+                        dominant_phase = corrected_phase
+                        # 更新摘要中的阶段名称
+                        original_cn = history_manager.get_phase_cn_name(original_phase)
+                        corrected_cn = history_manager.get_phase_cn_name(corrected_phase)
+                        if f"【{original_cn}】" in summary:
+                            summary = summary.replace(f"【{original_cn}】", f"【{corrected_cn}】")
+                        logger.warning(
+                            f"[GeminiClient] Window {window_id} PHASE CORRECTED: {original_phase} -> {corrected_phase}"
+                        )
                 
                 if dominant_phase:
                     frame_analyses = window.get("frame_analyses", [])

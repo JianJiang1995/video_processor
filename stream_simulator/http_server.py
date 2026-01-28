@@ -123,10 +123,13 @@ class HTTPStreamServer:
             
             logger.info("Stopping shared frame broadcaster")
             self._broadcast_started = False
+            
+            # IMPORTANT: First stop the frame generation flag
             if self._shared_source:
                 self._shared_source.stop()
-                self._shared_source.close()
-                self._shared_source = None
+            
+            # Then cancel the broadcaster task and wait for it to finish
+            # This ensures the task is fully stopped before we close the video source
             if self._broadcaster_task:
                 self._broadcaster_task.cancel()
                 try:
@@ -134,6 +137,11 @@ class HTTPStreamServer:
                 except asyncio.CancelledError:
                     pass
                 self._broadcaster_task = None
+            
+            # Now it's safe to close the video source
+            if self._shared_source:
+                self._shared_source.close()
+                self._shared_source = None
     
     async def _broadcaster_loop(self):
         """Main loop that reads frames and broadcasts to all clients"""

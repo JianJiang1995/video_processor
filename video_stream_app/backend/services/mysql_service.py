@@ -94,6 +94,9 @@ class AnalysisResult(Base):
     # GLM 总结
     glm_summary = Column(Text, nullable=True, comment="GLM总结文本")
     
+    # 其他结构化数据 (hem_loc, gauze 等)
+    others_data = Column(Text, nullable=True, comment="JSON格式的其他数据")
+
     # 图片路径 (相对于会话文件夹)
     image_path = Column(String(512), nullable=True, comment="帧图片路径")
     image_saved = Column(Integer, default=0, comment="帧图片是否已保存: 0/1")
@@ -453,6 +456,7 @@ class MySQLService:
         surgical_action: str = None,
         surgical_phase: str = None,
         glm_summary: str = None,
+        others_data: Dict[str, Any] = None,
         image_path: str = None,
         image_saved: int = 0,
         processing_time: float = None
@@ -462,6 +466,9 @@ class MySQLService:
         使用 upsert 逻辑：如果同一 session_id + timestamp 的记录已存在，则更新；否则创建新记录。
         这样可以避免因视频循环或 R1 重试导致的重复记录。
         """
+        # 将 others_data 转换为 JSON 字符串
+        others_json = json.dumps(others_data) if others_data else None
+
         with self.get_session() as session:
             # 检查是否已存在同一 session_id + timestamp 的记录
             existing = None
@@ -497,6 +504,8 @@ class MySQLService:
                     existing.surgical_phase = surgical_phase
                 if glm_summary is not None:
                     existing.glm_summary = glm_summary
+                if others_json is not None:
+                    existing.others_data = others_json
                 if image_path is not None:
                     existing.image_path = image_path
                 if image_saved is not None:
@@ -520,6 +529,7 @@ class MySQLService:
                     surgical_action=surgical_action,
                     surgical_phase=surgical_phase,
                     glm_summary=glm_summary,
+                    others_data=others_json,
                     image_path=image_path,
                     image_saved=image_saved,
                     processing_time=processing_time
@@ -563,6 +573,7 @@ class MySQLService:
                     "surgical_action": r.surgical_action,
                     "surgical_phase": r.surgical_phase,
                     "glm_summary": r.glm_summary,
+                    "others": json.loads(r.others_data) if r.others_data else None,
                     "image_path": r.image_path,
                     "image_saved": r.image_saved,
                     "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -645,6 +656,7 @@ class MySQLService:
                 "window_start": result.window_start,
                 "window_end": result.window_end,
                 "glm_summary": result.glm_summary,
+                "others": json.loads(result.others_data) if result.others_data else None,
                 "surgical_phase": result.surgical_phase
             }
     
@@ -666,6 +678,7 @@ class MySQLService:
                     "window_start": r.window_start,
                     "window_end": r.window_end,
                     "glm_summary": r.glm_summary,
+                    "others": json.loads(r.others_data) if r.others_data else None,
                     "surgical_phase": r.surgical_phase
                 }
                 for r in results
@@ -879,6 +892,7 @@ class MySQLService:
                     "window_start": r.window_start,
                     "window_end": r.window_end,
                     "glm_summary": r.glm_summary,
+                    "others": json.loads(r.others_data) if r.others_data else None,
                     "surgical_phase": r.surgical_phase
                 }
                 for r in results

@@ -89,17 +89,24 @@
             "api_key_env": "GEMINI_API_KEY",
             "model_name": "gemini-3-flash-preview",
             "thinking_level": "low",
-            "max_tokens": 1000,
+            "max_tokens": 2048,
             "max_concurrent": 8,
             "retry_count": 3,
             "retry_delay": 1.0,
-            "comment": "Gemini 3.0 Flash API - Google多模态分析，需设置GEMINI_API_KEY环境变量 [可选服务]"
+            "comment": "Gemini 3.0 Flash API - Google多模态分析，需设置GEMINI_API_KEY环境变量 [可选服务]，max_tokens需足够大以避免中文输出被截断"
         }
     },
     "video_processing": {
         "window_duration": 15.0,
         "sample_interval": 1.0,
-        "comment": "N=15秒窗口，每秒采样1帧，每个窗口15帧"
+        "frame_storage": {
+            "fps": 25,
+            "quality": 85,
+            "preview_fps": 10,
+            "preview_quality": 40,
+            "comment": "帧存储配置: fps=原始帧保存帧率(25fps); quality=JPEG质量; preview_fps=预览帧帧率(10fps); preview_quality=预览JPEG质量"
+        },
+        "comment": "N=15秒窗口，每秒采样1帧分析，帧存储25fps独立捕获"
     },
     "analysis": {
         "questions": {
@@ -122,5 +129,21 @@
     },
     "openai": {
         "comment": "用于GPT总结和TTS（备用），从 .env 读取 OPENAI_API_KEY"
+    },
+    "electron": {
+        "gpu": {
+            "enabled": true,
+            "device_id": 0,
+            "enable_gpu_rasterization": true,
+            "enable_zero_copy": true,
+            "disable_frame_rate_limit": true,
+            "enable_vaapi": true,
+            "comment": "GPU加速配置: device_id指定使用的GPU编号（0=第一块GPU）"
+        },
+        "performance": {
+            "background_throttling": false,
+            "spellcheck": false,
+            "comment": "性能优化: 禁用后台节流和拼写检查以提升视频流渲染性能"
+        }
     }
 }

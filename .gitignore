@@ -39,3 +39,25 @@ tmp/
 **/ckpt/
 
 *.log
+
+# Node.js
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+
+# Vite cache
+*.timestamp-*.mjs
+.vite/
+
+# Electron build artifacts
+*.pak
+*.zip
+*.AppImage
+
+# IDE
+.cursor/
+
+# Sessions/runtime data
+sessions/

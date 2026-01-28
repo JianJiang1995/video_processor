@@ -5,9 +5,11 @@
 # Starts HTTP/MJPEG and WebRTC stream servers for testing video_stream_app
 #
 # Usage:
-#   ./start_all.sh                         # 真实场景模拟（视频播放一次后停止）
-#   ./start_all.sh /path/to/video.mp4      # 使用指定视频
-#   ./start_all.sh /path/to/video.mp4 loop # 循环模式（测试用）
+#   ./start_all.sh                              # 真实场景模拟（视频播放一次后停止）
+#   ./start_all.sh /path/to/video.mp4           # 使用指定视频
+#   ./start_all.sh /path/to/video.mp4 loop      # 循环模式（测试用）
+#   STREAM_FPS=25 ./start_all.sh /path/to/video.mp4 loop
+#   ./start_all.sh /path/to/video.mp4 loop 25   # 通过第三个参数覆盖 FPS
 #
 
 set -e
@@ -24,6 +26,14 @@ if [ "$2" = "loop" ] || [ "$2" = "--loop" ]; then
     LOOP_FLAG="--loop"
 else
     LOOP_MODE="[真实场景模拟 - 播放一次后停止]"
+fi
+
+# Optional FPS override (env or third arg)
+FPS_ARG=""
+if [ -n "$STREAM_FPS" ]; then
+    FPS_ARG="--fps $STREAM_FPS"
+elif [ -n "$3" ]; then
+    FPS_ARG="--fps $3"
 fi
 
 # Ports
@@ -97,7 +107,7 @@ trap cleanup SIGINT SIGTERM
 
 # Start HTTP/MJPEG server
 echo "Starting HTTP/MJPEG server on port $HTTP_PORT... $LOOP_MODE"
-python http_server.py --video "$VIDEO_PATH" --port $HTTP_PORT $LOOP_FLAG &
+python http_server.py --video "$VIDEO_PATH" --port $HTTP_PORT $LOOP_FLAG $FPS_ARG &
 HTTP_PID=$!
 
 # Wait a moment
@@ -105,7 +115,7 @@ sleep 1
 
 # Start WebRTC server
 echo "Starting WebRTC server on port $WEBRTC_PORT..."
-python webrtc_server.py --video "$VIDEO_PATH" --port $WEBRTC_PORT &
+python webrtc_server.py --video "$VIDEO_PATH" --port $WEBRTC_PORT $FPS_ARG &
 WEBRTC_PID=$!
 
 echo ""

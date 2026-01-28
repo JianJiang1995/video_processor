@@ -32,6 +32,8 @@ from ..services.gemini_client import get_gemini_client
 from ..services.tts_cosyvoice_client import get_tts_client, ensure_tts_available
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
+from ..services.frame_capture_service import get_frame_capture_service
+from ..services.video_export_service import get_video_export_service, export_tasks
 from ..config import settings, ANALYSIS_SYSTEM_PROMPT
 
 import logging
@@ -1151,22 +1153,33 @@ async def start_surgr1_continuous(
             )
         )
         
-        # Start independent frame capture task for smooth loop playback (10 FPS)
-        # This runs in parallel with SurgR1 analysis to ensure consistent frame saving
-        frame_capture_task = asyncio.create_task(
-            frame_capture_for_playback(
-                session_id=session_id,
-                video_source=video_path,
-                is_realtime_stream=is_realtime_stream,
-                stream_start_time=stream_start_time
-            )
+        # 【解耦】启动独立的帧捕获服务（25fps固定存储，与分析完全解耦）
+        # 帧捕获服务独立于分析流程运行，确保帧存储完整性
+        mysql_service = get_mysql_service()
+        video_session = mysql_service.get_video_session(session_id)
+        storage_path = video_session.get("storage_path") if video_session else None
+        
+        if not storage_path:
+            frame_storage = get_frame_storage_service()
+            video_name = video_session.get("video_name", "stream") if video_session else "stream"
+            storage_path = frame_storage.create_session_folder(session_id, video_name)
+            mysql_service.update_video_session(session_id, storage_path=storage_path)
+            logger.info(f"[FrameCapture] Created storage folder: {storage_path}")
+        
+        frame_capture_service = get_frame_capture_service()
+        await frame_capture_service.start_capture(
+            session_id=session_id,
+            video_source=video_path,
+            storage_path=storage_path,
+            is_realtime_stream=is_realtime_stream,
+            stream_start_time=stream_start_time
         )
         
-        # Store task references for cancellation
-        active_surgr1_tasks[session_id] = [task, frame_capture_task]
+        # Store task references for cancellation (only the analysis task now)
+        active_surgr1_tasks[session_id] = [task]
         
         logger.info(f"Started SurgR1 continuous processing for session {session_id}")
-        logger.info(f"Started independent frame capture at 10 FPS for session {session_id}")
+        logger.info(f"Started independent frame capture service at 25 FPS for session {session_id}")
         
         return {
             "success": True,
@@ -1207,8 +1220,12 @@ async def stop_surgr1_continuous(
     was_running = surgr1_continuous_flags.get(session_id, False)
     surgr1_continuous_flags[session_id] = False
     
-    # Stop frame capture flag
+    # Stop frame capture flag (legacy)
     frame_capture_flags[session_id] = False
+    
+    # 【解耦】停止独立的帧捕获服务
+    frame_capture_service = get_frame_capture_service()
+    await frame_capture_service.stop_capture(session_id)
     
     # ========== Cancel active asyncio tasks ==========
     # This is crucial - just setting flags doesn't stop running tasks
@@ -1533,12 +1550,10 @@ async def surgr1_continuous_task(
         
         surgr1_interval = 1.0  # SurgR1 analyzes one frame per second
         sam3_interval = 0.1  # SAM3 propagates masks at 10 FPS (propagation is very fast)
-        frame_save_interval = 0.1  # Save frames at 10 FPS for smooth loop playback
+        # 【解耦】帧保存已移至独立的 frame_capture_service，此处不再保存帧
         last_surgr1_time = -surgr1_interval  # Ensure first frame is analyzed
         last_sam3_time = 0
-        last_frame_save_time = -frame_save_interval  # Ensure first frame is saved
         frame_idx = 0
-        saved_frame_idx = 0
         
         # ========== 批量处理配置（动态 batch size）==========
         # 根据积累的未处理帧数量动态调整 batch size
@@ -1573,24 +1588,14 @@ async def surgr1_continuous_task(
             else:
                 return SURGR1_MAX_BATCH_SIZE
         
-        # [REMOVED] Separate frame capture task - now integrated into main loop
-        # This fixes the video source inconsistency bug where two separate video
-        # connections would read different frames for realtime streams
-        frame_capture_task = None
+        # 【解耦】帧捕获已移至独立的 frame_capture_service
+        # 分析服务只负责读取帧并分析，不再保存帧
+        # 帧存储在 start_surgr1_continuous 中通过 frame_capture_service 启动
         
-        # Get or create storage path for frame saving
+        # Get storage path for reading frames (created by frame_capture_service)
         mysql_service = get_mysql_service()
         video_session = mysql_service.get_video_session(session_id)
         storage_path = video_session.get("storage_path") if video_session else None
-        
-        if not storage_path:
-            frame_storage = get_frame_storage_service()
-            video_name = video_session.get("video_name", "stream") if video_session else "stream"
-            storage_path = frame_storage.create_session_folder(session_id, video_name)
-            mysql_service.update_video_session(session_id, storage_path=storage_path)
-            logger.info(f"[FrameCapture] Created storage folder: {storage_path}")
-        
-        frame_storage = get_frame_storage_service()
         
         # Store last known bboxes for SAM3 propagation
         last_bboxes = []
@@ -1658,22 +1663,8 @@ async def surgr1_continuous_task(
             from PIL import Image
             pil_image = Image.fromarray(rgb_frame)
             
-            # ========== FRAME SAVING (integrated, same frame as analysis) ==========
-            # Save frames at 10 FPS for smooth loop playback
-            # This uses the SAME frame as SurgR1 analysis, ensuring consistency
-            if current_time - last_frame_save_time >= frame_save_interval:
-                last_frame_save_time = current_time
-                try:
-                    frame_storage.save_frame(
-                        storage_path=storage_path,
-                        timestamp=current_time,
-                        frame_data=bgr_frame,  # Use the same bgr_frame
-                        frame_idx=saved_frame_idx,
-                        subfolder="frames"
-                    )
-                    saved_frame_idx += 1
-                except Exception as e:
-                    logger.warning(f"[FrameCapture] Failed to save frame at {current_time:.2f}s: {e}")
+            # 【解耦】帧保存已移至独立的 frame_capture_service（25fps固定存储）
+            # 分析服务只负责处理帧，不再保存帧
             
             # Determine if this is a SurgR1 key frame (采样间隔1秒)
             is_surgr1_frame = (current_time - last_surgr1_time >= surgr1_interval)
@@ -2685,6 +2676,9 @@ async def process_video_surgr1_glm_task(
                     for frame in window.frames
                 ]
             
+            summary_text = ""
+            others_data = None
+
             # ==================================================================
             # Step 2: VLM - Summarize window (多模态：图片 + R1分析结果)
             # ==================================================================
@@ -2711,6 +2705,7 @@ async def process_video_surgr1_glm_task(
                 
                 if result.get("success"):
                     summary_text = result.get("summary", "")
+                    others_data = result.get("others")  # Extract structured others data
                     
                     # 提取阶段信息保存到历史
                     dominant_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
@@ -2744,7 +2739,9 @@ async def process_video_surgr1_glm_task(
                 end_time=window.end_time,
                 summary_text=summary_text,
                 tools_detected=[f.get("tools", "")[:200] for f in frame_analyses],
-                key_actions=[f.get("action", "")[:200] for f in frame_analyses]
+                key_actions=[f.get("action", "")[:200] for f in frame_analyses],
+                dominant_phase=dominant_phase if 'dominant_phase' in locals() else None,
+                others_data=others_data
             )
             
             logger.info(f"Completed window {window.window_id} with SurgR1+GLM (with history context)")
@@ -4055,14 +4052,33 @@ async def get_frames_batch(
     # Try preview first if requested, fall back to frames
     subfolder = "frames"
     if use_preview:
-        # Check if preview folder has frames
+        # Prefer preview frames only if coverage is good enough.
+        # In some deployments, preview generation may be partial (e.g., only first few seconds),
+        # which would cause loop playback to "move" briefly then freeze on the last preview frame.
         preview_frames = frame_storage.list_frames_in_range(storage_path, start, end, "preview")
-        if preview_frames:
+        full_frames = frame_storage.list_frames_in_range(storage_path, start, end, "frames")
+
+        # Heuristic: require preview coverage to be at least 80% of full frames in range
+        # (and at least a small minimum) before using preview.
+        if preview_frames and full_frames:
+            coverage = len(preview_frames) / max(1, len(full_frames))
+            if coverage >= 0.8 and len(preview_frames) >= 10:
+                subfolder = "preview"
+                storage_frames = preview_frames
+            else:
+                subfolder = "frames"
+                storage_frames = full_frames
+                logger.info(
+                    f"[FramesBatch] Preview coverage too low ({len(preview_frames)}/{len(full_frames)}={coverage:.2f}); "
+                    f"falling back to full frames for session {session_id} ({start:.1f}s-{end:.1f}s)"
+                )
+        elif preview_frames and not full_frames:
+            # No full frames found (unexpected), use preview.
             subfolder = "preview"
             storage_frames = preview_frames
         else:
             # Fall back to full frames
-            storage_frames = frame_storage.list_frames_in_range(storage_path, start, end, "frames")
+            storage_frames = full_frames
     else:
         storage_frames = frame_storage.list_frames_in_range(storage_path, start, end, "frames")
     
@@ -4070,11 +4086,39 @@ async def get_frames_batch(
         return {
             "success": False,
             "message": "No frames found in range",
-            "frames": []
+            "frames": [],
+            # 【解耦增强】返回覆盖率信息
+            "coverage": {
+                "requested_start": start,
+                "requested_end": end,
+                "requested_duration": end - start,
+                "actual_start": None,
+                "actual_end": None,
+                "actual_duration": 0,
+                "frame_count": 0,
+                "expected_frames": int((end - start) * 25),  # 25fps
+                "coverage_ratio": 0.0,
+                "is_complete": False
+            }
         }
     
     # Sort by timestamp and limit
     storage_frames = sorted(storage_frames, key=lambda x: x.get("timestamp", 0))[:max_frames]
+    
+    # 【解耦增强】计算帧覆盖率信息
+    timestamps = [f.get("timestamp", 0) for f in storage_frames]
+    actual_start = min(timestamps) if timestamps else start
+    actual_end = max(timestamps) if timestamps else end
+    actual_duration = actual_end - actual_start
+    requested_duration = end - start
+    
+    # 计算期望帧数（基于配置的25fps）和覆盖率
+    expected_frames = int(requested_duration * 25)  # 25fps from config
+    coverage_ratio = len(storage_frames) / max(1, expected_frames)
+    
+    # 判断是否完整覆盖（覆盖率>=80%且时间范围接近）
+    time_coverage = actual_duration / max(0.1, requested_duration)
+    is_complete = coverage_ratio >= 0.8 and time_coverage >= 0.9
     
     # Extract folder name from storage path for URL construction
     # storage_path is like: /data2/.../sessions/20260107_123456_abc123_stream
@@ -4107,7 +4151,7 @@ async def get_frames_batch(
         
         frames_list.append(frame_data)
     
-    logger.info(f"[FramesBatch] Returning {len(frames_list)} {subfolder} frames for session {session_id} ({start:.1f}s - {end:.1f}s), use_url={use_url}, use_preview={use_preview}")
+    logger.info(f"[FramesBatch] Returning {len(frames_list)} {subfolder} frames for session {session_id} ({start:.1f}s - {end:.1f}s), coverage={coverage_ratio:.2%}, use_url={use_url}, use_preview={use_preview}")
     
     return {
         "success": True,
@@ -4118,7 +4162,20 @@ async def get_frames_batch(
         "use_url": use_url,
         "use_preview": use_preview,
         "subfolder": subfolder,
-        "frames": frames_list
+        "frames": frames_list,
+        # 【解耦增强】返回帧覆盖率和实际时间范围信息
+        "coverage": {
+            "requested_start": start,
+            "requested_end": end,
+            "requested_duration": requested_duration,
+            "actual_start": actual_start,
+            "actual_end": actual_end,
+            "actual_duration": actual_duration,
+            "frame_count": len(frames_list),
+            "expected_frames": expected_frames,
+            "coverage_ratio": round(coverage_ratio, 3),
+            "is_complete": is_complete
+        }
     }
 
 
@@ -4160,5 +4217,210 @@ async def list_session_frames(
         "storage_path": storage_path,
         "count": len(saved_frames),
         "frames": sorted(saved_frames, key=lambda x: x.get("timestamp", 0))
+    }
+
+
+# ============================================================================
+# Video Export Endpoints
+# ============================================================================
+
+class ExportClipsRequest(BaseModel):
+    """Request body for export clips endpoint."""
+    window_ids: List[int]
+
+
+@router.post("/export-clips/{session_id}")
+async def export_clips(
+    session_id: str,
+    request: ExportClipsRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Start batch export of video clips with analysis text.
+    
+    Creates video clips for selected windows, with the analysis text
+    embedded on the right side of each clip.
+    
+    Args:
+        session_id: Video session ID
+        request: Request body containing window_ids list
+    
+    Returns:
+        task_id for tracking progress via /export-status/{task_id}
+    """
+    mysql_service = get_mysql_service()
+    export_service = get_video_export_service()
+    
+    # Get video session info
+    video_session = mysql_service.get_video_session(session_id)
+    if not video_session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+    
+    # Get all window summaries
+    all_summaries = mysql_service.get_all_window_summaries(session_id)
+    if not all_summaries:
+        raise HTTPException(400, "No analysis results found for this session")
+    
+    # Filter to requested window IDs
+    window_ids_set = set(request.window_ids)
+    selected_summaries = [
+        s for s in all_summaries
+        if s.get("window_id") in window_ids_set
+    ]
+    
+    if not selected_summaries:
+        raise HTTPException(400, "No matching windows found for the requested IDs")
+    
+    # Sort by window_id
+    selected_summaries.sort(key=lambda x: x.get("window_id", 0))
+    
+    # Create export task
+    task_id = export_service.create_export_task(session_id, request.window_ids)
+    
+    logger.info(f"[Export] Starting export task {task_id} for session {session_id}, "
+               f"{len(selected_summaries)} windows")
+    
+    # Run export in background using asyncio.create_task
+    async def run_export():
+        try:
+            await export_service.export_clips(
+                task_id=task_id,
+                session_id=session_id,
+                window_summaries=selected_summaries,
+                video_session=video_session
+            )
+        except Exception as e:
+            logger.error(f"[Export] Task {task_id} failed: {e}")
+            import traceback
+            traceback.print_exc()
+            if task_id in export_tasks:
+                export_tasks[task_id]["status"] = "failed"
+                export_tasks[task_id]["error"] = str(e)
+    
+    # Schedule background task - use asyncio.create_task directly
+    asyncio.create_task(run_export())
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "session_id": session_id,
+        "window_count": len(selected_summaries),
+        "message": f"Export started. Track progress via /api/analysis/export-status/{task_id}"
+    }
+
+
+@router.get("/export-status/{task_id}")
+async def get_export_status(task_id: str):
+    """
+    Get export task status and progress.
+    
+    Args:
+        task_id: Export task ID from /export-clips response
+    
+    Returns:
+        Task status including progress percentage and download links when complete
+    """
+    export_service = get_video_export_service()
+    
+    status = export_service.get_task_status(task_id)
+    if not status:
+        raise HTTPException(404, f"Export task not found: {task_id}")
+    
+    return status
+
+
+@router.get("/download-clip/{session_id}/{filename}")
+async def download_clip(session_id: str, filename: str):
+    """
+    Download an exported video clip.
+    
+    Args:
+        session_id: Video session ID
+        filename: Name of the exported file
+    
+    Returns:
+        Video file stream for download
+    """
+    from fastapi.responses import FileResponse
+    
+    export_service = get_video_export_service()
+    
+    file_path = export_service.get_export_file_path(session_id, filename)
+    if not file_path:
+        raise HTTPException(404, f"Export file not found: {filename}")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="video/mp4"
+    )
+
+
+@router.get("/exports/{session_id}")
+async def list_exports(session_id: str):
+    """
+    List all exported clips for a session.
+    
+    Args:
+        session_id: Video session ID
+    
+    Returns:
+        List of exported files with download URLs
+    """
+    export_service = get_video_export_service()
+    
+    exports = export_service.list_exports(session_id)
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "count": len(exports),
+        "exports": exports
+    }
+
+
+@router.get("/exportable-windows/{session_id}")
+async def get_exportable_windows(session_id: str, db: Session = Depends(get_db)):
+    """
+    Get list of windows that can be exported for a session.
+    
+    Returns all analyzed windows with their summaries for the export selection UI.
+    
+    Args:
+        session_id: Video session ID
+    
+    Returns:
+        List of windows with window_id, time range, and summary preview
+    """
+    mysql_service = get_mysql_service()
+    
+    # Get video session info
+    video_session = mysql_service.get_video_session(session_id)
+    if not video_session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+    
+    # Get all window summaries
+    summaries = mysql_service.get_all_window_summaries(session_id)
+    
+    # Format for UI
+    windows = []
+    for s in summaries:
+        summary_text = s.get("glm_summary", "")
+        windows.append({
+            "window_id": s.get("window_id"),
+            "start_time": s.get("window_start"),
+            "end_time": s.get("window_end"),
+            "summary_preview": summary_text[:100] + "..." if len(summary_text) > 100 else summary_text,
+            "surgical_phase": s.get("surgical_phase")
+        })
+    
+    return {
+        "success": True,
+        "session_id": session_id,
+        "video_name": video_session.get("video_name"),
+        "video_type": video_session.get("video_type"),
+        "count": len(windows),
+        "windows": windows
     }
 

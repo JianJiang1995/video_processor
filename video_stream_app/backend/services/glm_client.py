@@ -79,9 +79,16 @@ class WindowHistoryManager:
     
     使用滑动窗口机制保存最近10个窗口的摘要，
     为GLM分析提供时序上下文。
+    
+    新增功能：
+    - 阶段连续确认机制：连续N个窗口判断为同一阶段后才确认该阶段
+    - 阶段转换验证：使用 ALLOWED_TRANSITIONS 规则表验证阶段转换合法性
     """
     
     MAX_HISTORY_SIZE = 10
+    
+    # 连续确认阈值：连续N个窗口判断为同一阶段后才确认
+    CONSECUTIVE_CONFIRM_THRESHOLD = 2
     
     # 手术阶段顺序定义
     PHASE_ORDER = {
@@ -114,9 +121,23 @@ class WindowHistoryManager:
         "Unknown": "未知阶段"
     }
     
+    # 阶段转换规则表：定义每个阶段后允许出现的阶段
+    ALLOWED_TRANSITIONS = {
+        "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
+        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction", "Preparation"],
+        "ClippingCutting": ["GallbladderDissection", "CalotTriangleDissection"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderRetraction", "ClippingCutting"],
+        "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
+        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderDissection"],
+        "GallbladderPackaging": ["CleaningCoagulation"],  # 胆囊取出后只允许清洁凝血
+    }
+    
     def __init__(self):
         self._history: List[WindowSummary] = []
         self._lock = asyncio.Lock()
+        # 阶段连续确认计数器
+        self._phase_confirm_count: Dict[str, int] = {}
+        self._last_phase: str = None
     
     async def add_summary(self, summary: WindowSummary) -> None:
         """
@@ -138,6 +159,8 @@ class WindowHistoryManager:
         """清空历史"""
         async with self._lock:
             self._history.clear()
+            self._phase_confirm_count.clear()
+            self._last_phase = None
     
     def get_phase_order(self, phase: str) -> int:
         """获取阶段的顺序号"""
@@ -146,6 +169,79 @@ class WindowHistoryManager:
     def get_phase_cn_name(self, phase: str) -> str:
         """获取阶段的中文名称"""
         return self.PHASE_CN_NAMES.get(phase, phase)
+    
+    def update_phase_confirm_count(self, phase: str) -> int:
+        """
+        更新阶段连续确认计数
+        
+        Args:
+            phase: 当前窗口的阶段
+            
+        Returns:
+            该阶段的当前连续确认计数
+        """
+        if phase == self._last_phase:
+            # 与上一个窗口阶段相同，累加计数
+            self._phase_confirm_count[phase] = self._phase_confirm_count.get(phase, 0) + 1
+        else:
+            # 阶段变化，重置当前阶段计数为1
+            self._phase_confirm_count[phase] = 1
+        
+        self._last_phase = phase
+        return self._phase_confirm_count[phase]
+    
+    def is_phase_confirmed(self, phase: str) -> bool:
+        """
+        判断某阶段是否已被连续确认（达到阈值）
+        
+        Args:
+            phase: 要检查的阶段
+            
+        Returns:
+            True 如果该阶段已连续出现达到阈值次数
+        """
+        return self._phase_confirm_count.get(phase, 0) >= self.CONSECUTIVE_CONFIRM_THRESHOLD
+    
+    def validate_phase_transition(self, current_phase: str, history: List[WindowSummary]) -> Tuple[bool, str]:
+        """
+        验证阶段转换是否合法
+        
+        基于 ALLOWED_TRANSITIONS 规则表验证：
+        - 如果某阶段已被连续确认，则后续阶段必须在其允许列表中
+        - 特别地，胆囊取出阶段确认后，只允许清洁凝血阶段
+        
+        Args:
+            current_phase: 当前窗口的阶段
+            history: 历史窗口列表
+            
+        Returns:
+            (is_valid, corrected_phase): 是否合法，以及纠正后的阶段
+        """
+        if not history:
+            return True, current_phase
+        
+        last_phase = history[-1].dominant_phase if history else None
+        
+        # 规则1：准备阶段不可回退（一旦离开就不能回去）
+        history_phases = [h.dominant_phase for h in history]
+        if current_phase == "Preparation" and any(p != "Preparation" for p in history_phases):
+            logger.warning(f"[WindowHistoryManager] PHASE VIOLATION: 准备阶段不可回退")
+            return False, last_phase if last_phase else "CalotTriangleDissection"
+        
+        # 规则2：基于已确认阶段的转换约束
+        # 检查"胆囊取出"是否已被连续确认
+        if self.is_phase_confirmed("GallbladderPackaging"):
+            allowed = self.ALLOWED_TRANSITIONS.get("GallbladderPackaging", [])
+            if current_phase != "GallbladderPackaging" and current_phase not in allowed:
+                logger.warning(
+                    f"[WindowHistoryManager] PHASE VIOLATION: 胆囊取出阶段已确认（连续{self._phase_confirm_count.get('GallbladderPackaging', 0)}次），"
+                    f"当前阶段 {current_phase} 不在允许列表 {allowed} 中"
+                )
+                # 纠正为上一个窗口阶段，如果上一个也是违规则使用清洁凝血
+                corrected = last_phase if last_phase in allowed or last_phase == "GallbladderPackaging" else "CleaningCoagulation"
+                return False, corrected
+        
+        return True, current_phase
     
     async def build_history_context(self) -> str:
         """
@@ -1599,28 +1695,26 @@ Output only the summary, no additional formatting."""
                 # 从摘要中提取阶段信息并添加到历史
                 dominant_phase = self._extract_phase_from_summary(summary)
                 
-                # ========== 阶段约束后处理：检查并纠正违规阶段 ==========
-                if dominant_phase and current_history:
-                    last_phase = current_history[-1].dominant_phase if current_history else None
+                # ========== 阶段约束后处理：使用连续确认机制和规则表验证 ==========
+                if dominant_phase:
+                    # 更新阶段连续确认计数
+                    confirm_count = history_manager.update_phase_confirm_count(dominant_phase)
+                    logger.debug(f"[GLMClient] Window {window_id} phase={dominant_phase}, confirm_count={confirm_count}")
                     
-                    # 获取已出现过的所有阶段
-                    history_phases = [h.dominant_phase for h in current_history]
+                    # 验证阶段转换合法性
+                    is_valid, corrected_phase = history_manager.validate_phase_transition(dominant_phase, current_history)
                     
-                    # 规则1：准备阶段不可回退
-                    if dominant_phase == "Preparation" and any(p != "Preparation" for p in history_phases):
-                        logger.warning(f"[GLMClient] Window {window_id} PHASE VIOLATION: 准备阶段不可回退！GLM输出={dominant_phase}, 历史已进入正式阶段")
-                        # 强制使用上一个窗口的阶段
-                        dominant_phase = last_phase
-                        summary = summary.replace("【准备阶段】", f"【{WindowHistoryManager.PHASE_CN_NAMES.get(last_phase, last_phase)}】")
-                        logger.info(f"[GLMClient] Corrected to phase: {dominant_phase}")
-                    
-                    # 规则2：胆囊取出后不能出现胆囊牵拉
-                    if dominant_phase == "GallbladderRetraction" and "GallbladderPackaging" in history_phases:
-                        logger.warning(f"[GLMClient] Window {window_id} PHASE VIOLATION: 胆囊取出后不能出现胆囊牵拉！")
-                        # 强制使用上一个窗口的阶段或清洁凝血
-                        dominant_phase = last_phase if last_phase else "CleaningCoagulation"
-                        summary = summary.replace("【胆囊牵拉阶段】", f"【{WindowHistoryManager.PHASE_CN_NAMES.get(dominant_phase, dominant_phase)}】")
-                        logger.info(f"[GLMClient] Corrected to phase: {dominant_phase}")
+                    if not is_valid:
+                        original_phase = dominant_phase
+                        dominant_phase = corrected_phase
+                        # 更新摘要中的阶段名称
+                        original_cn = history_manager.get_phase_cn_name(original_phase)
+                        corrected_cn = history_manager.get_phase_cn_name(corrected_phase)
+                        if f"【{original_cn}】" in summary:
+                            summary = summary.replace(f"【{original_cn}】", f"【{corrected_cn}】")
+                        logger.warning(
+                            f"[GLMClient] Window {window_id} PHASE CORRECTED: {original_phase} -> {corrected_phase}"
+                        )
                 
                 if dominant_phase:
                     # 计算窗口时间范围

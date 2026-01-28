@@ -86,7 +86,8 @@ class CosyVoiceTTSClient:
     async def check_health(self) -> bool:
         """Check if TTS service is available"""
         try:
-            response = await self.client.get(f"{self.api_url}/health")
+            # Use short timeout for health check (5 seconds instead of default 60)
+            response = await self.client.get(f"{self.api_url}/health", timeout=5.0)
             return response.status_code == 200
         except Exception as e:
             logger.warning(f"[CosyVoiceTTS] Health check failed: {e}")
