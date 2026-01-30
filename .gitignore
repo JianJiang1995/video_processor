@@ -61,3 +61,94 @@ dist-electron/
 
 # Sessions/runtime data
 sessions/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Model files
+*.pt
+*.pth
+*.onnx
+*.mdl
+*.mv
+*.msc
+*.safetensors
+*.ckpt
+*.h5
+*.pb
+*.tflite
+
+# Data files (but keep config files)
+*.jsonl
+# Ignore JSON files in output directories (but keep config files)
+output/*.json
+output/*.jsonl
+tests/*/outputs/**/*.json
+tests/*/outputs/**/*.jsonl
+# Exception: keep config files (but not in pretrained_models or output directories)
+!**/config.json
+!**/package.json
+!**/tsconfig.json
+!**/tsconfig.*.json
+!**/package-lock.json
+!**/yarn.lock
+!**/pnpm-lock.yaml
+# Override: ignore config files in pretrained_models and output directories
+**/pretrained_models/**/config.json
+**/pretrained_models/**/package.json
+output/**/config.json
+tests/*/outputs/**/config.json
+
+# Audio output files
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Model directories and weights
+# Ignore model files but keep config files
+**/pretrained_models/**/*.pt
+**/pretrained_models/**/*.pth
+**/pretrained_models/**/*.onnx
+**/pretrained_models/**/*.mdl
+**/pretrained_models/**/*.mv
+**/pretrained_models/**/*.msc
+**/pretrained_models/**/*.safetensors
+**/pretrained_models/**/*.zip
+**/pretrained_models/**/*.ckpt
+**/pretrained_models/**/*.h5
+**/pretrained_models/**/*.pb
+**/pretrained_models/**/*.tflite
+**/pretrained_models/.lock/
+# Ignore entire model directories (if you don't need any files from them)
+**/model_zoo/
+**/checkpoints/
+**/weights/
+
+# Output directories
+output/
+tests/*/outputs/
+
+# Lock files
+.lock/
+**/.lock/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Backup and temporary files
+*.bak
+*.tmp
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+.DS_Store
+Thumbs.db
