@@ -1,7 +1,7 @@
 {
     "description": "SurgR1 API Configuration - Surgical Image Analysis Service",
     "model": {
-        "path": "/data/jj/proj/Laparo/last_cot_qwen2.5/round36_cholec/v0-20251116-000731/checkpoint-12042-merged",
+        "path": "/data4/jj/Laparo/last_cot_qwen2.5/round36_cholec/v0-20251116-000731/checkpoint-12042-merged",
         "max_model_len": 8192,
         "gpu_memory_utilization": 0.85,
         "tensor_parallel_size": 1,

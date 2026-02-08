@@ -28,10 +28,9 @@ else
     echo "No existing service found on port $PORT."
 fi
 
-# Activate virtual environment if exists
-if [ -d "venv" ]; then
-    source venv/bin/activate
-fi
+# Activate conda environment
+eval "$(conda shell.bash hook)"
+conda activate vllm
 
 # Set environment variables (customize as needed)
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
