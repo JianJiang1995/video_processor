@@ -250,6 +250,104 @@ export const onDownloadProgress = (callback) => {
   return () => {} // 空的取消函数
 }
 
+// ============= 服务管理 (全部服务) =============
+
+/**
+ * 获取所有服务状态
+ * @returns {Object} { backend, surgr1, glm, sam3, tts, asr }
+ */
+export const getAllServiceStatuses = async () => {
+  if (isElectron()) {
+    return await window.electronAPI.getAllServiceStatuses()
+  }
+  return {}
+}
+
+/**
+ * 获取单个服务状态
+ */
+export const getServiceStatus = async (key) => {
+  if (isElectron()) {
+    return await window.electronAPI.getServiceStatus(key)
+  }
+  return null
+}
+
+/**
+ * 启动单个服务
+ */
+export const startService = async (key) => {
+  if (isElectron()) {
+    return await window.electronAPI.startService(key)
+  }
+  return { success: false, error: 'Not in Electron environment' }
+}
+
+/**
+ * 停止单个服务
+ */
+export const stopService = async (key) => {
+  if (isElectron()) {
+    return await window.electronAPI.stopService(key)
+  }
+  return { success: false, error: 'Not in Electron environment' }
+}
+
+/**
+ * 重启单个服务
+ */
+export const restartService = async (key) => {
+  if (isElectron()) {
+    return await window.electronAPI.restartService(key)
+  }
+  return { success: false, error: 'Not in Electron environment' }
+}
+
+/**
+ * 启动所有服务
+ */
+export const startAllServices = async () => {
+  if (isElectron()) {
+    return await window.electronAPI.startAllServices()
+  }
+  return { success: false, error: 'Not in Electron environment' }
+}
+
+/**
+ * 监听服务状态变化
+ * @param {function} callback - ({ key, status }) => void
+ * @returns {function} 取消订阅
+ */
+export const onServiceStatusChanged = (callback) => {
+  if (isElectron()) {
+    return window.electronAPI.onServiceStatusChanged(callback)
+  }
+  return () => {}
+}
+
+// ============= 后端兼容接口 =============
+
+export const getBackendStatus = async () => {
+  if (isElectron()) {
+    return await window.electronAPI.getBackendStatus()
+  }
+  return { running: true, embedded: false, url: '', pid: null }
+}
+
+export const restartBackend = async () => {
+  if (isElectron()) {
+    return await window.electronAPI.restartBackend()
+  }
+  return { success: false, error: 'Not in Electron environment' }
+}
+
+export const onBackendStatus = (callback) => {
+  if (isElectron()) {
+    return window.electronAPI.onBackendStatus(callback)
+  }
+  return () => {}
+}
+
 // ============= 图像加载辅助 =============
 
 /**
@@ -289,6 +387,19 @@ export default {
   setBackendUrl,
   getConfig,
   setConfig,
+  // 服务管理
+  getAllServiceStatuses,
+  getServiceStatus,
+  startService,
+  stopService,
+  restartService,
+  startAllServices,
+  onServiceStatusChanged,
+  // 后端兼容
+  getBackendStatus,
+  restartBackend,
+  onBackendStatus,
+  // 帧缓存
   cacheFrame,
   getCachedFrame,
   getLocalFrame,
@@ -296,8 +407,10 @@ export default {
   downloadSession,
   getCacheStats,
   clearCache,
+  // 对话框
   showMessageBox,
   showOpenDialog,
+  // 应用信息
   getAppInfo,
   onDownloadProgress,
   loadFrameImage,

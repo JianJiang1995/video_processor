@@ -1,5 +1,5 @@
 """
-Gemini 3.0 Flash API Client - Multimodal Analysis Service
+Gemini 3.1 Pro API Client - Multimodal Analysis Service
 Calls Google Gemini API for multimodal surgical video analysis.
 Used for integrating multiple surgical image analyses into coherent summaries.
 
@@ -340,8 +340,8 @@ class GeminiClient:
         api_key_env = gemini_config.get("api_key_env", "GEMINI_API_KEY")
         self.api_key = api_key or os.environ.get(api_key_env, "")
         
-        self.model_name = model_name or gemini_config.get("model_name", "gemini-3-flash-preview")
-        self.thinking_level = thinking_level or gemini_config.get("thinking_level", "low")
+        self.model_name = model_name or gemini_config.get("model_name", "gemini-3.1-pro-preview")
+        self.thinking_level = thinking_level or gemini_config.get("thinking_level", "none")
         self.max_tokens = max_tokens or gemini_config.get("max_tokens", 1000)
         self.timeout = timeout
         
@@ -415,6 +415,10 @@ class GeminiClient:
     def _get_thinking_config(self) -> Any:
         """Get thinking configuration based on thinking_level"""
         if not GENAI_AVAILABLE:
+            return None
+        
+        # "none" 表示关闭思考模式，不传 thinking_config
+        if self.thinking_level == "none":
             return None
         
         return types.ThinkingConfig(thinking_level=self.thinking_level)
@@ -1076,9 +1080,10 @@ class GeminiClient:
 【输出规则】
 1. 禁止提及"外科医生"、"医生"、"术者"，使用被动语态描述操作
 2. 只描述：当前阶段、器械动作、组织状态
-3. 禁止描述：光线反射、水珠、纹理、阴影等视觉细节
+3. 禁止描述：光线反射、水珠、纹理、阴影、标本袋表面折射/反光等视觉细节
 4. 异常情况只在发生时描述：出血/器械碰撞/镜头模糊/烟雾仅在实际发生时提及
    - 禁止描述"无出血"、"无活动性出血"、"无器械碰撞"、"视野清晰"等正常状态
+   - blur判断极其严格：标本袋半透明表面、光线反射、局部过曝均不算blur；只有整个视野被烟雾/水雾/血液大面积遮挡才算blur=Y
 5. 必须关注Hem-o-lok、纱布（仅在出现时描述）
 6. 全中文输出：禁止出现任何英文，包括括号内的英文注释
 
@@ -1094,7 +1099,7 @@ class GeminiClient:
 - hem_loc: 可见的Hem-o-lok数量，无则填0
 - gauze: 是否可见纱布（Y/N）
 - bleeding: 是否有明显出血（Y/N）
-- blur: 镜头是否模糊/烟雾遮挡（Y/N）
+- blur: 镜头是否被烟雾/水雾/血液大面积遮挡导致视野完全不清（Y/N），标本袋反光/局部过曝不算，默认N
 - out_of_body: 镜头是否移出体外（Y/N）"""
             logger.warning("[GeminiClient] Using fallback system prompt")
         

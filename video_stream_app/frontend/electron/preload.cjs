@@ -1,8 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-// 通过 contextBridge 暴露安全的 API 给渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
-  // 标识当前运行在 Electron 环境
+  // 标识 Electron 环境
   isElectron: true,
   
   // ============= 配置管理 =============
@@ -11,6 +10,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
   setBackendUrl: (url) => ipcRenderer.invoke('set-backend-url', url),
   
+  // ============= 服务管理 (全部服务) =============
+  getAllServiceStatuses: () => ipcRenderer.invoke('get-all-service-statuses'),
+  getServiceStatus: (key) => ipcRenderer.invoke('get-service-status', key),
+  checkServiceHealth: (key) => ipcRenderer.invoke('check-service-health', key),
+  startService: (key) => ipcRenderer.invoke('start-service', key),
+  stopService: (key) => ipcRenderer.invoke('stop-service', key),
+  restartService: (key) => ipcRenderer.invoke('restart-service', key),
+  startAllServices: () => ipcRenderer.invoke('start-all-services'),
+  
+  // 监听单个服务状态变化
+  onServiceStatusChanged: (callback) => {
+    const listener = (event, data) => callback(data)
+    ipcRenderer.on('service-status-changed', listener)
+    return () => ipcRenderer.removeListener('service-status-changed', listener)
+  },
+  
+  // ============= 后端兼容接口 =============
+  getBackendStatus: () => ipcRenderer.invoke('get-backend-status'),
+  restartBackend: () => ipcRenderer.invoke('restart-backend'),
+  onBackendStatus: (callback) => {
+    const listener = (event, status) => callback(status)
+    ipcRenderer.on('backend-status', listener)
+    return () => ipcRenderer.removeListener('backend-status', listener)
+  },
+  
   // ============= 帧缓存操作 =============
   cacheFrame: (sessionId, filename, data) => 
     ipcRenderer.invoke('cache-frame', sessionId, filename, data),
@@ -18,7 +42,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCachedFrame: (sessionId, filename) => 
     ipcRenderer.invoke('get-cached-frame', sessionId, filename),
   
-  // 直接从后端 session 目录读取帧（不经过 HTTP）
   getLocalFrame: (sessionId, filename, subfolder) =>
     ipcRenderer.invoke('get-local-frame', sessionId, filename, subfolder),
   
@@ -51,10 +74,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onDownloadProgress: (callback) => {
     const listener = (event, progress) => callback(progress)
     ipcRenderer.on('download-progress', listener)
-    // 返回取消订阅函数
     return () => ipcRenderer.removeListener('download-progress', listener)
   }
 })
 
-// 打印加载成功信息（调试用）
 console.log('Electron preload script loaded successfully')

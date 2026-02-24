@@ -4,18 +4,52 @@ const path = require('path')
 const fs = require('fs').promises
 const fsSync = require('fs')
 const FrameCache = require('./frameCache.cjs')
+const { ServiceManager } = require('./serviceManager.cjs')
 
-// 初始化配置存储
+// ============= Load config.json =============
+
+function loadAppConfig() {
+  // Try multiple locations
+  const candidates = [
+    // Packaged: resources/backend/config.json
+    path.join(process.resourcesPath || '', 'backend', 'config.json'),
+    // Dev: video_stream_app/config.json
+    path.join(__dirname, '..', '..', 'config.json'),
+    // Fallback
+    path.join(__dirname, '..', 'config.json'),
+  ]
+  for (const p of candidates) {
+    try {
+      if (fsSync.existsSync(p)) {
+        const data = JSON.parse(fsSync.readFileSync(p, 'utf-8'))
+        console.log(`[Config] Loaded from: ${p}`)
+        return data
+      }
+    } catch (e) { /* skip */ }
+  }
+  console.warn('[Config] No config.json found, using defaults')
+  return {}
+}
+
+const appConfig = loadAppConfig()
+
+// ============= Service Manager =============
+
+const serviceManager = new ServiceManager()
+
+// ============= App Configuration =============
+
+const BACKEND_PORT = appConfig.services?.backend?.port || 8001
+const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`
+
 const store = new Store({
   defaults: {
-    backendUrl: 'http://localhost:8001',
+    backendUrl: BACKEND_URL,
     cacheMaxSize: 10 * 1024 * 1024 * 1024, // 10GB
-    // 后端 session 存储目录（Electron 直接读取帧文件）
-    sessionsStoragePath: '/data2/jj/proj/video_processor/video_stream_app/sessions'
+    sessionsStoragePath: '',
   }
 })
 
-// 初始化帧缓存
 const cacheDir = path.join(app.getPath('userData'), 'cache')
 const frameCache = new FrameCache(cacheDir)
 
@@ -35,15 +69,13 @@ function createWindow() {
     },
     icon: path.join(__dirname, 'icon.png'),
     title: 'Video Analyzer',
-    show: false // 等待 ready-to-show 事件
+    show: false
   })
 
-  // 窗口准备好后再显示，避免白屏闪烁
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
   })
 
-  // 开发模式加载 Vite 服务器，生产模式加载打包文件
   if (process.env.NODE_ENV === 'development' || process.argv.includes('--dev')) {
     const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5174'
     mainWindow.loadURL(devServerUrl)
@@ -52,19 +84,15 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  // 窗口关闭时清理引用
   mainWindow.on('closed', () => {
     mainWindow = null
   })
 }
 
-// ============= IPC 处理程序 =============
+// ============= IPC: Config =============
 
-// 配置相关
 ipcMain.handle('get-config', (event, key) => {
-  if (key) {
-    return store.get(key)
-  }
+  if (key) return store.get(key)
   return store.store
 })
 
@@ -74,6 +102,7 @@ ipcMain.handle('set-config', (event, key, value) => {
 })
 
 ipcMain.handle('get-backend-url', () => {
+  if (app.isPackaged) return BACKEND_URL
   return store.get('backendUrl')
 })
 
@@ -82,7 +111,76 @@ ipcMain.handle('set-backend-url', (event, url) => {
   return true
 })
 
-// 帧缓存相关
+// ============= IPC: Service Management =============
+
+ipcMain.handle('get-all-service-statuses', () => {
+  return serviceManager.getAllStatuses()
+})
+
+ipcMain.handle('get-service-status', async (event, key) => {
+  const statuses = serviceManager.getAllStatuses()
+  return statuses[key] || null
+})
+
+ipcMain.handle('check-service-health', async (event, key) => {
+  const healthy = await serviceManager.checkHealth(key)
+  return { key, healthy }
+})
+
+ipcMain.handle('start-service', async (event, key) => {
+  try {
+    const result = await serviceManager.startService(key)
+    return { success: result, statuses: serviceManager.getAllStatuses() }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('stop-service', (event, key) => {
+  serviceManager.stopService(key)
+  return { success: true, statuses: serviceManager.getAllStatuses() }
+})
+
+ipcMain.handle('restart-service', async (event, key) => {
+  try {
+    const result = await serviceManager.restartService(key)
+    return { success: result, statuses: serviceManager.getAllStatuses() }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+ipcMain.handle('start-all-services', async () => {
+  try {
+    const statuses = await serviceManager.startAll()
+    return { success: true, statuses }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// Legacy compatibility
+ipcMain.handle('get-backend-status', async () => {
+  const healthy = await serviceManager.checkHealth('backend')
+  return {
+    running: healthy,
+    embedded: app.isPackaged,
+    url: BACKEND_URL,
+    pid: serviceManager.statuses.backend?.pid || null
+  }
+})
+
+ipcMain.handle('restart-backend', async () => {
+  try {
+    await serviceManager.restartService('backend')
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+})
+
+// ============= IPC: Frame Cache =============
+
 ipcMain.handle('cache-frame', async (event, sessionId, filename, data) => {
   try {
     await frameCache.cacheFrame(sessionId, filename, data)
@@ -101,28 +199,20 @@ ipcMain.handle('get-cached-frame', async (event, sessionId, filename) => {
   }
 })
 
-// 查找包含 sessionId 的 session 目录（返回最新的）
 async function findSessionDir(sessionsPath, sessionId) {
   try {
-    // 先尝试直接路径
     const directPath = path.join(sessionsPath, sessionId)
-    if (fsSync.existsSync(directPath)) {
-      return directPath
-    }
-    
-    // 搜索包含 sessionId 的目录（处理短 ID 情况）
-    // 返回最新的目录（按目录名排序，因为格式是 YYYYMMDD_HHMMSS_sessionId_xxx）
+    if (fsSync.existsSync(directPath)) return directPath
+
     const entries = fsSync.readdirSync(sessionsPath, { withFileTypes: true })
     const matchingDirs = entries
       .filter(entry => entry.isDirectory() && entry.name.includes(sessionId))
       .map(entry => entry.name)
-      .sort()  // 按字母排序，时间戳格式保证最新的在最后
-    
+      .sort()
+
     if (matchingDirs.length > 0) {
-      // 返回最新的目录（最后一个）
       return path.join(sessionsPath, matchingDirs[matchingDirs.length - 1])
     }
-    
     return null
   } catch (error) {
     console.error('Error finding session dir:', error)
@@ -130,30 +220,31 @@ async function findSessionDir(sessionsPath, sessionId) {
   }
 }
 
-// 直接从后端 session 目录读取帧（不经过 HTTP）
-ipcMain.handle('get-local-frame', async (event, sessionId, filename, subfolder = 'frames') => {  
+ipcMain.handle('get-local-frame', async (event, sessionId, filename, subfolder = 'frames') => {
   try {
-    const sessionsPath = store.get('sessionsStoragePath')
-    
-    // 1. 先尝试直接路径
+    let sessionsPath = store.get('sessionsStoragePath')
+
+    if (!sessionsPath && app.isPackaged) {
+      sessionsPath = path.join(process.resourcesPath, 'backend', 'sessions')
+    }
+
+    if (!sessionsPath) {
+      return { success: false, error: 'Sessions storage path not configured' }
+    }
+
     const directPath = path.join(sessionsPath, sessionId, subfolder, filename)
     if (fsSync.existsSync(directPath)) {
       const data = await fs.readFile(directPath)
       return { success: true, data, path: directPath }
     }
-    
-    // 2. 查找包含 sessionId 的目录（处理短 ID 如 dd4f34e6）
+
     const sessionDir = await findSessionDir(sessionsPath, sessionId)
-    
     if (sessionDir) {
       const framePath = path.join(sessionDir, subfolder, filename)
-      
       if (fsSync.existsSync(framePath)) {
         const data = await fs.readFile(framePath)
         return { success: true, data, path: framePath }
       }
-      
-      // 3. 尝试 frames 子文件夹作为 fallback
       if (subfolder !== 'frames') {
         const fallbackPath = path.join(sessionDir, 'frames', filename)
         if (fsSync.existsSync(fallbackPath)) {
@@ -162,22 +253,15 @@ ipcMain.handle('get-local-frame', async (event, sessionId, filename, subfolder =
         }
       }
     }
-    
+
     return { success: false, error: `Frame not found: ${sessionId}/${subfolder}/${filename}` }
   } catch (error) {
     return { success: false, error: error.message }
   }
 })
 
-// 获取 session 存储路径配置
-ipcMain.handle('get-sessions-storage-path', () => {
-  return store.get('sessionsStoragePath')
-})
-
-ipcMain.handle('set-sessions-storage-path', (event, path) => {
-  store.set('sessionsStoragePath', path)
-  return true
-})
+ipcMain.handle('get-sessions-storage-path', () => store.get('sessionsStoragePath'))
+ipcMain.handle('set-sessions-storage-path', (event, p) => { store.set('sessionsStoragePath', p); return true })
 
 ipcMain.handle('check-cached-frame', async (event, sessionId, filename) => {
   try {
@@ -189,7 +273,7 @@ ipcMain.handle('check-cached-frame', async (event, sessionId, filename) => {
 })
 
 ipcMain.handle('download-session', async (event, sessionId) => {
-  const backendUrl = store.get('backendUrl')
+  const backendUrl = app.isPackaged ? BACKEND_URL : store.get('backendUrl')
   try {
     const result = await frameCache.downloadSession(sessionId, backendUrl)
     return { success: true, ...result }
@@ -216,7 +300,8 @@ ipcMain.handle('clear-cache', async (event, sessionId) => {
   }
 })
 
-// 对话框
+// ============= IPC: Dialogs & App Info =============
+
 ipcMain.handle('show-message-box', async (event, options) => {
   return dialog.showMessageBox(mainWindow, options)
 })
@@ -225,23 +310,60 @@ ipcMain.handle('show-open-dialog', async (event, options) => {
   return dialog.showOpenDialog(mainWindow, options)
 })
 
-// 应用信息
 ipcMain.handle('get-app-info', () => {
   return {
     version: app.getVersion(),
     name: app.getName(),
     userDataPath: app.getPath('userData'),
-    cachePath: cacheDir
+    cachePath: cacheDir,
+    embedded: app.isPackaged,
+    services: serviceManager.getAllStatuses(),
   }
 })
 
-// ============= 应用生命周期 =============
+// ============= App Lifecycle =============
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Initialize service manager
+  const resourcesPath = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', '..')
+  serviceManager.init(resourcesPath, appConfig, app.isPackaged)
+
+  // Forward service status changes to renderer
+  serviceManager.onStatusChange((key, status) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('service-status-changed', { key, status })
+      // Legacy compatibility
+      if (key === 'backend') {
+        mainWindow.webContents.send('backend-status', {
+          running: status.running,
+          starting: status.starting,
+          error: status.error,
+        })
+      }
+    }
+  })
+
   createWindow()
 
+  // Start all services if packaged
+  if (app.isPackaged) {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('backend-status', { running: false, starting: true })
+      }
+      await serviceManager.startAll()
+    } catch (err) {
+      console.error('[App] Failed to start services:', err)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        dialog.showErrorBox(
+          '服务启动失败',
+          `无法启动内置服务：${err.message}\n\n请检查日志或联系技术支持。`
+        )
+      }
+    }
+  }
+
   app.on('activate', () => {
-    // macOS 点击 dock 图标时重新创建窗口
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
     }
@@ -249,19 +371,20 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  // macOS 下通常不会退出应用
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
 
-// 退出前清理
-app.on('before-quit', async () => {
-  // 可以在这里做一些清理工作
+app.on('before-quit', () => {
   console.log('Video Analyzer is closing...')
+  serviceManager.stopAll()
 })
 
-// 处理未捕获的异常
+app.on('will-quit', () => {
+  serviceManager.stopAll()
+})
+
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error)
 })

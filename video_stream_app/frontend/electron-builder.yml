@@ -10,6 +10,55 @@ files:
   - dist/**/*
   - electron/**/*
 
+# ============================================
+# extraResources: 所有服务打包进 resources/
+# PyInstaller 编译的各服务位于 dist-services/ 下
+# ============================================
+extraResources:
+  # FastAPI Backend
+  - from: "../dist-services/backend"
+    to: "backend"
+    filter:
+      - "**/*"
+
+  # SurgR1 vLLM Service (surgical analysis)
+  - from: "../dist-services/surgr1"
+    to: "surgr1"
+    filter:
+      - "**/*"
+
+  # GLM/Qwen: 不打包，由 Gemini 云端 API 替代 (vlm_factory 可切换)
+
+  # SAM3 Segmentation Service
+  - from: "../dist-services/sam3"
+    to: "sam3"
+    filter:
+      - "**/*"
+
+  # TTS CosyVoice Service
+  - from: "../dist-services/tts"
+    to: "tts"
+    filter:
+      - "**/*"
+
+  # ASR FunASR Service
+  - from: "../dist-services/asr"
+    to: "asr"
+    filter:
+      - "**/*"
+
+  # Shared config
+  - from: "../config.json"
+    to: "backend/config.json"
+
+  # .env (API keys)
+  - from: "../../.env"
+    to: "backend/.env"
+
+  # Background knowledge for GLM
+  - from: "../../glm_api/background.txt"
+    to: "backend/background.txt"
+
 # Linux 配置
 linux:
   target:
@@ -19,18 +68,25 @@ linux:
     - target: deb
       arch:
         - x64
+    - target: tar.gz
+      arch:
+        - x64
   category: Medical
   icon: electron/icon.png
   maintainer: Surg-R1 Team
   synopsis: Surg-R1 Surgery Assistant
   description: |
-    A professional AI-powered surgery assistant for medical video analysis.
-    Features include frame-by-frame analysis, annotation, and AI-assisted detection.
+    AI-powered surgery assistant with embedded backend services.
+    Includes SurgR1, GLM/Qwen VLM, SAM3, TTS, and ASR.
+    No separate server required.
 
 # Windows 配置
 win:
   target:
     - target: nsis
+      arch:
+        - x64
+    - target: portable
       arch:
         - x64
   icon: electron/icon.ico
@@ -43,9 +99,8 @@ nsis:
   uninstallerIcon: electron/icon.ico
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  license: LICENSE.txt
-  
-# macOS 配置 (可选)
+
+# macOS 配置
 mac:
   target:
     - target: dmg
@@ -60,20 +115,10 @@ publish:
   provider: generic
   url: https://your-update-server.com/releases/
 
-# asar 打包
+# asar 打包 (仅前端，服务在 extraResources 不受影响)
 asar: true
 asarUnpack:
   - "**/*.node"
 
-# 压缩
 compression: normal
-
-# 额外文件
-extraFiles:
-  - from: "LICENSE.txt"
-    to: "LICENSE.txt"
-    filter:
-      - "**/*"
-
-# 构建之后清理
 removePackageScripts: true

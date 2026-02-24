@@ -4,8 +4,8 @@
         "provider": "gemini",
         "history_window_count": 10,
         "max_output_chars": 300,
-        "min_frames_ratio": 0.3,
-        "comment": "provider: VLM提供商; history_window_count: 上下文窗口数; max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.3=30%，适应实时流处理延迟)"
+        "min_frames_ratio": 0.2,
+        "comment": "provider: VLM提供商; history_window_count: 上下文窗口数; max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.2=20%，适应实时流处理延迟)"
     },
     "chat_assistant": {
         "provider": "gemini",
@@ -87,8 +87,8 @@
             "enabled": true,
             "required": false,
             "api_key_env": "GEMINI_API_KEY",
-            "model_name": "gemini-3-flash-preview",
-            "thinking_level": "low",
+            "model_name": "gemini-3.1-pro-preview",
+            "thinking_level": "none",
             "max_tokens": 2048,
             "max_concurrent": 8,
             "retry_count": 3,
@@ -98,7 +98,7 @@
     },
     "video_processing": {
         "window_duration": 15.0,
-        "sample_interval": 1.0,
+        "sample_interval": 3.0,
         "frame_storage": {
             "fps": 25,
             "quality": 85,

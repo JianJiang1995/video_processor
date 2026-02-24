@@ -1,7 +1,7 @@
 {
   "name": "video-stream-analyzer",
   "version": "1.0.0",
-  "description": "Professional video analysis tool for medical video processing",
+  "description": "Professional video analysis tool for medical video processing with embedded AI services",
   "author": {
     "name": "Surg-R1 Team",
     "email": "support@surgr1.local"
@@ -16,9 +16,15 @@
     "preelectron:dev": "fuser -k 5174/tcp 2>/dev/null || true",
     "electron:dev": "concurrently -k \"vite\" \"wait-on -t 30000 tcp:5174 && electron . --dev\"",
     "electron:preview": "vite build && electron .",
+
     "electron:build": "vite build && electron-builder",
     "electron:build:linux": "vite build && electron-builder --linux",
-    "electron:build:win": "vite build && electron-builder --win"
+    "electron:build:win": "vite build && electron-builder --win",
+
+    "build:standalone": "cd .. && bash build_standalone.sh --linux",
+    "build:standalone:win": "cd .. && bash build_standalone.sh --win",
+    "build:standalone:all": "cd .. && bash build_standalone.sh --all",
+    "build:standalone:backend-only": "cd .. && bash build_standalone.sh --linux --services=backend"
   },
   "dependencies": {
     "vue": "^3.4.0",

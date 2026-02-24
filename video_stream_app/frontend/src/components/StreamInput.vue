@@ -154,7 +154,7 @@ const emit = defineEmits(['connect', 'back'])
 const sourceType = ref('stream')
 
 // Stream mode state
-const streamUrl = ref('')
+const streamUrl = ref('http://localhost:9001/stream')
 const presets = [
   { name: '手术室1', url: 'rtsp://192.168.1.101:554/live' },
   { name: '手术室2', url: 'rtsp://192.168.1.102:554/live' },

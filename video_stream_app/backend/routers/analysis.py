@@ -1548,7 +1548,7 @@ async def surgr1_continuous_task(
             stream_start_times[session_id] = stream_start_time
             logger.info(f"Stream start time recorded for {session_id}: {stream_start_time}")
         
-        surgr1_interval = 1.0  # SurgR1 analyzes one frame per second
+        surgr1_interval = settings.SAMPLE_INTERVAL  # SurgR1 采样间隔（从config.json读取，默认3秒）
         sam3_interval = 0.1  # SAM3 propagates masks at 10 FPS (propagation is very fast)
         # 【解耦】帧保存已移至独立的 frame_capture_service，此处不再保存帧
         last_surgr1_time = -surgr1_interval  # Ensure first frame is analyzed
@@ -1558,16 +1558,19 @@ async def surgr1_continuous_task(
         # ========== 批量处理配置（动态 batch size）==========
         # 根据积累的未处理帧数量动态调整 batch size
         # vLLM 并行处理时，大 batch 吞吐量更高（但延迟也增加）
-        SURGR1_MIN_BATCH_SIZE = 3    # 最小批量大小
-        SURGR1_MAX_BATCH_SIZE = 25   # 最大批量大小（15张×3问题=45序列，低于vLLM的64限制）
-        SURGR1_TARGET_BATCH_SIZE = 8  # 目标批量大小（平衡吞吐量和延迟）
+        # [优化] 基于 benchmark 测试结果调整：
+        #   batch_5: 4.19s (0.84s/frame) — 最佳效率
+        #   减少 batch 等待时间以降低端到端延迟
+        SURGR1_MIN_BATCH_SIZE = 2    # 最小批量大小（从3降到2，减少等待）
+        SURGR1_MAX_BATCH_SIZE = 15   # 最大批量大小
+        SURGR1_TARGET_BATCH_SIZE = 5  # 目标批量大小（从8降到5，匹配15s/3s=5帧/窗口）
         surgr1_batch_buffer = []  # 帧缓冲区: [(pil_image, frame_idx, timestamp), ...]
         last_batch_time = None  # 上次批量处理的时间（None表示尚未开始）
-        batch_timeout = 6.0  # 超时时间（秒），增大以积累更多帧提高吞吐量
+        batch_timeout = 3.0  # 超时时间（秒），从6s降到3s以减少延迟
         
         # ========== 【优化】并行异步 R1 处理任务 ==========
         # 支持多个并行 R1 任务，充分利用 GPU 和 vLLM 的并发能力
-        MAX_PARALLEL_R1_TASKS = 2  # 最大并行 R1 任务数
+        MAX_PARALLEL_R1_TASKS = 3  # 最大并行 R1 任务数（从2提升到3，充分利用A100 GPU）
         pending_r1_tasks = []  # 正在执行的 R1 批处理任务列表
         r1_processing_buffer = []  # 正在被 R1 处理的帧（用于追踪）
         
