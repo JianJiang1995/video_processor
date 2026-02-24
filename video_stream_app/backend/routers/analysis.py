@@ -2288,6 +2288,10 @@ async def glm_summarization_task(
             new_windows = []
             waiting_windows = []  # 等待更多帧的窗口
             
+            # ========== 第一个窗口特殊化：尽早出第一个结果 ==========
+            # 如果还没有任何分析结果，只要有 >= 2 帧就立即触发第一个窗口
+            first_window_fast = (len(processed_windows) == 0)
+            
             for wid in all_window_ids:
                 if wid in processed_windows:
                     continue
@@ -2296,6 +2300,13 @@ async def glm_summarization_task(
                 has_next_window = (wid + 1) in window_frames  # 下一个窗口是否已开始
                 has_skip_gap = (wid + 2) in window_frames  # 是否已被跳过（下下个窗口已开始）
                 is_latest_window = (wid == max_window_id)
+                
+                # 【特殊】第一个窗口快速触发：有 2 帧就立即处理，让用户尽快看到结果
+                if first_window_fast and frame_count >= 2:
+                    logger.info(f"[GLM Task] Fast-track first window {wid} with {frame_count} frames (early result)")
+                    new_windows.append(wid)
+                    first_window_fast = False  # 只对第一个窗口生效
+                    continue
                 
                 # 条件1：帧数已满（所有图像都被R1处理）→ 立即可以处理
                 if frame_count >= EXPECTED_FRAMES_PER_WINDOW:
