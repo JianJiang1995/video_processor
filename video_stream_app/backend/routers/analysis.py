@@ -2623,14 +2623,75 @@ async def process_video_surgr1_glm_task(
         surgr1_client = await ensure_surgr1_available()
         vlm_client = await ensure_vlm_available()
         
+        # Pipeline overlap: track previous window's Gemini task
+        _prev_gemini_task = None  # asyncio.Task for previous window's Gemini call
+        _prev_window_meta = None  # metadata needed to save previous window's results
+        
+        async def _save_gemini_result(task, meta):
+            """Await Gemini task and save results to DB + history"""
+            try:
+                result = await task
+                summary_text = ""
+                others_data = None
+                
+                if result.get("success"):
+                    summary_text = result.get("summary", "")
+                    others_data = result.get("others")
+                    
+                    dominant_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
+                    tools_list = [f.get("tools", "")[:50] for f in meta["frame_analyses"][:3] if f.get("tools")]
+                    
+                    await meta["history_manager"].add_summary(WindowSummary(
+                        window_id=meta["window_id"],
+                        start_time=meta["start_time"],
+                        end_time=meta["end_time"],
+                        summary=summary_text[:200],
+                        dominant_phase=dominant_phase,
+                        tools=tools_list,
+                        cvs_status="未评估"
+                    ))
+                else:
+                    summary_text = f"[分析出错: {result.get('error', '未知错误')}]"
+                    dominant_phase = None
+                
+                create_window_summary(
+                    db=db,
+                    session_id=db_session_id,
+                    window_id=meta["window_id"],
+                    start_time=meta["start_time"],
+                    end_time=meta["end_time"],
+                    summary_text=summary_text,
+                    tools_detected=[f.get("tools", "")[:200] for f in meta["frame_analyses"]],
+                    key_actions=[f.get("action", "")[:200] for f in meta["frame_analyses"]],
+                    dominant_phase=dominant_phase,
+                    others_data=others_data
+                )
+                logger.info(f"Completed window {meta['window_id']} with SurgR1+GLM (pipeline)")
+            except Exception as e:
+                logger.error(f"Failed to save Gemini result for window {meta['window_id']}: {e}")
+                create_window_summary(
+                    db=db,
+                    session_id=db_session_id,
+                    window_id=meta["window_id"],
+                    start_time=meta["start_time"],
+                    end_time=meta["end_time"],
+                    summary_text=f"[VLM Error: {str(e)}]",
+                    tools_detected=[f.get("tools", "")[:200] for f in meta["frame_analyses"]],
+                    key_actions=[f.get("action", "")[:200] for f in meta["frame_analyses"]],
+                )
+        
         async for window in processor.process_stream():
             # Check cancellation flag at the start of each window
             if analysis_cancellation_flags.get(session_id, False):
+                # Wait for any pending Gemini task before cancelling
+                if _prev_gemini_task and not _prev_gemini_task.done():
+                    await _save_gemini_result(_prev_gemini_task, _prev_window_meta)
                 logger.info(f"Analysis cancelled for session {session_id} at window {window.window_id}")
                 update_session_status(db, session_id, "cancelled")
                 return
             # ==================================================================
             # Step 1: SurgR1 - Batch analyze all frames in window
+            # (runs in parallel with previous window's Gemini call)
             # ==================================================================
             # Prepare batch request - collect all frames
             batch_frames = [
@@ -2678,12 +2739,18 @@ async def process_video_surgr1_glm_task(
                     }
                     for frame in window.frames
                 ]
-            
-            summary_text = ""
-            others_data = None
 
             # ==================================================================
-            # Step 2: VLM - Summarize window (多模态：图片 + R1分析结果)
+            # Step 1.5: Await previous window's Gemini result (if any)
+            # Must complete before building history_context for current window
+            # ==================================================================
+            if _prev_gemini_task and not _prev_gemini_task.done():
+                await _save_gemini_result(_prev_gemini_task, _prev_window_meta)
+                _prev_gemini_task = None
+                _prev_window_meta = None
+
+            # ==================================================================
+            # Step 2: VLM - Fire off Gemini as background task (pipeline overlap)
             # ==================================================================
             try:
                 # 获取上一窗口的摘要作为历史上下文，保持阶段连续性
@@ -2695,59 +2762,53 @@ async def process_video_surgr1_glm_task(
                 # 提取窗口帧图片用于VLM多模态验证
                 window_images = [frame.image for frame in window.frames if frame.image is not None]
                 
-                # VLM多模态分析：图片 + R1分析结果
-                # 如果R1分析与图片不符，以图片实际内容为准
-                result = await vlm_client.integrate_analysis_results(
-                    frame_analyses=frame_analyses,
-                    images=window_images,  # 传入图片用于多模态验证
-                    system_prompt=None,  # 使用内置的全中文提示词
-                    temperature=0.9,  # 提高温度增加输出多样性
-                    max_tokens=1500,
-                    history_context=history_context  # 传递历史上下文保持连续性
-                )
+                # 创建 Gemini 调用的协程（不立即 await）
+                async def _run_gemini(fa, wi, hc, vlm):
+                    return await vlm.integrate_analysis_results(
+                        frame_analyses=fa,
+                        images=wi,
+                        system_prompt=None,
+                        temperature=0.9,
+                        max_tokens=1500,
+                        history_context=hc
+                    )
                 
-                if result.get("success"):
-                    summary_text = result.get("summary", "")
-                    others_data = result.get("others")  # Extract structured others data
-                    
-                    # 提取阶段信息保存到历史
-                    dominant_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
-                    tools_list = [f.get("tools", "")[:50] for f in frame_analyses[:3] if f.get("tools")]
-                    
-                    # 添加到历史管理器
-                    await history_manager.add_summary(WindowSummary(
-                        window_id=window.window_id,
-                        start_time=window.start_time,
-                        end_time=window.end_time,
-                        summary=summary_text[:200],  # 保存摘要前200字符
-                        dominant_phase=dominant_phase,
-                        tools=tools_list,
-                        cvs_status="未评估"
-                    ))
-                else:
-                    summary_text = f"[分析出错: {result.get('error', '未知错误')}]"
-                    
+                # 保存当前窗口的元数据
+                _prev_window_meta = {
+                    "window_id": window.window_id,
+                    "start_time": window.start_time,
+                    "end_time": window.end_time,
+                    "frame_analyses": frame_analyses,
+                    "history_manager": history_manager,
+                }
+                
+                # 启动 Gemini task（不阻塞，下一个窗口的 R1 可以立即开始）
+                _prev_gemini_task = asyncio.create_task(
+                    _run_gemini(frame_analyses, window_images, history_context, vlm_client)
+                )
+                logger.info(f"Launched Gemini task for window {window.window_id} (pipeline overlap)")
+                
             except Exception as e:
-                logger.error(f"VLM summarization failed for window {window.window_id}: {e}")
-                summary_text = f"[VLM Error: {str(e)}]"
-            
-            # ==================================================================
-            # Step 3: Save summary to database
-            # ==================================================================
-            create_window_summary(
-                db=db,
-                session_id=db_session_id,
-                window_id=window.window_id,
-                start_time=window.start_time,
-                end_time=window.end_time,
-                summary_text=summary_text,
-                tools_detected=[f.get("tools", "")[:200] for f in frame_analyses],
-                key_actions=[f.get("action", "")[:200] for f in frame_analyses],
-                dominant_phase=dominant_phase if 'dominant_phase' in locals() else None,
-                others_data=others_data
-            )
-            
-            logger.info(f"Completed window {window.window_id} with SurgR1+GLM (with history context)")
+                logger.error(f"VLM task creation failed for window {window.window_id}: {e}")
+                # 同步保存错误结果
+                create_window_summary(
+                    db=db,
+                    session_id=db_session_id,
+                    window_id=window.window_id,
+                    start_time=window.start_time,
+                    end_time=window.end_time,
+                    summary_text=f"[VLM Error: {str(e)}]",
+                    tools_detected=[f.get("tools", "")[:200] for f in frame_analyses],
+                    key_actions=[f.get("action", "")[:200] for f in frame_analyses],
+                )
+                _prev_gemini_task = None
+                _prev_window_meta = None
+        
+        # ==================================================================
+        # After loop: await the last window's Gemini task
+        # ==================================================================
+        if _prev_gemini_task and not _prev_gemini_task.done():
+            await _save_gemini_result(_prev_gemini_task, _prev_window_meta)
         
         # Update session status
         update_session_status(db, session_id, "completed")
