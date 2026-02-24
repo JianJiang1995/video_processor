@@ -2044,6 +2044,7 @@ class GLMSummarizeRequest(BaseModel):
     session_id: str
     use_chinese: bool = True
     use_glm_multimodal: bool = False
+    is_live: bool = False  # True=在线实时流(速度优先), False=离线视频(准确率优先)
 
 
 @router.post("/start-glm-summarization")
@@ -2092,7 +2093,8 @@ async def start_glm_summarization(
             video_path=session["video_path"],
             db_session_id=session["session_id"],
             use_chinese=request.use_chinese,
-            use_glm_multimodal=request.use_glm_multimodal
+            use_glm_multimodal=request.use_glm_multimodal,
+            is_live=request.is_live
         )
     )
     
@@ -2112,13 +2114,14 @@ async def glm_summarization_task(
     video_path: str,
     db_session_id: str,  # session_id string, not int
     use_chinese: bool = True,
-    use_glm_multimodal: bool = False
+    use_glm_multimodal: bool = False,
+    is_live: bool = False
 ):
     """
     Background task for GLM summarization using existing SurgR1 results.
     
-    Groups SurgR1 frame analyses into 5-second windows and generates
-    summaries using GLM.
+    is_live=True (在线模式): 速度优先，第一个窗口2帧就触发，少发图片
+    is_live=False (离线模式): 准确率优先，等满帧再处理
     """
     from ..database import update_session_status
     db = next(get_db())
@@ -2215,7 +2218,7 @@ async def glm_summarization_task(
         no_new_frames_count = 0
         loop_count = 0
         
-        logger.info(f"[GLM Task] Starting continuous summarization for session {session_id}")
+        logger.info(f"[GLM Task] Starting continuous summarization for session {session_id}, mode={'LIVE' if is_live else 'OFFLINE'}")
         
         while True:
             loop_count += 1
@@ -2288,9 +2291,9 @@ async def glm_summarization_task(
             new_windows = []
             waiting_windows = []  # 等待更多帧的窗口
             
-            # ========== 第一个窗口特殊化：尽早出第一个结果 ==========
-            # 如果还没有任何分析结果，只要有 >= 2 帧就立即触发第一个窗口
-            first_window_fast = (len(processed_windows) == 0)
+            # ========== 在线模式：第一个窗口特殊化，尽早出结果 ==========
+            # 离线模式：正常等满帧再处理，保证准确率
+            first_window_fast = is_live and (len(processed_windows) == 0)
             
             for wid in all_window_ids:
                 if wid in processed_windows:
@@ -2301,11 +2304,11 @@ async def glm_summarization_task(
                 has_skip_gap = (wid + 2) in window_frames  # 是否已被跳过（下下个窗口已开始）
                 is_latest_window = (wid == max_window_id)
                 
-                # 【特殊】第一个窗口快速触发：有 2 帧就立即处理，让用户尽快看到结果
+                # 【在线模式特殊】第一个窗口快速触发：有 2 帧就立即处理
                 if first_window_fast and frame_count >= 2:
-                    logger.info(f"[GLM Task] Fast-track first window {wid} with {frame_count} frames (early result)")
+                    logger.info(f"[GLM Task] 🚀 Live mode fast-track: window {wid} with {frame_count} frames")
                     new_windows.append(wid)
-                    first_window_fast = False  # 只对第一个窗口生效
+                    first_window_fast = False
                     continue
                 
                 # 条件1：帧数已满（所有图像都被R1处理）→ 立即可以处理
@@ -2519,12 +2522,20 @@ async def glm_summarization_task(
                             history_context = await history_manager.build_history_context()
                             
                             # 调用 VLM 分析
+                            # 在线模式：限制图片数量(最多3张)、减少 max_tokens 加速响应
+                            # 离线模式：发送所有图片、更多 tokens 保证准确率
+                            window_images = window_data.get("images")
+                            if is_live and window_images and len(window_images) > 3:
+                                # 在线模式：均匀采样最多3张图片
+                                step = len(window_images) / 3
+                                window_images = [window_images[int(i * step)] for i in range(3)]
+                            
                             result = await vlm_client.integrate_analysis_results(
                                 frame_analyses=window_data.get("frame_analyses", []),
-                                images=window_data.get("images"),
+                                images=window_images,
                                 history_context=history_context,
-                                temperature=0.9,
-                                max_tokens=1500
+                                temperature=0.7 if is_live else 0.9,
+                                max_tokens=800 if is_live else 1500
                             )
                             
                             if result.get("success"):

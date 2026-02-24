@@ -692,7 +692,8 @@ const startAnalysis = async () => {
     const response = await axios.post('/api/analysis/start-glm-summarization', {
       session_id: currentSession.value.session_id,
       use_chinese: true,  // Use Chinese for summaries
-      use_glm_multimodal: true  // Multimodal mode: send images to GLM for verification
+      use_glm_multimodal: true,  // Multimodal mode: send images to GLM for verification
+      is_live: mode.value === 'stream'  // 在线模式：速度优先；离线模式：准确率优先
     }, {
       signal: getSessionSignal()
     })
