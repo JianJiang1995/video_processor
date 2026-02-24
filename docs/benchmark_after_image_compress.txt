@@ -1,0 +1,206 @@
+INFO:backend.services.gemini_client:[GeminiClient] Initialized with model: gemini-3.1-pro-preview, thinking_level: none
+
+======================================================================
+  Gemini Summary Quality Comparison (with real R1 results)
+======================================================================
+
+  --- interval_1s (15 frames) ---
+  Getting SurgR1 results for 15 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (15 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 10 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+ERROR:backend.services.gemini_client:[GeminiClient] Timestamped analysis failed after 4 attempts: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1032)
+FAILED: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.
+
+  --- interval_2s (8 frames) ---
+  Getting SurgR1 results for 8 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (8 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 8 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 61746ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 8 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 52856ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+61.75s
+
+  Summary output:
+  ------------------------------------------------------------
+  
+  ------------------------------------------------------------
+
+  --- interval_3s (5 frames) ---
+  Getting SurgR1 results for 5 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (5 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 5 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 49083ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 5 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 74702ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+49.08s
+
+  Summary output:
+  ------------------------------------------------------------
+  
+  ------------------------------------------------------------
+
+  --- interval_5s (3 frames) ---
+  Getting SurgR1 results for 3 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (3 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 3 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 97948ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 3 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 23856ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+97.95s
+
+  Summary output:
+  ------------------------------------------------------------
+  
+  ------------------------------------------------------------
+
+======================================================================
+  Pipeline Simulation: End-to-End Latency
+======================================================================
+
+  === Baseline ===
+  sample_interval=1.0s, batch_timeout=6.0s, min_batch=3, target_batch=8
+  Frames per window: 15
+    Batch of 7 frames (waited 6.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 4.13s
+    Batch of 7 frames (waited 6.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 4.39s
+    Running Gemini summarization with 14 R1 results + 15 images... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 10 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 50864ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+Gemini: 50.87s
+
+    Summary: 
+
+    --- Timing Summary ---
+    Window duration:     15.0s
+    Total R1 time:       8.53s (overhead: 0.00s)
+    Gemini time:         50.87s
+    Total latency:       65.87s (= window + R1 overhead + Gemini)
+    Latency ratio:       4.39x window duration
+    Summary length:      0 chars
+
+  === Config A ===
+  sample_interval=2.0s, batch_timeout=3.0s, min_batch=2, target_batch=4
+  Frames per window: 7
+    Batch of 3 frames (waited 4.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 3.50s
+    Batch of 3 frames (waited 4.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 3.80s
+    Running Gemini summarization with 6 R1 results + 7 images... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 7 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+ERROR:backend.services.gemini_client:[GeminiClient] Timestamped analysis failed after 4 attempts: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1032)
+FAILED: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.
+
+    --- Timing Summary ---
+    Window duration:     15.0s
+    Total R1 time:       7.30s (overhead: 0.00s)
+    Gemini time:         0.59s
+    Total latency:       15.59s (= window + R1 overhead + Gemini)
+    Latency ratio:       1.04x window duration
+    Summary length:      0 chars
+
+  === Config B ===
+  sample_interval=3.0s, batch_timeout=3.0s, min_batch=2, target_batch=3
+  Frames per window: 5
+    Batch of 2 frames (waited 3.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 3.27s
+    Batch of 2 frames (waited 3.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 3.12s
+    Running Gemini summarization with 4 R1 results + 5 images... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 5 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 46247ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+Gemini: 46.25s
+
+    Summary: 
+
+    --- Timing Summary ---
+    Window duration:     15.0s
+    Total R1 time:       6.39s (overhead: 0.00s)
+    Gemini time:         46.25s
+    Total latency:       61.25s (= window + R1 overhead + Gemini)
+    Latency ratio:       4.08x window duration
+    Summary length:      0 chars
+
+  === Config C ===
+  sample_interval=2.0s, batch_timeout=4.0s, min_batch=3, target_batch=5
+  Frames per window: 7
+    Batch of 3 frames (waited 4.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 3.60s
+    Batch of 3 frames (waited 4.0s)... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+R1: 3.80s
+    Running Gemini summarization with 6 R1 results + 7 images... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 7 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis completed in 53756ms, finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+Gemini: 53.76s
+
+    Summary: 
+
+    --- Timing Summary ---
+    Window duration:     15.0s
+    Total R1 time:       7.40s (overhead: 0.00s)
+    Gemini time:         53.76s
+    Total latency:       68.76s (= window + R1 overhead + Gemini)
+    Latency ratio:       4.58x window duration
+    Summary length:      0 chars
+
+======================================================================
+  Benchmark Complete!
+======================================================================

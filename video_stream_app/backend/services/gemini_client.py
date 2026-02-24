@@ -383,8 +383,23 @@ class GeminiClient:
             logger.warning(f"[GeminiClient] Health check failed: {e}")
             return False
     
+    # 图片压缩配置（用于发送给 Gemini API，减少网络传输时间）
+    GEMINI_IMAGE_MAX_WIDTH = 640    # 最大宽度（像素），保持比例缩放
+    GEMINI_IMAGE_JPEG_QUALITY = 60  # JPEG 压缩质量（60 足够 Gemini 分析）
+    
+    def _resize_for_gemini(self, image: Image.Image) -> Image.Image:
+        """将图片缩放到适合 Gemini API 的尺寸，减少传输数据量"""
+        w, h = image.size
+        if w > self.GEMINI_IMAGE_MAX_WIDTH:
+            ratio = self.GEMINI_IMAGE_MAX_WIDTH / w
+            new_w = self.GEMINI_IMAGE_MAX_WIDTH
+            new_h = int(h * ratio)
+            image = image.resize((new_w, new_h), Image.LANCZOS)
+            logger.debug(f"[GeminiClient] Resized image: {w}x{h} -> {new_w}x{new_h}")
+        return image
+    
     def _image_to_base64(self, image: Union[str, Image.Image, bytes, Path]) -> bytes:
-        """Convert image to bytes for Gemini API"""
+        """Convert image to bytes for Gemini API (with compression/resize)"""
         if isinstance(image, str):
             if image.startswith("data:image"):
                 # Extract base64 from data URL
@@ -395,19 +410,33 @@ class GeminiClient:
         
         if isinstance(image, Path):
             if image.exists():
-                with open(image, "rb") as f:
-                    return f.read()
+                # 读取文件后也做 resize 压缩
+                pil_img = Image.open(image)
+                if pil_img.mode == 'RGBA':
+                    pil_img = pil_img.convert('RGB')
+                pil_img = self._resize_for_gemini(pil_img)
+                buffer = BytesIO()
+                pil_img.save(buffer, format="JPEG", quality=self.GEMINI_IMAGE_JPEG_QUALITY)
+                return buffer.getvalue()
             else:
                 raise ValueError(f"Image file not found: {image}")
         
         if isinstance(image, bytes):
-            return image
+            # 对 raw bytes 也做压缩处理
+            pil_img = Image.open(BytesIO(image))
+            if pil_img.mode == 'RGBA':
+                pil_img = pil_img.convert('RGB')
+            pil_img = self._resize_for_gemini(pil_img)
+            buffer = BytesIO()
+            pil_img.save(buffer, format="JPEG", quality=self.GEMINI_IMAGE_JPEG_QUALITY)
+            return buffer.getvalue()
         
         if isinstance(image, Image.Image):
             if image.mode == 'RGBA':
                 image = image.convert('RGB')
+            image = self._resize_for_gemini(image)
             buffer = BytesIO()
-            image.save(buffer, format="JPEG", quality=85)
+            image.save(buffer, format="JPEG", quality=self.GEMINI_IMAGE_JPEG_QUALITY)
             return buffer.getvalue()
         
         raise ValueError(f"Unsupported image type: {type(image)}")
