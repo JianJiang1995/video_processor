@@ -672,29 +672,38 @@ class GeminiClient:
         
         for attempt in range(max_retries):
             try:
-                # 调用 API
-                response = self._client.models.generate_content(
-                    model=self.model_name,
-                    contents=contents,
-                    config=config
-                )
+                # 使用 streaming 模式调用 API（在线程中消费 sync iterator）
+                def _stream_collect():
+                    """在线程中消费 sync streaming iterator"""
+                    chunks = []
+                    _first_token_time = None
+                    _finish_reason = None
+                    for chunk in self._client.models.generate_content_stream(
+                        model=self.model_name,
+                        contents=contents,
+                        config=config
+                    ):
+                        if _first_token_time is None:
+                            _first_token_time = time.time()
+                        if chunk.text:
+                            chunks.append(chunk.text)
+                        if hasattr(chunk, 'candidates') and chunk.candidates:
+                            candidate = chunk.candidates[0]
+                            if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                                _finish_reason = str(candidate.finish_reason)
+                    return "".join(chunks), _first_token_time, _finish_reason
                 
-                text = response.text if response.text else ""
+                text, first_token_time, finish_reason = await asyncio.to_thread(_stream_collect)
                 duration_ms = (time.time() - start_time) * 1000
+                first_token_ms = (first_token_time - start_time) * 1000 if first_token_time else duration_ms
                 
-                # 检查 finish_reason 以诊断截断问题
-                finish_reason = None
-                if hasattr(response, 'candidates') and response.candidates:
-                    candidate = response.candidates[0]
-                    if hasattr(candidate, 'finish_reason'):
-                        finish_reason = str(candidate.finish_reason)
-                        if 'MAX_TOKENS' in finish_reason.upper() or 'LENGTH' in finish_reason.upper():
-                            logger.warning(f"[GeminiClient] Output may be truncated! finish_reason={finish_reason}, output_len={len(text)}")
+                if finish_reason and ('MAX_TOKENS' in finish_reason.upper() or 'LENGTH' in finish_reason.upper()):
+                    logger.warning(f"[GeminiClient] Output may be truncated! finish_reason={finish_reason}, output_len={len(text)}")
                 
                 if attempt > 0:
-                    logger.info(f"[GeminiClient] Multi-image analysis succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms, {len(limited_images)} images, finish_reason={finish_reason}")
+                    logger.info(f"[GeminiClient] Multi-image analysis (stream) succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms (first_token: {first_token_ms:.0f}ms), {len(limited_images)} images, finish_reason={finish_reason}")
                 else:
-                    logger.info(f"[GeminiClient] Multi-image analysis completed in {duration_ms:.0f}ms, {len(limited_images)} images, finish_reason={finish_reason}")
+                    logger.info(f"[GeminiClient] Multi-image analysis (stream) completed in {duration_ms:.0f}ms (first_token: {first_token_ms:.0f}ms), {len(limited_images)} images, finish_reason={finish_reason}")
                 
                 return {
                     "success": True,
@@ -702,6 +711,7 @@ class GeminiClient:
                     "model": self.model_name,
                     "image_count": len(limited_images),
                     "duration_ms": duration_ms,
+                    "first_token_ms": first_token_ms,
                     "retry_attempts": attempt,
                     "finish_reason": finish_reason
                 }
@@ -745,7 +755,7 @@ class GeminiClient:
         max_tokens: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        分析带时间戳标注的多张图片
+        分析带时间戳标注的多张图片（使用 streaming 模式减少首 token 延迟）
         支持 503 错误自动重试
         """
         if not self._client:
@@ -790,34 +800,43 @@ class GeminiClient:
             config.temperature = temperature
         
         # 重试逻辑
-        max_retries = self.retry_count + 1  # retry_count=2 表示最多重试2次，共3次尝试
+        max_retries = self.retry_count + 1
         last_error = None
         
         for attempt in range(max_retries):
             try:
-                # 调用 API
-                response = self._client.models.generate_content(
-                    model=self.model_name,
-                    contents=contents,
-                    config=config
-                )
+                # 使用 streaming 模式调用 API（在线程中消费 sync iterator）
+                def _stream_collect_ts():
+                    """在线程中消费 sync streaming iterator"""
+                    chunks = []
+                    _first_token_time = None
+                    _finish_reason = None
+                    for chunk in self._client.models.generate_content_stream(
+                        model=self.model_name,
+                        contents=contents,
+                        config=config
+                    ):
+                        if _first_token_time is None:
+                            _first_token_time = time.time()
+                        if chunk.text:
+                            chunks.append(chunk.text)
+                        if hasattr(chunk, 'candidates') and chunk.candidates:
+                            candidate = chunk.candidates[0]
+                            if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                                _finish_reason = str(candidate.finish_reason)
+                    return "".join(chunks), _first_token_time, _finish_reason
                 
-                text = response.text if response.text else ""
+                text, first_token_time, finish_reason = await asyncio.to_thread(_stream_collect_ts)
                 duration_ms = (time.time() - start_time) * 1000
+                first_token_ms = (first_token_time - start_time) * 1000 if first_token_time else duration_ms
                 
-                # 检查 finish_reason 以诊断截断问题
-                finish_reason = None
-                if hasattr(response, 'candidates') and response.candidates:
-                    candidate = response.candidates[0]
-                    if hasattr(candidate, 'finish_reason'):
-                        finish_reason = str(candidate.finish_reason)
-                        if 'MAX_TOKENS' in finish_reason.upper() or 'LENGTH' in finish_reason.upper():
-                            logger.warning(f"[GeminiClient] Output may be truncated! finish_reason={finish_reason}, output_len={len(text)}")
+                if finish_reason and ('MAX_TOKENS' in finish_reason.upper() or 'LENGTH' in finish_reason.upper()):
+                    logger.warning(f"[GeminiClient] Output may be truncated! finish_reason={finish_reason}, output_len={len(text)}")
                 
                 if attempt > 0:
-                    logger.info(f"[GeminiClient] Timestamped analysis succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms, finish_reason={finish_reason}")
+                    logger.info(f"[GeminiClient] Timestamped analysis (stream) succeeded after {attempt + 1} attempts, {duration_ms:.0f}ms (first_token: {first_token_ms:.0f}ms), finish_reason={finish_reason}")
                 else:
-                    logger.info(f"[GeminiClient] Timestamped analysis completed in {duration_ms:.0f}ms, finish_reason={finish_reason}")
+                    logger.info(f"[GeminiClient] Timestamped analysis (stream) completed in {duration_ms:.0f}ms (first_token: {first_token_ms:.0f}ms), finish_reason={finish_reason}")
                 
                 return {
                     "success": True,
@@ -825,6 +844,7 @@ class GeminiClient:
                     "model": self.model_name,
                     "image_count": len(images),
                     "duration_ms": duration_ms,
+                    "first_token_ms": first_token_ms,
                     "retry_attempts": attempt,
                     "finish_reason": finish_reason
                 }
@@ -840,18 +860,16 @@ class GeminiClient:
                 ])
                 
                 if is_retryable and attempt < max_retries - 1:
-                    # 指数退避：0.5s, 1s, 2s...
                     wait_time = self.retry_delay * (2 ** attempt)
                     logger.warning(f"[GeminiClient] Retryable error (attempt {attempt + 1}/{max_retries}): {e}. Waiting {wait_time:.1f}s...")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
-                    # 不可重试或已达最大重试次数
                     break
         
         # 所有重试都失败
         duration_ms = (time.time() - start_time) * 1000
-        logger.error(f"[GeminiClient] Timestamped analysis failed after {max_retries} attempts: {last_error}")
+        logger.error(f"[GeminiClient] Timestamped analysis (stream) failed after {max_retries} attempts: {last_error}")
         return {
             "success": False,
             "text": f"[Error: {str(last_error)}]",
