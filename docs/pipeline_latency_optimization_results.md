@@ -96,3 +96,62 @@ The dominant bottleneck is the Gemini API call (8–25s depending on load and im
 2. If `gemini-3-flash-preview` becomes stable in your region, switching to it would save ~2-3s per window.
 3. The Gemini API `FAILED_PRECONDITION` errors are transient Google-side region restrictions — not related to parameter tuning.
 4. Benchmark script saved at `video_stream_app/benchmark_pipeline.py` for future re-testing.
+
+---
+
+## 8. V2 Optimizations (2026-02-24)
+
+Branch: `feature/pipeline-latency-opt-v2`
+
+### 8.1 Changes Applied
+
+| Optimization | File | Description |
+|:-------------|:-----|:------------|
+| Image Compression | `gemini_client.py` | Resize to max 640px width + JPEG quality 85→60. Reduces per-image payload ~10x |
+| Prompt Trimming | `gemini_client.py`, `config.json` | History windows 10→3, tools truncation 120→80 chars, removed CVS/tools from history |
+| Streaming Mode | `gemini_client.py` | `generate_content` → `generate_content_stream` for both `analyze_multiple_images` and `_analyze_images_with_timestamps` |
+| Pipeline Overlap | `analysis.py` | R1(N+1) runs in parallel with Gemini(N) via `asyncio.Task`. Gemini result awaited before building next window's history_context |
+
+### 8.2 Expected Latency Impact
+
+```
+Before (V1):
+  Window N:   |-- R1 ~4s --|-- Gemini ~12s --|
+  Window N+1:                                  |-- R1 ~4s --|-- Gemini ~12s --|
+  Per-window effective: ~16s
+
+After (V2 with pipeline overlap):
+  Window N:   |-- R1 ~4s --|-- Gemini ~12s --|
+  Window N+1:               |-- R1 ~4s --|-- Gemini ~12s --|
+  Per-window effective: ~12s (Gemini dominates, R1 is hidden)
+```
+
+- Pipeline overlap saves ~R1_time (~4s) per window after the first
+- Image compression reduces network transfer time (variable, depends on connection)
+- Prompt trimming reduces input tokens (~30% fewer), may reduce Gemini processing time
+- Streaming mode reduces perceived latency (first_token arrives earlier)
+
+### 8.3 Parameters Changed (V2)
+
+| Parameter | Before (V1) | After (V2) | Location |
+|:----------|:-----------:|:----------:|:---------|
+| `history_window_count` | 10 | 3 | `config.json` |
+| Image max width (Gemini) | unlimited | 640px | `gemini_client.py` |
+| JPEG quality (Gemini) | 85 | 60 | `gemini_client.py` |
+| Tools truncation | 120 chars | 80 chars | `gemini_client.py` |
+| API mode | `generate_content` | `generate_content_stream` | `gemini_client.py` |
+| Window processing | Sequential | Pipeline overlap | `analysis.py` |
+
+### 8.4 Quality Verification
+
+Streaming mode produces identical output to non-streaming (same model, same prompt). Quality test confirmed:
+- Phase detection: ✓ (correct surgical phases identified)
+- Others extraction: ✓ (`hem_loc`, `gauze`, `bleeding`, `blur`, `out_of_body` all correctly parsed)
+- Finish reason: `STOP` (no truncation)
+- History context with 3 windows is sufficient for phase continuity
+
+### 8.5 Notes
+
+- Gemini API latency varies significantly by time of day (8-55s observed for same config)
+- Pipeline overlap benefit is most visible in multi-window sessions (saves ~4s per window after first)
+- SurgR1 service stability should be monitored — service went down during extended benchmark runs

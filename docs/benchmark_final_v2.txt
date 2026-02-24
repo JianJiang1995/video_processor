@@ -1,0 +1,212 @@
+INFO:backend.services.gemini_client:[GeminiClient] Initialized with model: gemini-3.1-pro-preview, thinking_level: none
+
+======================================================================
+  Gemini Summary Quality Comparison (with real R1 results)
+======================================================================
+
+  --- interval_1s (15 frames) ---
+  Getting SurgR1 results for 15 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (15 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 10 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 55374ms (first_token: 54096ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 10 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 41176ms (first_token: 40144ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+55.38s
+
+  Summary output:
+  ------------------------------------------------------------
+  
+  ------------------------------------------------------------
+
+  --- interval_2s (8 frames) ---
+  Getting SurgR1 results for 8 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (8 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 8 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 80337ms (first_token: 79456ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 8 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 36789ms (first_token: 35950ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+80.34s
+
+  Summary output:
+  ------------------------------------------------------------
+  
+  ------------------------------------------------------------
+
+  --- interval_3s (5 frames) ---
+  Getting SurgR1 results for 5 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (5 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 5 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 89256ms (first_token: 88446ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 5 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 57536ms (first_token: 56828ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+89.26s
+
+  Summary output:
+  ------------------------------------------------------------
+  
+  ------------------------------------------------------------
+
+  --- interval_5s (3 frames) ---
+  Getting SurgR1 results for 3 frames... INFO:httpx:HTTP Request: POST http://localhost:9003/analyze "HTTP/1.1 200 OK"
+OK (3 results)
+  Running Gemini summarization... INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 3 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 52143ms (first_token: 51169ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+INFO:backend.services.gemini_client:[GeminiClient] Loaded background knowledge (11958 chars)
+INFO:backend.services.gemini_client:[GeminiClient] Loaded system prompt (2212 chars)
+INFO:backend.services.gemini_client:[GeminiClient] integrate_analysis_results: NO history_context provided
+INFO:backend.services.gemini_client:[GeminiClient] Using multimodal analysis with 3 images
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+INFO:backend.services.gemini_client:[GeminiClient] Timestamped analysis (stream) completed in 66900ms (first_token: 66073ms), finish_reason=FinishReason.STOP
+INFO:backend.services.gemini_client:[GeminiClient] Extracted others: {'hem_loc': 0, 'gauze': False, 'bleeding': False, 'blur': False, 'out_of_body': False}
+52.14s
+
+  Summary output:
+  ------------------------------------------------------------
+  
+  ------------------------------------------------------------
+
+======================================================================
+  Pipeline Simulation: End-to-End Latency
+======================================================================
+
+  === Baseline ===
+  sample_interval=1.0s, batch_timeout=6.0s, min_batch=3, target_batch=8
+  Frames per window: 15
+    Batch of 7 frames (waited 6.0s)... Traceback (most recent call last):
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_transports/default.py", line 394, in handle_async_request
+    resp = await self._pool.handle_async_request(req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_async/connection_pool.py", line 256, in handle_async_request
+    raise exc from None
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_async/connection_pool.py", line 236, in handle_async_request
+    response = await connection.handle_async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        pool_request.request
+        ^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_async/connection.py", line 101, in handle_async_request
+    raise exc
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_async/connection.py", line 78, in handle_async_request
+    stream = await self._connect(request)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_async/connection.py", line 124, in _connect
+    stream = await self._network_backend.connect_tcp(**kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_backends/auto.py", line 31, in connect_tcp
+    return await self._backend.connect_tcp(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_backends/anyio.py", line 113, in connect_tcp
+    with map_exceptions(exc_map):
+         ~~~~~~~~~~~~~~^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: All connection attempts failed
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/data2/jj/proj/video_processor/video_stream_app/benchmark_pipeline.py", line 531, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/data2/jj/proj/video_processor/video_stream_app/benchmark_pipeline.py", line 523, in main
+    await simulate_pipeline()
+  File "/data2/jj/proj/video_processor/video_stream_app/benchmark_pipeline.py", line 423, in simulate_pipeline
+    resp = await client.post(f"{SURGR1_URL}/analyze", json={"image_paths": paths})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_client.py", line 1859, in post
+    return await self.request(
+           ^^^^^^^^^^^^^^^^^^^
+    ...<13 lines>...
+    )
+    ^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_client.py", line 1540, in request
+    return await self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_client.py", line 1629, in send
+    response = await self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_client.py", line 1657, in _send_handling_auth
+    response = await self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_client.py", line 1694, in _send_handling_redirects
+    response = await self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_client.py", line 1730, in _send_single_request
+    response = await transport.handle_async_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_transports/default.py", line 393, in handle_async_request
+    with map_httpcore_exceptions():
+         ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/data2/jj/miniconda3/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/data2/jj/miniconda3/lib/python3.13/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ConnectError: All connection attempts failed
