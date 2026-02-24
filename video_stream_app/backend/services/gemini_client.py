@@ -294,15 +294,15 @@ class WindowHistoryManager:
         if not history:
             return ""
         
+        # 只发送最近 3 个窗口的上下文（减少 prompt token 数）
+        recent_history = history[-3:]
+        
         context_lines = ["## 之前窗口分析历史（按时间顺序）\n"]
         
-        for ws in history:
+        for ws in recent_history:
             phase_cn = self.get_phase_cn_name(ws.dominant_phase)
             context_lines.append(f"### 窗口 {ws.window_id}（{ws.start_time:.1f}s - {ws.end_time:.1f}s）")
             context_lines.append(f"- 阶段：{phase_cn}")
-            context_lines.append(f"- CVS状态：{ws.cvs_status}")
-            if ws.tools:
-                context_lines.append(f"- 工具：{', '.join(ws.tools[:5])}")
             context_lines.append(f"- 摘要：{ws.summary}")
             context_lines.append("")
         
@@ -922,8 +922,8 @@ class GeminiClient:
             phase = analysis.get('phase', '') or ''
             action = analysis.get('action', '') or ''
             tools = analysis.get('tools', '') or ''
-            if len(tools) > 120:
-                tools = tools[:120] + "..."
+            if len(tools) > 80:
+                tools = tools[:80] + "..."
             context += f"[{phase}] {action} | {tools}\n"
         
         return context

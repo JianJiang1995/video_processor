@@ -2,10 +2,10 @@
     "description": "Video Stream Analyzer Configuration",
     "window_analysis": {
         "provider": "gemini",
-        "history_window_count": 10,
+        "history_window_count": 3,
         "max_output_chars": 300,
         "min_frames_ratio": 0.2,
-        "comment": "provider: VLM提供商; history_window_count: 上下文窗口数; max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.2=20%，适应实时流处理延迟)"
+        "comment": "provider: VLM提供商; history_window_count: 上下文窗口数(3=只保留最近3个窗口减少prompt长度); max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.2=20%，适应实时流处理延迟)"
     },
     "chat_assistant": {
         "provider": "gemini",
