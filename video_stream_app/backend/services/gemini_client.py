@@ -1223,7 +1223,9 @@ class GeminiClient:
         
         # 后处理：提取叙事内容和 [others] 数据
         raw_text = result.get("text", "")
+        logger.info(f"[GeminiClient] integrate raw_text length={len(raw_text)}, first 100 chars: {raw_text[:100]}")
         cleaned_text, others_data = self._extract_narrative_output(raw_text)
+        logger.info(f"[GeminiClient] integrate cleaned_text length={len(cleaned_text)}")
         
         return {
             "success": result.get("success", False),

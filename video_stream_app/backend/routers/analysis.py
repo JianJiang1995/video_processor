@@ -2477,43 +2477,72 @@ async def glm_summarization_task(
                     "images_loaded": len(window_images) if window_images else 0
                 }
             
-            # ========== 2. 并发处理所有窗口 ==========
+            # ========== 2. 逐个处理窗口（每完成一个立即保存到 DB，前端可实时看到） ==========
             if windows_to_process:
                 try:
                     import time as time_module
                     batch_start = time_module.time()
                     
-                    logger.info(f"[GLM Task] Calling GLM client for {len(windows_to_process)} windows")
+                    logger.info(f"[GLM Task] Processing {len(windows_to_process)} windows sequentially (save-as-you-go)")
                     logger.info(f"[GLM Task] Window IDs: {[w['window_id'] for w in windows_to_process]}")
                     
-                    # 使用 VLM 顺序摘要（传递session_id以保持阶段连续性）
-                    glm_results = await vlm_client.summarize_windows_concurrent(
-                        windows=windows_to_process,
-                        max_concurrent=glm_max_concurrent,
-                        session_id=session_id  # 传递session_id以获取历史上下文
-                    )
+                    # 获取或创建历史上下文管理器
+                    from ..services.vlm_factory import get_history_manager
+                    from ..services.glm_client import WindowSummary
+                    history_manager = get_history_manager(session_id)
                     
-                    logger.info(f"[GLM Task] GLM client returned {len(glm_results)} results")
+                    sorted_windows = sorted(windows_to_process, key=lambda w: w.get("window_id", 0))
                     
-                    batch_elapsed = time_module.time() - batch_start
-                    
-                    # 保存结果到数据库
-                    for result in glm_results:
-                        window_id = result.get("window_id")
+                    for window_data in sorted_windows:
+                        # Check cancellation
+                        if analysis_cancellation_flags.get(session_id, False):
+                            logger.info(f"[GLM Task] Cancelled during window processing")
+                            break
+                        
+                        window_id = window_data["window_id"]
                         meta = window_metadata.get(window_id, {})
-                        
-                        if result.get("success"):
-                            summary_text = result.get("summary", "")
-                        else:
-                            summary_text = f"[分析出错: {result.get('error', '未知错误')}]"
-                        
-                        # Extract dominant phase from temporal analysis
-                        cleaned_data = meta.get("consistency", {}).get("cleaned_data", {})
-                        dominant_phase = cleaned_data.get("phase", "Unknown")
-                        tools_detected = cleaned_data.get("tools", [])
                         frame_analyses = meta.get("frame_analyses", [])
                         
-                        # Save summary to database
+                        try:
+                            # 构建历史上下文
+                            history_context = await history_manager.build_history_context()
+                            
+                            # 调用 VLM 分析
+                            result = await vlm_client.integrate_analysis_results(
+                                frame_analyses=window_data.get("frame_analyses", []),
+                                images=window_data.get("images"),
+                                history_context=history_context,
+                                temperature=0.9,
+                                max_tokens=1500
+                            )
+                            
+                            if result.get("success"):
+                                summary_text = result.get("summary", "")
+                                others_data = result.get("others")
+                                dominant_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
+                                
+                                # 添加到历史管理器
+                                await history_manager.add_summary(WindowSummary(
+                                    window_id=window_id,
+                                    start_time=meta.get("start_time", 0),
+                                    end_time=meta.get("end_time", 0),
+                                    summary=summary_text[:200],
+                                    dominant_phase=dominant_phase,
+                                    tools=[],
+                                    cvs_status=""
+                                ))
+                            else:
+                                summary_text = f"[分析出错: {result.get('error', '未知错误')}]"
+                                others_data = None
+                                dominant_phase = "Unknown"
+                            
+                        except Exception as inner_e:
+                            logger.error(f"[GLM Task] Window {window_id} failed: {inner_e}")
+                            summary_text = f"[分析出错: {str(inner_e)}]"
+                            others_data = None
+                            dominant_phase = "Unknown"
+                        
+                        # 立即保存到 DB（前端轮询就能看到）
                         create_window_summary(
                             db=db,
                             session_id=db_session_id,
@@ -2522,11 +2551,12 @@ async def glm_summarization_task(
                             end_time=meta.get("end_time", 0),
                             summary_text=summary_text,
                             dominant_phase=dominant_phase,
-                            tools_detected=tools_detected,
-                            key_actions=[f.get("action", "")[:200] for f in frame_analyses[:3]]
+                            tools_detected=meta.get("consistency", {}).get("cleaned_data", {}).get("tools", []),
+                            key_actions=[f.get("action", "")[:200] for f in frame_analyses[:3]],
+                            others_data=others_data
                         )
                         
-                        # 记录 GLM 窗口总结到日志
+                        # 记录日志
                         analysis_log.log_glm_window(
                             window_id=window_id,
                             start_time=meta.get("start_time", 0),
@@ -2537,10 +2567,12 @@ async def glm_summarization_task(
                         )
                         
                         processed_windows.add(window_id)
+                        logger.info(f"[GLM Task] Window {window_id} saved to DB: {summary_text[:60]}...")
                     
+                    batch_elapsed = time_module.time() - batch_start
                     logger.info(
-                        f"[GLM Task] Batch completed: {len(glm_results)} windows in {batch_elapsed:.2f}s "
-                        f"({len(glm_results)/batch_elapsed:.1f} windows/s, concurrent={glm_max_concurrent})"
+                        f"[GLM Task] Batch completed: {len(sorted_windows)} windows in {batch_elapsed:.2f}s "
+                        f"({len(sorted_windows)/max(batch_elapsed, 0.01):.1f} windows/s)"
                     )
                     
                 except Exception as e:
