@@ -264,7 +264,7 @@ Warning signs:
 ## 输出格式（严格遵守，不得遗漏任何行）
 
 ```
-【阶段】xxx阶段
+【xxx】（不要写"阶段"二字，如【清洁凝血】【胆囊分离】）
 简洁操作描述（50-100字）
 [others]hem_loc=N,gauze=Y/N,bleeding=Y/N,blur=Y/N,out_of_body=Y/N
 ```
@@ -327,7 +327,7 @@ grasper=抓钳, hook=电钩, scissors=剪刀, clipper=钛夹钳, irrigator=冲�
 
 ## 示例输出
 
-【阶段】胆囊分离阶段
+【胆囊分离】
 电钩沿肝床剥离胆囊，抓钳向上牵拉维持张力。组织呈深褐色焦痂，解剖面清晰无渗血。
 [others]hem_loc=0,gauze=N,bleeding=N,blur=N,out_of_body=N
 [GLM_SYSTEM_PROMPT_END]

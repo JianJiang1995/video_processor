@@ -258,7 +258,11 @@ class WindowHistoryManager:
         
         for i, ws in enumerate(history, 1):
             phase_cn = self.get_phase_cn_name(ws.dominant_phase)
-            context_lines.append(f"### 窗口 {ws.window_id}（{ws.start_time:.1f}s - {ws.end_time:.1f}s）")
+            start_min = int(ws.start_time // 60)
+            start_sec = int(ws.start_time % 60)
+            end_min = int(ws.end_time // 60)
+            end_sec = int(ws.end_time % 60)
+            context_lines.append(f"### 窗口 {ws.window_id}（{start_min}:{start_sec:02d} - {end_min}:{end_sec:02d}）")
             context_lines.append(f"- 阶段：{phase_cn}")
             context_lines.append(f"- CVS状态：{ws.cvs_status}")
             if ws.tools:

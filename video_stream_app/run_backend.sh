@@ -35,6 +35,10 @@ conda activate vllm
 # Set environment variables (customize as needed)
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
+# Proxy for Gemini API access (via VPN/clash)
+export https_proxy=http://127.0.0.1:23279
+export http_proxy=http://127.0.0.1:23279
+
 # Run with uvicorn
 echo "=========================================="
 echo "  Video Stream Analyzer Backend"

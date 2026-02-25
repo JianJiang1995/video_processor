@@ -301,7 +301,11 @@ class WindowHistoryManager:
         
         for ws in recent_history:
             phase_cn = self.get_phase_cn_name(ws.dominant_phase)
-            context_lines.append(f"### 窗口 {ws.window_id}（{ws.start_time:.1f}s - {ws.end_time:.1f}s）")
+            start_min = int(ws.start_time // 60)
+            start_sec = int(ws.start_time % 60)
+            end_min = int(ws.end_time // 60)
+            end_sec = int(ws.end_time % 60)
+            context_lines.append(f"### 窗口 {ws.window_id}（{start_min}:{start_sec:02d} - {end_min}:{end_sec:02d}）")
             context_lines.append(f"- 阶段：{phase_cn}")
             context_lines.append(f"- 摘要：{ws.summary}")
             context_lines.append("")
@@ -1141,7 +1145,7 @@ class GeminiClient:
 6. 全中文输出：禁止出现任何英文，包括括号内的英文注释
 
 【输出格式】
-【阶段】xxx阶段
+【xxx】（不要写"阶段"二字，如【清洁凝血】【胆囊分离】）
 简洁操作描述（{max_chars}字以内）
 [others]hem_loc=N,gauze=Y/N,bleeding=Y/N,blur=Y/N,out_of_body=Y/N
 

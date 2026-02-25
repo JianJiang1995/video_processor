@@ -197,7 +197,9 @@ class SummaryCompressor:
             summary = w.get("glm_summary", "")
             phase = w.get("surgical_phase", "")
             
-            part = f"### 窗口 {window_id} ({time_start:.1f}s - {time_end:.1f}s)"
+            s_min, s_sec = divmod(int(time_start), 60)
+            e_min, e_sec = divmod(int(time_end), 60)
+            part = f"### 窗口 {window_id} ({s_min}:{s_sec:02d} - {e_min}:{e_sec:02d})"
             if phase:
                 part += f"\n阶段: {phase}"
             if summary:
@@ -246,7 +248,9 @@ class SummaryCompressor:
         for w in uncompressed_windows:
             time_range = ""
             if w.get("window_start") is not None and w.get("window_end") is not None:
-                time_range = f" ({w['window_start']:.1f}s - {w['window_end']:.1f}s)"
+                s_min, s_sec = divmod(int(w['window_start']), 60)
+                e_min, e_sec = divmod(int(w['window_end']), 60)
+                time_range = f" ({s_min}:{s_sec:02d} - {e_min}:{e_sec:02d})"
             
             recent_parts.append(f"### 窗口 {w['window_id']}{time_range}")
             if w.get("surgical_phase"):

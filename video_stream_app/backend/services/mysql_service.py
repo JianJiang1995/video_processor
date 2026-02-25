@@ -839,7 +839,9 @@ class MySQLService:
         for i, s in enumerate(summaries):
             time_range = ""
             if s.get("time_start") is not None and s.get("time_end") is not None:
-                time_range = f" ({s['time_start']:.1f}s - {s['time_end']:.1f}s)"
+                s_min, s_sec = divmod(int(s['time_start']), 60)
+                e_min, e_sec = divmod(int(s['time_end']), 60)
+                time_range = f" ({s_min}:{s_sec:02d} - {e_min}:{e_sec:02d})"
             
             context_parts.append(f"### 阶段 {i+1}{time_range}")
             context_parts.append(s["compressed_text"])
