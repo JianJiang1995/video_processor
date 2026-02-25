@@ -310,6 +310,16 @@ const handleResumeSession = (session) => {
 }
 
 const handleStreamConnect = ({ session, autoAnalyze }) => {
+  // Clear previous session data first
+  summaries.value = []
+  highlightedWindowId.value = -1
+  userSelectedWindow.value = false
+  loopWindow.value = null
+  surgr1ProcessingStatus.value = { running: false, framesAnalyzed: 0 }
+  isProcessing.value = false
+  streamEnded.value = false
+  streamWasActive.value = false
+  
   currentSession.value = session
   duration.value = 0  // Live stream has no fixed duration
   currentView.value = 'main'
@@ -682,6 +692,12 @@ const startAnalysis = async () => {
   // Check if GLM is available
   if (!glmStatus.value.available) {
     alert('GLM 服务不可用，请确保 GLM 服务已启动')
+    return
+  }
+  
+  // Check if SurgR1 is available
+  if (!surgr1Status.value.available) {
+    alert('SurgR1 服务不可用，请先启动 R1 服务')
     return
   }
   
