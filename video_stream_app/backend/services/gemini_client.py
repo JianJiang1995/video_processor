@@ -450,9 +450,9 @@ class GeminiClient:
         # gemini-3-flash-preview 不支持 thinking_level=NONE，
         # 但可以通过 thinking_budget=256 有效禁用 thinking（tokens=0）
         if self.thinking_level == "none":
-            # 对于强制 thinking 的模型，用 budget 限制来禁用
+            # 对于强制 thinking 的模型，thinking_budget=0 完全禁用 thinking
             try:
-                return types.ThinkingConfig(thinking_budget=256)
+                return types.ThinkingConfig(thinking_budget=0)
             except Exception:
                 return None
         
