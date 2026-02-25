@@ -155,3 +155,92 @@ Streaming mode produces identical output to non-streaming (same model, same prom
 - Gemini API latency varies significantly by time of day (8-55s observed for same config)
 - Pipeline overlap benefit is most visible in multi-window sessions (saves ~4s per window after first)
 - SurgR1 service stability should be monitored — service went down during extended benchmark runs
+
+---
+
+## 9. V2 优化总结（2026-02-25）
+
+> VPN 代理已启用（新加坡节点），模型切换至 `gemini-3-flash-preview`
+
+### 9.1 模型切换
+
+| 项目 | 优化前 | 优化后 |
+|:-----|:------:|:------:|
+| 模型 | gemini-3.1-pro-preview | gemini-3-flash-preview |
+| 单窗口 Gemini 延迟 | 35-60s | 3-8s |
+| Thinking tokens | ~450（自动启用，吃掉输出 budget） | 0（thinking_budget=0 禁用） |
+| 输出截断 | 频繁（MAX_TOKENS，仅 35-40 字符） | 无（STOP 正常结束） |
+
+- `gemini-3-flash-preview` 强制启用 thinking，`thinking_level=NONE` 无效
+- 解决方案：`ThinkingConfig(thinking_budget=0)` 完全禁用 thinking tokens
+- 需要 VPN 代理访问 Google API（`https_proxy` 在 `run_backend.sh` 中配置）
+
+### 9.2 在线/离线双模式
+
+根据视频源类型自动切换：
+
+| 特性 | 在线模式（实时流） | 离线模式（本地视频） |
+|:-----|:------------------:|:--------------------:|
+| 触发条件 | `mode === 'stream'` | `mode !== 'stream'` |
+| 第一窗口触发 | 2 帧即触发（快速出结果） | 等满帧再处理 |
+| 图片数量 | 最多 3 张（均匀采样） | 全部发送 |
+| temperature | 0.7 | 0.9 |
+| max_tokens | 1500 | 1500 |
+| 目标 | 速度优先 | 准确率优先 |
+
+### 9.3 实时流 GLM 路径修复
+
+之前的 pipeline overlap 优化只改了离线路径（`process_video_surgr1_glm_task`），实时流走的是 `glm_summarization_task`，未被优化。
+
+修复内容：
+- **逐窗口保存**：每个窗口 Gemini 完成后立即写入 DB，前端轮询即可看到（之前是攒完所有窗口才写）
+- **历史上下文**：使用 `HistoryManager` 维护阶段连续性
+- **第一窗口快速触发**：在线模式下，R1 攒够 2 帧就触发 Gemini，不等满帧
+
+### 9.4 输出格式优化
+
+| 项目 | 优化前 | 优化后 |
+|:-----|:------:|:------:|
+| 阶段标签 | `【阶段】清洁凝血阶段` | `【清洁凝血】` |
+| 时间格式 | `0.0s - 195.0s` | `0:00 - 3:15`（分:秒） |
+| 聊天 prompt | 硬编码在 gemini_client.py | 外置 `prompts/chat_system_prompt.txt` |
+
+时间格式统一修改了 5 个文件：
+- `gemini_client.py` — 窗口分析历史 context
+- `glm_client.py` — 窗口分析历史 context
+- `mysql_service.py` — 压缩总结 context
+- `summary_compressor.py` — 压缩/未压缩窗口 context
+- `background.txt` — system prompt 示例输出
+
+### 9.5 Bug 修复
+
+1. **前端 session 数据残留**：`handleStreamConnect` 新连接时未清空旧 `summaries`，导致显示上一个 session 的分析结果。已修复：新 session 连接时清空所有状态。
+
+2. **R1 不可用时静默失败**：R1 服务未启动时，GLM task 会空转等待，用户无感知。已修复：
+   - 后端：`start_glm_summarization` 启动前检查 R1 健康状态，不可用返回 503
+   - 前端：`startAnalysis` 检查 `surgr1Status.available`，不可用弹窗提示
+
+### 9.6 端到端性能对比
+
+| 阶段 | 优化前（gemini-3.1-pro） | 优化后（gemini-3-flash） |
+|:-----|:------------------------:|:------------------------:|
+| 窗口采集 | 15s | 6s（2 帧快速触发） |
+| R1 分析 | ~4s | ~4s（无变化） |
+| Gemini 分析 | 35-60s | 3-8s |
+| **第一窗口总延迟** | **~55s** | **~13s** |
+| 输出完整性 | 经常截断（35 字符） | 完整输出（60-150 字符） |
+
+### 9.7 文件变更清单
+
+```
+config.json                          — model: gemini-3-flash-preview
+run_backend.sh                       — 添加 VPN 代理环境变量
+backend/routers/analysis.py          — 在线/离线模式、逐窗口保存、R1 健康检查
+backend/services/gemini_client.py    — thinking_budget=0、时间格式、聊天 prompt 外置
+backend/services/glm_client.py       — 时间格式 mm:ss
+backend/services/mysql_service.py    — 时间格式 mm:ss
+backend/services/summary_compressor.py — 时间格式 mm:ss
+glm_api/background.txt              — 输出格式示例更新
+prompts/chat_system_prompt.txt       — 新增：聊天助手 system prompt
+frontend/src/App.vue                 — session 清空、R1 检查、is_live 传参
+```
