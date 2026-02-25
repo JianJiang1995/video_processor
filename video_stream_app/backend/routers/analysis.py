@@ -2535,7 +2535,7 @@ async def glm_summarization_task(
                                 images=window_images,
                                 history_context=history_context,
                                 temperature=0.7 if is_live else 0.9,
-                                max_tokens=800 if is_live else 1500
+                                max_tokens=1500
                             )
                             
                             if result.get("success"):

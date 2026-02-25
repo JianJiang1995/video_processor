@@ -446,9 +446,15 @@ class GeminiClient:
         if not GENAI_AVAILABLE:
             return None
         
-        # "none" 表示关闭思考模式，不传 thinking_config
+        # "none" 表示关闭思考模式
+        # gemini-3-flash-preview 不支持 thinking_level=NONE，
+        # 但可以通过 thinking_budget=256 有效禁用 thinking（tokens=0）
         if self.thinking_level == "none":
-            return None
+            # 对于强制 thinking 的模型，用 budget 限制来禁用
+            try:
+                return types.ThinkingConfig(thinking_budget=256)
+            except Exception:
+                return None
         
         return types.ThinkingConfig(thinking_level=self.thinking_level)
     

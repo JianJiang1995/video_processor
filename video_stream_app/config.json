@@ -87,7 +87,7 @@
             "enabled": true,
             "required": false,
             "api_key_env": "GEMINI_API_KEY",
-            "model_name": "gemini-3.1-pro-preview",
+            "model_name": "gemini-3-flash-preview",
             "thinking_level": "none",
             "max_tokens": 2048,
             "max_concurrent": 8,
