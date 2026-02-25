@@ -582,36 +582,14 @@ class GeminiClient:
             Dict with response
         """
         if system_prompt is None:
-            # Build system prompt with background knowledge
-            base_prompt = """你是一个专业的腹腔镜胆囊切除手术助手，可以回答关于当前手术过程的问题。
-
-你可以访问手术记录总结，包括：
-- 手术阶段（Phase Recognition）：Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderRetraction, CleaningCoagulation, GallbladderPackaging
-- 手术动作（Action Recognition）：医生正在进行的操作
-- 工具定位（Tool Recognition）：当前使用的手术器械
-- 组织识别（Tissue Recognition）：可见的解剖结构
-- CVS评估（Critical View of Safety）：安全关键视角的三个标准
-
-请根据提供的手术记录和用户的问题给出准确、简洁的回答。
-如果用户询问"之前做了什么"或类似问题，请总结手术进展。
-如果用户询问CVS相关问题，请基于三个标准进行判断。"""
-            
-            # Append background knowledge if enabled
-            if include_background:
-                system_prompt = f"""{base_prompt}
-
-## 领域知识参考
-
-你具有以下腹腔镜胆囊切除术的专业知识：
-- 手术包含7个阶段：Preparation → CalotTriangleDissection → ClippingCutting → GallbladderDissection → GallbladderRetraction → CleaningCoagulation → GallbladderPackaging
-- CVS（安全关键视角）三个标准必须全部满足才能确认CVS=TRUE：
-  1. 只有两个管状结构（胆囊管和胆囊动脉）连接到胆囊
-  2. 肝胆三角区域已清理，可见底下肝脏
-  3. 胆囊下1/3已从肝床分离
-- 常见工具：Grasper(抓钳), Hook(电钩), Scissors(剪刀), Clipper(钛夹钳), Irrigator(冲吸器), Bipolar(双极电凝)
-- 关键组织：Cystic Duct(胆囊管), Cystic Artery(胆囊动脉), Gallbladder(胆囊), Calot Triangle(Calot三角), Cystic Plate(胆囊板)"""
-            else:
-                system_prompt = base_prompt
+            # Load chat system prompt from external file
+            prompt_path = Path(__file__).parent.parent / "prompts" / "chat_system_prompt.txt"
+            try:
+                system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+                logger.debug(f"[GeminiClient] Loaded chat prompt from {prompt_path} ({len(system_prompt)} chars)")
+            except FileNotFoundError:
+                logger.warning(f"[GeminiClient] Chat prompt file not found: {prompt_path}, using fallback")
+                system_prompt = "你是一个专业的腹腔镜胆囊切除手术助手，可以回答关于当前手术过程的问题。请根据提供的手术记录给出准确、简洁的中文回答。"
         
         # Build message with context
         full_message = user_query
