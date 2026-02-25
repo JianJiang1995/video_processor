@@ -2078,6 +2078,22 @@ async def start_glm_summarization(
     from ..database import update_session_status
     update_session_status(db, request.session_id, "processing")
     
+    # Check if SurgR1 is available — R1 is required for frame analysis
+    try:
+        from ..services.surgr1_client import SurgR1Client
+        surgr1_client = SurgR1Client()
+        r1_healthy = await surgr1_client.check_health()
+        if not r1_healthy:
+            # Check if SurgR1 continuous is already running and has frames
+            has_frames = surgr1_continuous_flags.get(request.session_id, False)
+            if not has_frames:
+                update_session_status(db, request.session_id, "error")
+                raise HTTPException(503, "SurgR1 服务不可用，请先启动 R1 服务（bash SurgR1_api/run.sh）")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"[GLM] SurgR1 health check error: {e}, proceeding anyway")
+    
     # Clear any previous cancellation flag
     analysis_cancellation_flags[request.session_id] = False
     
