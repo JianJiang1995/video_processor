@@ -15,6 +15,16 @@
       />
     </div>
 
+    <!-- Window Overview Mode -->
+    <WindowOverview
+      v-else-if="currentView === 'overview'"
+      :summaries="summaries"
+      :session="currentSession"
+      :mode="mode"
+      @back="handleOverviewBack"
+      @seekToWindow="handleOverviewSeekToWindow"
+    />
+
     <!-- Main Video Analyzer View -->
     <template v-else>
       <!-- Header -->
@@ -37,6 +47,13 @@
         </div>
 
         <div class="header-actions">
+          <button
+            v-if="summaries.length > 0 && !isProcessing"
+            class="btn btn-overview"
+            @click="enterOverview"
+          >
+            一览
+          </button>
           <button class="btn btn-secondary" @click="goHome">
             ← 返回
           </button>
@@ -142,6 +159,15 @@
           <span class="toast-text">{{ toastMessage }}</span>
         </div>
       </Transition>
+
+      <!-- Overview Toast -->
+      <Transition name="toast">
+        <div v-if="showOverviewToast" class="overview-toast">
+          <span class="overview-toast-text">分析完成</span>
+          <button class="overview-toast-btn" @click="enterOverview">进入一览模式 →</button>
+          <button class="overview-toast-dismiss" @click="showOverviewToast = false">✕</button>
+        </div>
+      </Transition>
     </template>
   </div>
 </template>
@@ -158,9 +184,10 @@ import ControlBar from './components/ControlBar.vue'
 import SummaryPanel from './components/SummaryPanel.vue'
 import VoiceChat from './components/VoiceChat.vue'
 import FrameAnalysisPopup from './components/FrameAnalysisPopup.vue'
+import WindowOverview from './components/WindowOverview.vue'
 
 // View state
-const currentView = ref('select')  // 'select', 'stream-input', 'main'
+const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview'
 const mode = ref('local')  // 'local' or 'stream'
 
 // State
@@ -190,6 +217,10 @@ const frameAnalysisPopup = ref({
   position: { x: 0, y: 0 }
 })
 const dragDebounceTimer = ref(null)
+
+// Overview mode toast
+const showOverviewToast = ref(false)
+let overviewToastTimer = null
 
 // EventSource reference for SSE
 let analysisEventSource = null
@@ -729,6 +760,9 @@ const startAnalysis = async () => {
         isProcessing.value = false
         analysisEventSource.close()
         analysisEventSource = null
+        if (data.status === 'completed' && summaries.value.length > 0) {
+          showOverviewToastPrompt()
+        }
         return
       }
       
@@ -806,6 +840,30 @@ const stopAnalysis = async () => {
     }
     isProcessing.value = false
   }
+}
+
+// Overview mode toast prompt
+const showOverviewToastPrompt = () => {
+  showOverviewToast.value = true
+  if (overviewToastTimer) clearTimeout(overviewToastTimer)
+  overviewToastTimer = setTimeout(() => {
+    showOverviewToast.value = false
+  }, 10000)
+}
+
+const enterOverview = () => {
+  showOverviewToast.value = false
+  if (overviewToastTimer) clearTimeout(overviewToastTimer)
+  currentView.value = 'overview'
+}
+
+const handleOverviewBack = () => {
+  currentView.value = 'main'
+}
+
+const handleOverviewSeekToWindow = (windowId) => {
+  currentView.value = 'main'
+  handleSeekToWindow(windowId)
 }
 
 // Stream timer for live video elapsed time
@@ -1412,6 +1470,9 @@ onUnmounted(() => {
     analysisEventSource.close()
     analysisEventSource = null
   }
+  if (overviewToastTimer) {
+    clearTimeout(overviewToastTimer)
+  }
   
   // Remove beforeunload handler
   window.removeEventListener('beforeunload', handleBeforeUnload)
@@ -1510,5 +1571,72 @@ onUnmounted(() => {
 .toast-leave-to {
   opacity: 0;
   transform: translateX(-50%) translateY(20px);
+}
+
+/* Overview Toast */
+.overview-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent-primary);
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  box-shadow: var(--shadow-glow), var(--shadow-md);
+  z-index: 9999;
+}
+
+.overview-toast-text {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.overview-toast-btn {
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  border: none;
+  padding: 0.4rem 1rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+}
+.overview-toast-btn:hover {
+  opacity: 0.85;
+}
+
+.overview-toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 2px 4px;
+}
+.overview-toast-dismiss:hover {
+  color: var(--text-primary);
+}
+
+/* Overview Header Button */
+.btn-overview {
+  background: transparent;
+  border: 1px solid var(--accent-primary);
+  color: var(--accent-primary);
+  padding: 0.35rem 0.8rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.btn-overview:hover {
+  background: var(--accent-primary);
+  color: var(--bg-primary);
 }
 </style>
