@@ -255,6 +255,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, nextTick, shallowRef, onUnmounted } from 'vue'
+import { apiUrl } from '@/utils/electronBridge'
 
 const props = defineProps({
   summaries: {
@@ -514,7 +515,7 @@ const startExport = async () => {
   
   try {
     // Call export API
-    const response = await fetch(`/api/analysis/export-clips/${props.sessionId}`, {
+    const response = await fetch(apiUrl(`/api/analysis/export-clips/${props.sessionId}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ window_ids: selectedWindowIds.value })
@@ -543,7 +544,7 @@ const startExportPolling = (taskId) => {
   
   const poll = async () => {
     try {
-      const response = await fetch(`/api/analysis/export-status/${taskId}`)
+      const response = await fetch(apiUrl(`/api/analysis/export-status/${taskId}`))
       if (!response.ok) throw new Error('Failed to get status')
       
       const status = await response.json()

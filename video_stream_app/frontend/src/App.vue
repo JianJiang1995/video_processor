@@ -149,6 +149,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import { apiUrl } from './utils/electronBridge.js'
 import analysisQueue from './utils/AnalysisQueue.js'
 import ModeSelector from './components/ModeSelector.vue'
 import StreamInput from './components/StreamInput.vue'
@@ -368,12 +369,12 @@ const goHome = () => {
     // Use sendBeacon to ensure the stop request is sent even if page navigation happens
     const sessionId = currentSession.value.session_id
     try {
-      navigator.sendBeacon(`/api/analysis/stop-surgr1-continuous/${sessionId}`, '')
+      navigator.sendBeacon(apiUrl(`/api/analysis/stop-surgr1-continuous/${sessionId}`), '')
       console.log(`[goHome] Sent stop request for session ${sessionId}`)
     } catch (e) {
       console.warn('[goHome] sendBeacon failed, trying fetch:', e)
       // Fallback: fire-and-forget fetch
-      fetch(`/api/analysis/stop-surgr1-continuous/${sessionId}`, { 
+      fetch(apiUrl(`/api/analysis/stop-surgr1-continuous/${sessionId}`), { 
         method: 'POST',
         keepalive: true 
       }).catch(() => {})
@@ -718,7 +719,7 @@ const startAnalysis = async () => {
     
     // Start SSE for summaries
     analysisEventSource = new EventSource(
-      `/api/analysis/stream-summaries/${currentSession.value.session_id}`
+      apiUrl(`/api/analysis/stream-summaries/${currentSession.value.session_id}`)
     )
     
     analysisEventSource.onmessage = (event) => {
@@ -1350,9 +1351,8 @@ const restartAnalysisStatusInterval = () => {
 // Handle page close/refresh - use sendBeacon for reliable cleanup
 const handleBeforeUnload = () => {
   if (currentSession.value) {
-    // sendBeacon is reliable even when page is closing
     navigator.sendBeacon(
-      `/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`,
+      apiUrl(`/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`),
       ''
     )
   }
@@ -1398,9 +1398,8 @@ onUnmounted(() => {
   
   // Stop SurgR1 continuous processing when leaving
   if (currentSession.value) {
-    // Use sendBeacon for reliable cleanup
     navigator.sendBeacon(
-      `/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`,
+      apiUrl(`/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`),
       ''
     )
   }

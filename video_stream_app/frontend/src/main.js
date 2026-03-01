@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import axios from 'axios'
 import App from './App.vue'
 import './styles/main.css'
+import { isElectron, initBackendUrl } from '@/utils/electronBridge'
 
 // 配置 axios 全局默认值
 axios.defaults.timeout = 30000  // 30秒全局超时
@@ -39,10 +40,19 @@ axios.interceptors.response.use(
   }
 )
 
-const app = createApp(App)
-app.use(createPinia())
-app.mount('#app')
+async function bootstrap() {
+  // Electron 打包模式下没有 Vite proxy，必须在挂载前解析后端地址
+  if (isElectron()) {
+    const url = await initBackendUrl()
+    if (url) {
+      axios.defaults.baseURL = url
+      console.log('[App] Backend URL resolved:', url)
+    }
+  }
 
+  const app = createApp(App)
+  app.use(createPinia())
+  app.mount('#app')
+}
 
-
-
+bootstrap()

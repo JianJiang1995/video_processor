@@ -10,6 +10,28 @@ export const isElectron = () => {
 
 // ============= 配置管理 =============
 
+// 已解析的后端 URL（同步访问，由 initBackendUrl() 设置）
+// 开发模式为空字符串（靠 Vite proxy），Electron 打包模式为 'http://127.0.0.1:8001'
+let _resolvedBackendUrl = ''
+
+/**
+ * 初始化后端 URL（应在 app mount 之前调用一次）
+ * 解析后的值可通过同步函数 apiUrl() 使用
+ */
+export const initBackendUrl = async () => {
+  _resolvedBackendUrl = await getBackendUrl()
+  return _resolvedBackendUrl
+}
+
+/**
+ * 拼接后端 API 完整路径（同步函数，适用于 EventSource / fetch / sendBeacon）
+ * 开发模式返回原始路径（由 Vite proxy 处理），打包模式自动拼接后端地址
+ * @param {string} path - API 路径，如 '/api/analysis/start'
+ */
+export const apiUrl = (path) => {
+  return `${_resolvedBackendUrl}${path}`
+}
+
 /**
  * 获取后端 URL
  * - Electron 环境：从配置文件读取
@@ -383,6 +405,8 @@ export const revokeFrameUrl = (url) => {
 // 导出默认对象
 export default {
   isElectron,
+  initBackendUrl,
+  apiUrl,
   getBackendUrl,
   setBackendUrl,
   getConfig,
