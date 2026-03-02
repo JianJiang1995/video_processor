@@ -21,6 +21,7 @@
       :summaries="summaries"
       :session="currentSession"
       :mode="mode"
+      :isProcessing="isProcessing"
       @back="handleOverviewBack"
       @seekToWindow="handleOverviewSeekToWindow"
     />
@@ -48,11 +49,12 @@
 
         <div class="header-actions">
           <button
-            v-if="summaries.length > 0 && !isProcessing"
+            v-if="summaries.length > 0"
             class="btn btn-overview"
+            :class="{ pulsing: isProcessing }"
             @click="enterOverview"
           >
-            一览
+            一览{{ isProcessing ? ` (${summaries.length})` : '' }}
           </button>
           <button class="btn btn-secondary" @click="goHome">
             ← 返回
@@ -1638,5 +1640,12 @@ onUnmounted(() => {
 .btn-overview:hover {
   background: var(--accent-primary);
   color: var(--bg-primary);
+}
+.btn-overview.pulsing {
+  animation: overviewPulse 2s ease-in-out infinite;
+}
+@keyframes overviewPulse {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: 0 0 10px rgba(0, 212, 170, 0.35); }
 }
 </style>

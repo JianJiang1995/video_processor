@@ -17,6 +17,10 @@
         </div>
       </div>
       <div class="header-right">
+        <div v-if="isProcessing" class="processing-badge">
+          <span class="processing-dot"></span>
+          <span>分析中…</span>
+        </div>
         <div class="total-duration">
           <span class="duration-icon">⏱</span>
           <span>{{ formatTime(totalDuration) }}</span>
@@ -248,6 +252,10 @@ const props = defineProps({
   mode: {
     type: String,
     default: 'local'
+  },
+  isProcessing: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -493,6 +501,31 @@ onUnmounted(() => {
   font-family: var(--font-mono);
 }
 .duration-icon { font-size: 0.85rem; }
+
+.processing-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--accent-primary);
+  background: var(--accent-glow);
+  border: 1px solid rgba(0, 212, 170, 0.2);
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+}
+
+.processing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  animation: processingPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes processingPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.75); }
+}
 
 /* ===== Toolbar ===== */
 .toolbar {
