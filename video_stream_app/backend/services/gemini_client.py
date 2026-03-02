@@ -185,10 +185,16 @@ class WindowHistoryManager:
         "GallbladderPackaging": ["CleaningCoagulation"],  # 胆囊取出后只允许清洁凝血
     }
     
+    # 按手术顺序排列，用于生成阶段进展摘要
+    PHASE_DISPLAY_ORDER = [
+        "Preparation", "CalotTriangleDissection", "ClippingCutting",
+        "GallbladderDissection", "GallbladderRetraction",
+        "CleaningCoagulation", "GallbladderPackaging",
+    ]
+    
     def __init__(self):
         self._history: List[WindowSummary] = []
         self._lock = asyncio.Lock()
-        # 从配置读取历史窗口数量
         config = load_config()
         self._max_history_size = config.get("window_analysis", {}).get("history_window_count", 10)
         logger.info(f"[WindowHistoryManager] Initialized with max_history_size={self._max_history_size}")
@@ -196,12 +202,17 @@ class WindowHistoryManager:
         # 阶段连续确认计数器
         self._phase_confirm_count: Dict[str, int] = {}
         self._last_phase: str = None
+        
+        # 持久标记：记录所有曾经出现过的阶段（不受滑动窗口限制）
+        self._reached_phases: set = set()
     
     async def add_summary(self, summary: WindowSummary) -> None:
         async with self._lock:
             self._history.append(summary)
             if len(self._history) > self._max_history_size:
                 self._history.pop(0)
+            if summary.dominant_phase and summary.dominant_phase != "Unknown":
+                self._reached_phases.add(summary.dominant_phase)
     
     async def get_history(self) -> List[WindowSummary]:
         async with self._lock:
@@ -212,6 +223,7 @@ class WindowHistoryManager:
             self._history.clear()
             self._phase_confirm_count.clear()
             self._last_phase = None
+            self._reached_phases.clear()
     
     def get_phase_cn_name(self, phase: str) -> str:
         return self.PHASE_CN_NAMES.get(phase, phase)
@@ -283,7 +295,6 @@ class WindowHistoryManager:
                     f"[WindowHistoryManager] PHASE VIOLATION: 胆囊取出阶段已确认（连续{self._phase_confirm_count.get('GallbladderPackaging', 0)}次），"
                     f"当前阶段 {current_phase} 不在允许列表 {allowed} 中"
                 )
-                # 纠正为上一个窗口阶段，如果上一个也是违规则使用清洁凝血
                 corrected = last_phase if last_phase in allowed or last_phase == "GallbladderPackaging" else "CleaningCoagulation"
                 return False, corrected
         
@@ -294,10 +305,21 @@ class WindowHistoryManager:
         if not history:
             return ""
         
-        # 只发送最近 3 个窗口的上下文（减少 prompt token 数）
-        recent_history = history[-3:]
+        context_lines = []
         
-        context_lines = ["## 之前窗口分析历史（按时间顺序）\n"]
+        # 持久阶段进展摘要（不受滑动窗口限制，始终完整）
+        if self._reached_phases:
+            reached_cn = [
+                self.get_phase_cn_name(p)
+                for p in self.PHASE_DISPLAY_ORDER
+                if p in self._reached_phases
+            ]
+            context_lines.append(f"## 手术已经历的阶段（全局）：{'→'.join(reached_cn)}")
+            context_lines.append("")
+        
+        # 最近 3 个窗口的详细上下文
+        recent_history = history[-3:]
+        context_lines.append("## 最近窗口分析（按时间顺序）\n")
         
         for ws in recent_history:
             phase_cn = self.get_phase_cn_name(ws.dominant_phase)
@@ -1150,7 +1172,10 @@ class GeminiClient:
             
             phase_constraints = []
             if "胆囊取出" in history_context:
-                phase_constraints.append("⚠️ 历史已出现「胆囊取出」，当前窗口禁止标注为「胆囊牵拉」或「准备阶段」")
+                phase_constraints.append(
+                    "⚠️ 历史已出现「胆囊取出」，当前窗口**仅允许**标注为「清洁凝血」或「胆囊取出」，"
+                    "**禁止**标注为「胆囊分离」「胆囊牵拉」「夹闭切断」「肝胆三角解剖」「准备阶段」"
+                )
             if any(p in history_context for p in ["肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "胆囊取出", "清洁凝血"]):
                 phase_constraints.append("⚠️ 手术已进入正式阶段，当前窗口禁止回退到「准备阶段」")
             

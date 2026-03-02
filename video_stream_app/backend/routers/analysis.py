@@ -2557,9 +2557,16 @@ async def glm_summarization_task(
                             if result.get("success"):
                                 summary_text = result.get("summary", "")
                                 others_data = result.get("others")
-                                dominant_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
                                 
-                                # 添加到历史管理器
+                                phase_map = {"准备阶段": "Preparation", "准备期": "Preparation",
+                                    "肝胆三角解剖": "CalotTriangleDissection", "Calot三角": "CalotTriangleDissection",
+                                    "夹闭切断": "ClippingCutting", "胆囊分离": "GallbladderDissection",
+                                    "胆囊取出": "GallbladderPackaging", "清洁凝血": "CleaningCoagulation",
+                                    "胆囊牵拉": "GallbladderRetraction"}
+                                gemini_phase = next((en for cn, en in phase_map.items() if cn in summary_text), "")
+                                r1_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
+                                dominant_phase = gemini_phase if gemini_phase else r1_phase
+                                
                                 await history_manager.add_summary(WindowSummary(
                                     window_id=window_id,
                                     start_time=meta.get("start_time", 0),
@@ -2697,6 +2704,20 @@ async def process_video_surgr1_glm_task(
         _prev_gemini_task = None  # asyncio.Task for previous window's Gemini call
         _prev_window_meta = None  # metadata needed to save previous window's results
         
+        _PHASE_CN_TO_EN = {
+            "准备阶段": "Preparation", "准备期": "Preparation",
+            "肝胆三角解剖": "CalotTriangleDissection", "Calot三角": "CalotTriangleDissection",
+            "夹闭切断": "ClippingCutting", "胆囊分离": "GallbladderDissection",
+            "胆囊取出": "GallbladderPackaging", "清洁凝血": "CleaningCoagulation",
+            "胆囊牵拉": "GallbladderRetraction",
+        }
+        
+        def _extract_phase_from_summary(summary: str) -> str:
+            for cn, en in _PHASE_CN_TO_EN.items():
+                if cn in summary:
+                    return en
+            return ""
+        
         async def _save_gemini_result(task, meta):
             """Await Gemini task and save results to DB + history"""
             try:
@@ -2708,7 +2729,10 @@ async def process_video_surgr1_glm_task(
                     summary_text = result.get("summary", "")
                     others_data = result.get("others")
                     
-                    dominant_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
+                    gemini_phase = _extract_phase_from_summary(summary_text)
+                    r1_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
+                    dominant_phase = gemini_phase if gemini_phase else r1_phase
+                    
                     tools_list = [f.get("tools", "")[:50] for f in meta["frame_analyses"][:3] if f.get("tools")]
                     
                     await meta["history_manager"].add_summary(WindowSummary(
