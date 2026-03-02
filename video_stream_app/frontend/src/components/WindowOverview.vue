@@ -102,17 +102,24 @@
             :style="{ animationDelay: `${idx * 40}ms` }"
             @click="handleCardClick(s)"
           >
-            <!-- Card top accent line -->
-            <div class="card-accent-line"></div>
+            <!-- Thumbnail -->
+            <div class="card-thumb" ref="thumbRefs">
+              <img
+                v-if="thumbnails[s.window_id]"
+                :src="thumbnails[s.window_id]"
+                class="thumb-img"
+                alt=""
+              />
+              <div v-else class="thumb-placeholder">
+                <div class="thumb-spinner"></div>
+              </div>
+              <span class="card-index-overlay">#{{ s.window_id }}</span>
+              <span class="card-time-overlay">
+                {{ formatTime(s.start_time) }} – {{ formatTime(s.end_time) }}
+              </span>
+            </div>
 
             <div class="card-body">
-              <div class="card-header">
-                <span class="card-index">#{{ s.window_id }}</span>
-                <span class="card-time">
-                  {{ formatTime(s.start_time) }} – {{ formatTime(s.end_time) }}
-                </span>
-              </div>
-
               <!-- Duration mini-bar -->
               <div class="card-duration-bar">
                 <div
@@ -121,7 +128,7 @@
                 ></div>
               </div>
 
-              <p class="card-summary" v-html="highlightText(truncate(s.summary, 140))"></p>
+              <p class="card-summary" v-html="highlightText(truncate(s.summary, 100))"></p>
             </div>
           </div>
         </div>
@@ -239,8 +246,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import { apiUrl } from '@/utils/electronBridge'
 import VideoPlayer from './VideoPlayer.vue'
 
 const props = defineProps({
@@ -275,6 +283,10 @@ const chatMessagesRef = ref(null)
 // Modal
 const activeWindow = ref(null)
 const modalCurrentTime = ref(0)
+
+// Thumbnails
+const thumbnails = reactive({})
+const loadingThumbs = new Set()
 
 // Computed
 const filteredSummaries = computed(() => {
@@ -401,8 +413,44 @@ async function scrollChatBottom() {
   }
 }
 
+async function loadThumbnail(summary) {
+  const wid = summary.window_id
+  if (thumbnails[wid] || loadingThumbs.has(wid)) return
+  loadingThumbs.add(wid)
+
+  const midTime = ((summary.start_time || 0) + (summary.end_time || 0)) / 2
+  const sid = props.session?.session_id
+  if (!sid) return
+
+  try {
+    const res = await axios.get(`/api/analysis/frame-at-timestamp/${sid}`, {
+      params: { timestamp: midTime, tolerance: 5.0 }
+    })
+    if (res.data?.success && res.data.image_base64) {
+      thumbnails[wid] = `data:image/jpeg;base64,${res.data.image_base64}`
+    }
+  } catch {
+    // silent fail — card stays without thumbnail
+  } finally {
+    loadingThumbs.delete(wid)
+  }
+}
+
+function loadVisibleThumbnails() {
+  for (const s of props.summaries) {
+    if (!thumbnails[s.window_id] && !loadingThumbs.has(s.window_id)) {
+      loadThumbnail(s)
+    }
+  }
+}
+
+watch(() => props.summaries.length, () => {
+  loadVisibleThumbnails()
+})
+
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  loadVisibleThumbnails()
 })
 
 onUnmounted(() => {
@@ -665,35 +713,73 @@ onUnmounted(() => {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.card-accent-line {
-  height: 2px;
-  background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
-  opacity: 0;
-  transition: opacity 0.2s;
+.card-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--bg-tertiary);
+  overflow: hidden;
 }
-.window-card:hover .card-accent-line { opacity: 1; }
 
-.card-body { padding: 0.85rem 1rem; }
+.thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+.window-card:hover .thumb-img {
+  transform: scale(1.04);
+}
 
-.card-header {
+.thumb-placeholder {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.45rem;
+  justify-content: center;
 }
 
-.card-index {
-  font-weight: 700;
-  font-size: 0.85rem;
+.thumb-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-medium);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.card-index-overlay {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.65);
   color: var(--accent-primary);
   font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
 }
 
-.card-time {
-  font-size: 0.7rem;
-  color: var(--text-tertiary);
+.card-time-overlay {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  backdrop-filter: blur(4px);
 }
+
+.card-body { padding: 0.6rem 0.8rem; }
+
 
 .card-duration-bar {
   height: 3px;
