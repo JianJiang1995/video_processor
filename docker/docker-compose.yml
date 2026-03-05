@@ -1,0 +1,110 @@
+version: "3.8"
+
+# ============================================================
+# Video Analyzer - 后端服务栈
+#
+# 目标机分发流程（只需三步）：
+#   1. 把这个文件 + .env 复制到目标机
+#   2. 填好 .env（GEMINI_API_KEY、MODELSCOPE_API_TOKEN）
+#   3. docker compose up -d
+#
+# 注意：surgr1 首次启动会从 ModelScope 自动下载模型（~16GB）
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # MySQL 数据库
+  # ----------------------------------------------------------
+  mysql:
+    image: mysql:8.0
+    container_name: video-analyzer-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-surgr1pass}
+      MYSQL_DATABASE: video_analyzer
+      MYSQL_USER: appuser
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-apppass}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3307:3306"   # 宿主机 3307 避免与本机 MySQL 冲突
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-surgr1pass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # FastAPI Backend
+  # config.json 已打入镜像，无需挂载项目源码
+  # ----------------------------------------------------------
+  backend:
+    image: video-analyzer-backend:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: video-analyzer-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # DATABASE_URL 覆盖 config.json 里的 localhost，指向 Docker 内部 mysql 服务
+      DATABASE_URL: mysql+pymysql://appuser:${MYSQL_PASSWORD:-apppass}@mysql:3306/video_analyzer?charset=utf8mb4
+      # 如需通过宿主机代理访问 Gemini，取消注释并填入宿主机 IP
+      # https_proxy: http://192.168.x.x:23279
+      # http_proxy: http://192.168.x.x:23279
+    volumes:
+      - uploads_data:/app/uploads
+      - output_data:/app/output
+    ports:
+      - "8001:8001"
+
+  # ----------------------------------------------------------
+  # SurgR1 vLLM 推理服务
+  # config.json 已打入镜像，首次启动自动从 ModelScope 下载模型
+  # ----------------------------------------------------------
+  surgr1:
+    image: video-analyzer-surgr1:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.surgr1
+    container_name: video-analyzer-surgr1
+    restart: unless-stopped
+    ipc: host
+    shm_size: 32gb
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${SURGR1_GPU:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      MODELSCOPE_API_TOKEN: ${MODELSCOPE_API_TOKEN}
+      MODELSCOPE_MODEL_ID: ${MODELSCOPE_MODEL_ID:-lonsirky/SurgR1}
+      MODEL_CACHE_DIR: /model-cache
+    volumes:
+      - model_cache:/model-cache    # 模型缓存，首次下载后复用
+    ports:
+      - "9003:9003"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+# ----------------------------------------------------------
+# 命名卷（运行时数据，不含源码）
+# ----------------------------------------------------------
+volumes:
+  mysql_data:
+  uploads_data:
+  output_data:
+  model_cache:

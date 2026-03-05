@@ -1,0 +1,32 @@
+# SurgR1 vLLM 服务依赖
+# 对应宿主机 conda env: vllm，CUDA 12.8，PyTorch 2.10.0+cu128
+
+# vLLM（包含对应版本的 torch）
+vllm==0.10.1.1
+
+# 模型推理相关
+transformers==4.55.4
+qwen-vl-utils==0.0.11
+accelerate==1.10.1
+safetensors
+tokenizers
+sentencepiece
+protobuf
+
+# API 服务
+fastapi
+uvicorn[standard]
+pydantic
+
+# 图像处理
+Pillow
+opencv-python-headless
+numpy
+
+# ModelScope（首次启动下载模型）
+modelscope
+
+# 工具
+requests
+aiohttp
+tqdm

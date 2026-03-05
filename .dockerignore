@@ -1,0 +1,71 @@
+# ============================================================
+# Docker build context 排除规则
+# 避免把模型权重、视频、日志等大文件发送给 Docker daemon
+# ============================================================
+
+# 模型权重和大型数据目录（GB 级别）
+uploads/
+output/
+tmp/
+test_data/
+*.tar.gz
+*.tar
+*.zip
+
+# 运行时产生的大型数据（视频帧、会话数据、日志、导出）
+video_stream_app/sessions/
+video_stream_app/logs/
+video_stream_app/exports/
+video_stream_app/uploads/
+video_stream_app/output/
+
+# TTS API 包含大型模型权重（~15GB）
+tts_api/
+
+# Git
+.git/
+.gitmodules
+
+# Python 缓存
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+*.egg-info/
+
+# Node.js
+**/node_modules/
+
+# Electron 构建产物
+video_stream_app/frontend/dist/
+video_stream_app/frontend/dist-electron/
+video_stream_app/build-services/
+video_stream_app/dist-services/
+
+# PyInstaller
+**/*.spec
+**/build/
+
+# 日志和临时文件
+*.log
+*.tmp
+.env
+
+# IDE
+.cursor/
+.vscode/
+*.swp
+*.swo
+
+# ASR 子模块（大型依赖，不需要打入 backend 镜像）
+asr_api/FunASR/
+asr_api/Fun-ASR-Repo/
+
+# 其他 API 服务（不在 Docker 里运行）
+glm_api/
+qwen_vl_api/
+tts_api/
+stream_simulator/
+annotate_video/
+scripts/
+tests/
+docs/

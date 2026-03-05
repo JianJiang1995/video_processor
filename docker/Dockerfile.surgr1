@@ -1,0 +1,62 @@
+# ============================================================
+# SurgR1 vLLM 推理服务
+# 参考 /data4/jj/Laparo/docker/Dockerfile.cuda12.2，按本项目环境适配
+#
+# 系统环境: CUDA 12.8, PyTorch 2.10.0+cu128, vLLM 0.10.1.1
+# ============================================================
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/opt/conda/bin:$PATH
+
+# 系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    git \
+    build-essential \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Miniconda
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    /bin/bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh && \
+    /opt/conda/bin/conda clean -afy
+
+# 接受 Conda 服务条款
+RUN /opt/conda/bin/conda config --set channel_priority flexible && \
+    echo "yes" | /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true && \
+    echo "yes" | /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
+
+# 创建 Python 3.10 环境（与宿主机 conda env vllm 保持一致）
+RUN /opt/conda/bin/conda create -n vllm python=3.10 -y && \
+    /opt/conda/bin/conda clean -afy
+
+# 激活 conda 环境
+SHELL ["/bin/bash", "-c"]
+ENV CONDA_DEFAULT_ENV=vllm \
+    PATH=/opt/conda/envs/vllm/bin:$PATH
+
+# 安装 Python 依赖（与宿主机环境一致）
+COPY docker/surgr1_requirements.txt /tmp/surgr1_requirements.txt
+RUN source /opt/conda/etc/profile.d/conda.sh && \
+    conda activate vllm && \
+    pip install --no-cache-dir -r /tmp/surgr1_requirements.txt && \
+    rm /tmp/surgr1_requirements.txt
+
+# 复制 SurgR1 服务代码（包含 config.json）
+COPY SurgR1_api/ /app/
+# config.json 打入镜像作为模板，entrypoint 启动时写入正确的 model.path
+# 重命名为 .template，entrypoint 据此生成最终 config.json
+RUN mv /app/config.json /app/config.json.template
+COPY docker/surgr1_entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR /app
+
+EXPOSE 9003
+
+ENTRYPOINT ["/entrypoint.sh"]

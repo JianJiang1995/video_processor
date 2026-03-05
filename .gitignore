@@ -142,6 +142,15 @@ tests/*/outputs/
 *.db-shm
 *.db-wal
 
+# Archives
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tgz
+
+# Test deployment artifacts
+test_deploy/
+
 # Backup and temporary files
 *.bak
 *.tmp

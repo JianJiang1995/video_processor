@@ -1,0 +1,35 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# 换成阿里云镜像（Debian Trixie 用 DEB822 格式），加速 apt 下载
+RUN sed -i 's|URIs: http://deb.debian.org/debian$|URIs: http://mirrors.aliyun.com/debian|g' \
+        /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libglib2.0-0 \
+        libgomp1 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 配置 pip 国内镜像加速下载
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    pip config set global.trusted-host mirrors.aliyun.com
+
+# 先装 headless opencv（不需要 libGL），再装其余依赖
+RUN pip install --no-cache-dir opencv-python-headless
+
+COPY video_stream_app/requirements.txt /tmp/requirements.txt
+# 排除 opencv-python（已用 headless 替代）
+RUN grep -v "opencv-python" /tmp/requirements.txt > /tmp/req_filtered.txt && \
+    pip install --no-cache-dir -r /tmp/req_filtered.txt
+
+COPY video_stream_app/backend ./backend
+COPY video_stream_app/backend_entry.py ./
+# config.json 打入镜像，目标机不需要挂载项目文件
+COPY video_stream_app/config.json ./config.json
+
+RUN mkdir -p uploads output
+
+EXPOSE 8001
+
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8001"]
