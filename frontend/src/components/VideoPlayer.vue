@@ -21,6 +21,28 @@
           <div class="loop-loading-text">加载回放帧...</div>
         </div>
         
+        <div
+          v-else-if="useCanvasStream"
+          class="stream-image stream-buffer"
+          :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
+          @click="togglePlay"
+        >
+          <img
+            v-if="streamBufferA"
+            :src="streamBufferA"
+            class="stream-buffer-frame"
+            :class="{ active: activeStreamBuffer === 'a' }"
+            draggable="false"
+          />
+          <img
+            v-if="streamBufferB"
+            :src="streamBufferB"
+            class="stream-buffer-frame"
+            :class="{ active: activeStreamBuffer === 'b' }"
+            draggable="false"
+          />
+        </div>
+
         <!-- Native playback for the local capture-card simulator. Analysis still
              runs through the live simulator pipeline; preview should use the
              browser decoder instead of an MJPEG image stream. -->
@@ -238,6 +260,9 @@ const sam3Error = ref(null)  // Track SAM3 errors
 const sam3Loading = ref(false)  // Track SAM3 loading state
 const sam3FrameTime = ref(null)  // Actual timestamp of the SAM3 frame being displayed
 const sam3FetchInProgress = ref(false)  // Prevent concurrent SAM3 requests
+const streamBufferA = ref('')
+const streamBufferB = ref('')
+const activeStreamBuffer = ref('a')
 
 // Loop playback state for stream mode
 const loopPlaybackFrame = ref(null)  // Current frame being displayed during loop playback
@@ -273,6 +298,10 @@ const isSimulatorStream = computed(() => {
 
 // Combined: is any type of live source (HTTP/HTTPS/RTSP/capture card)
 const isLiveStream = computed(() => isHttpMjpegStream.value || isRtspStream.value || isCaptureDevice.value)
+
+const useCanvasStream = computed(() => {
+  return props.mode === 'stream' && isLiveStream.value && !props.loopWindow
+})
 
 // Computed: get the stream URL
 // Use the backend latest-frame display endpoint for every live source. It keeps
@@ -314,6 +343,93 @@ const captureFrame = () => {
     // CORS error is expected for cross-origin streams
     console.warn('Failed to capture frame (CORS restriction):', e.message)
     return null
+  }
+}
+
+let streamWs = null
+let pendingFrameDecode = false
+let lastObjectUrls = []
+
+const stopCanvasStream = () => {
+  if (streamWs) {
+    streamWs.onopen = null
+    streamWs.onmessage = null
+    streamWs.onerror = null
+    streamWs.onclose = null
+    try {
+      streamWs.close()
+    } catch (_) {}
+    streamWs = null
+  }
+  lastObjectUrls.forEach(url => URL.revokeObjectURL(url))
+  lastObjectUrls = []
+  streamBufferA.value = ''
+  streamBufferB.value = ''
+  activeStreamBuffer.value = 'a'
+  pendingFrameDecode = false
+}
+
+const canvasStreamUrl = () => {
+  if (!props.session?.session_id) return null
+  const base = backendUrl.value || window.location.origin
+  const url = new URL(`/api/video/ws-display/${props.session.session_id}`, base)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  url.searchParams.set('fps', '30')
+  url.searchParams.set('quality', '82')
+  url.searchParams.set('max_width', '1920')
+  return url.toString()
+}
+
+const startCanvasStream = async () => {
+  if (!useCanvasStream.value || !props.session?.session_id || !backendUrl.value && !window.location.origin) {
+    stopCanvasStream()
+    return
+  }
+
+  stopCanvasStream()
+  isLoading.value = true
+
+  const url = canvasStreamUrl()
+  if (!url) return
+  streamWs = new WebSocket(url)
+  streamWs.binaryType = 'arraybuffer'
+  streamWs.onopen = () => {
+    console.log('[CanvasStream] connected')
+  }
+  streamWs.onerror = () => {
+    console.warn('[CanvasStream] websocket error')
+    isLoading.value = false
+  }
+  streamWs.onclose = () => {
+    console.log('[CanvasStream] closed')
+  }
+  streamWs.onmessage = async (event) => {
+    if (pendingFrameDecode) return
+    pendingFrameDecode = true
+    const nextSlot = activeStreamBuffer.value === 'a' ? 'b' : 'a'
+    const url = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }))
+    const img = new Image()
+    img.onload = () => {
+      const previousUrl = nextSlot === 'a' ? streamBufferA.value : streamBufferB.value
+      if (nextSlot === 'a') {
+        streamBufferA.value = url
+      } else {
+        streamBufferB.value = url
+      }
+      activeStreamBuffer.value = nextSlot
+      isLoading.value = false
+      if (previousUrl) {
+        setTimeout(() => URL.revokeObjectURL(previousUrl), 250)
+      }
+      lastObjectUrls = lastObjectUrls.filter(item => item !== previousUrl)
+      lastObjectUrls.push(url)
+      pendingFrameDecode = false
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      pendingFrameDecode = false
+    }
+    img.src = url
   }
 }
 
@@ -393,6 +509,14 @@ watch(() => props.currentTime, (newTime) => {
 
 // Watch for play/pause state
 watch(() => props.isPlaying, (playing) => {
+  if (useCanvasStream.value) {
+    if (playing) {
+      startCanvasStream()
+    } else {
+      stopCanvasStream()
+    }
+    return
+  }
   if (videoRef.value) {
     if (playing) {
       videoRef.value.play()
@@ -401,6 +525,17 @@ watch(() => props.isPlaying, (playing) => {
     }
   }
 })
+
+watch(
+  () => [backendUrl.value, props.session?.session_id, props.mode, props.loopWindow, useCanvasStream.value],
+  () => {
+    if (useCanvasStream.value && props.isPlaying) {
+      startCanvasStream()
+    } else if (!useCanvasStream.value) {
+      stopCanvasStream()
+    }
+  }
+)
 
 let lastNativeTimeEmit = 0
 const onTimeUpdate = () => {
@@ -1291,6 +1426,7 @@ onUnmounted(() => {
   
   // Stop loop playback
   stopLoopPlayback()
+  stopCanvasStream()
   
   // IMPORTANT: Clear MJPEG stream img src to stop loading
   // This helps free up the HTTP connection to the stream
@@ -1375,6 +1511,27 @@ onUnmounted(() => {
 .stream-image.simulator-video {
   object-fit: cover;
   object-position: center center;
+}
+
+.stream-image.stream-buffer {
+  position: relative;
+  overflow: hidden;
+  background: #000;
+}
+
+.stream-buffer-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+  opacity: 0;
+  display: block;
+}
+
+.stream-buffer-frame.active {
+  opacity: 1;
 }
 
 .stream-image.frozen {

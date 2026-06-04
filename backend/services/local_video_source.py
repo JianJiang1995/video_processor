@@ -50,6 +50,7 @@ def _candidate_simulator_files() -> list[Path]:
 
     root = _repo_root()
     candidates.extend([
+        root.parent / "stream_simulator" / "media" / "stable_capture_30fps.mp4",
         root.parent / "stream_simulator" / "media" / "sample_long_cfr30.mp4",
         root.parent / "stream_simulator" / "media" / "sample_long.mp4",
         root.parent / "stream_simulator" / "media" / "sample.mp4",
