@@ -1,0 +1,180 @@
+{
+    "description": "Video Stream Analyzer Configuration",
+    "window_analysis": {
+        "provider": "gemini",
+        "history_window_count": 3,
+        "max_output_chars": 300,
+        "min_frames_ratio": 0.2,
+        "comment": "provider: VLM提供商; history_window_count: 上下文窗口数(3=只保留最近3个窗口减少prompt长度); max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.2=20%，适应实时流处理延迟)"
+    },
+    "chat_assistant": {
+        "provider": "gemini",
+        "compress_window_count": 5,
+        "compress_prompt_file": "prompts/compress_summary_prompt.txt",
+        "max_context_summaries": 50,
+        "comment": "provider: 聊天使用的VLM(gemini/qwen/glm); compress_window_count: 每N个窗口总结进行一次压缩; max_context_summaries: 最大压缩总结数量"
+    },
+    "services": {
+        "frontend": {
+            "port": 5176,
+            "host": "localhost"
+        },
+        "backend": {
+            "port": 8001,
+            "host": "0.0.0.0"
+        },
+        "surgr1": {
+            "enabled": true,
+            "required": true,
+            "port": 9003,
+            "host": "localhost",
+            "api_url": "http://localhost:9003",
+            "max_concurrent": 3,
+            "retry_count": 2,
+            "min_batch_size": 1,
+            "max_batch_size": 20,
+            "batch_timeout": 3.0,
+            "target_latency": 5.0,
+            "comment": "SurgR1 API - 手术图片分析（bbox定位、动作描述、阶段识别）[核心服务，必须开启]，支持动态batch_size"
+        },
+        "glm": {
+            "enabled": false,
+            "required": false,
+            "port": 8000,
+            "host": "localhost",
+            "api_url": "http://localhost:8000/v1",
+            "model_name": "Qwen3-VL-8B",
+            "temperature": 0.7,
+            "max_tokens": 1000,
+            "max_concurrent": 16,
+            "retry_count": 2,
+            "window_merge_count": 3,
+            "comment": "DISABLED - 使用Gemini代替。VLM用于多图像分析总结"
+        },
+        "sam3": {
+            "enabled": true,
+            "required": false,
+            "port": 9004,
+            "host": "localhost",
+            "api_url": "http://localhost:9004",
+            "comment": "SAM3 API - 给定SurgR1模型的bbox输出做mask分割 [可选服务]"
+        },
+        "tts": {
+            "enabled": true,
+            "required": false,
+            "port": 50000,
+            "host": "localhost",
+            "api_url": "http://localhost:50000",
+            "speaker": "中文女",
+            "comment": "CosyVoice TTS API - 给定中文文本输入，输出中文女声 [可选服务]"
+        },
+        "asr": {
+            "enabled": true,
+            "required": false,
+            "port": 8765,
+            "host": "localhost",
+            "api_url": "http://localhost:8765",
+            "ws_url": "ws://localhost:8765",
+            "keywords": [
+                "你好小助",
+                "小助小助",
+                "开始识别"
+            ],
+            "standby_timeout": 180,
+            "comment": "FunASR API - 长时间监控模式，唤醒后待机N分钟后进入监控模式 [可选服务]"
+        },
+        "gemini": {
+            "enabled": true,
+            "required": true,
+            "api_key_env": "GEMINI_API_KEY",
+            "model_name": "gemini-3.1-pro-preview",
+            "thinking_level": "low",
+            "max_tokens": 2048,
+            "max_concurrent": 8,
+            "retry_count": 3,
+            "retry_delay": 1.0,
+            "comment": "Gemini 3.0 Flash API - Google多模态分析，需设置GEMINI_API_KEY环境变量 [可选服务]，max_tokens需足够大以避免中文输出被截断"
+        },
+        "yolo": {
+            "enabled": true,
+            "model_path": "/home/user/proj/surg_agent/detection_expert/runs/yolo26s_cholec_tool/weights/best.pt",
+            "device": "cuda:1",
+            "confidence_threshold": 0.25,
+            "comment": "YOLO26s tool detection - replaces SurgR1 tool_localization for real-time streams"
+        },
+        "phase": {
+            "enabled": true,
+            "model_path": "/home/user/proj/surg_agent/phase_expert/runs/cholec_phase/best.pt",
+            "device": "cuda:0",
+            "comment": "Phase Expert (ResNet-18, ~300MB) 共用 GPU0（目前空闲 80+ GB）"
+        },
+        "triplet": {
+            "enabled": true,
+            "model_path": "/home/user/proj/surg_agent/triplet_expert/LAM/weights/LAM/CholecTriplet2021/LAM_Lite/model_best.pth.tar",
+            "mappings_path": "/home/user/proj/surg_agent/triplet_expert/datasets/cholect50_triplet/class_mappings.json",
+            "device": "cuda:0",
+            "comment": "Triplet Expert (LAM-Lite, ~1GB) 共用 GPU0"
+        },
+        "embedding": {
+            "enabled": true,
+            "model": "gemini-embedding-2-preview",
+            "persist_to_disk": true,
+            "comment": "Gemini text embedding for semantic similarity search"
+        }
+    },
+    "video_processing": {
+        "window_duration": 10.0,
+        "sample_interval": 1.0,
+        "frame_storage": {
+            "storage_base": "/home/user/proj/video_processor/video_stream_app/sessions",
+            "fps": 10,
+            "quality": 78,
+            "preview_fps": 4,
+            "preview_quality": 40,
+            "live_fps": 5,
+            "live_quality": 68,
+            "live_preview_fps": 2,
+            "live_retention_seconds": 300,
+            "prune_every_frames": 50,
+            "comment": "帧存储配置: 本地视频按 fps 保存；实时流按 live_fps 保存并只保留 live_retention_seconds 秒，避免长时间测试打满磁盘"
+        },
+        "comment": "N=10秒窗口，1秒采样一帧 → 10 帧/窗口；Stage2 Gemini 取其中 3 帧做多模态精修"
+    },
+    "analysis": {
+        "questions": {
+            "surgical_action": "Given the laparoscopic surgical image <image>, describe the complete surgical action in terms of tool, action, and tissue.",
+            "surgical_phase": "Given the laparoscopic surgical image <image>, which surgical phase does this frame belong to? Choose from: Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderPackaging, CleaningCoagulation, GallbladderRetraction."
+        },
+        "temperature": 0.1,
+        "max_tokens": 512
+    },
+    "database": {
+        "mysql": {
+            "host": "localhost",
+            "port": 3306,
+            "user": "jj",
+            "password": "",
+            "database": "video_analyzer",
+            "comment": "MySQL用于存储所有数据（会话、分析结果、对话历史）"
+        }
+    },
+    "openai": {
+        "comment": "用于GPT总结和TTS（备用），从 .env 读取 OPENAI_API_KEY"
+    },
+    "electron": {
+        "gpu": {
+            "enabled": true,
+            "device_id": 0,
+            "enable_gpu_rasterization": true,
+            "enable_zero_copy": false,
+            "disable_frame_rate_limit": false,
+            "enable_vaapi": true,
+            "comment": "GPU加速配置: device_id指定使用的GPU编号（0=第一块GPU）"
+        },
+        "performance": {
+            "background_throttling": false,
+            "spellcheck": false,
+            "comment": "性能优化: 禁用后台节流和拼写检查以提升视频流渲染性能"
+        }
+    }
+}
