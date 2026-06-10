@@ -30,6 +30,7 @@ import cv2
 import numpy as np
 from aiohttp import web
 
+from path_utils import require_video_path
 from video_source import VideoSource, encode_frame_jpeg
 
 # Upload directory
@@ -147,6 +148,10 @@ class HTTPStreamServer:
         """Main loop that reads frames and broadcasts to all clients"""
         try:
             async for frame in self._shared_source.frames_async(realtime=True):
+                if self.active_streams <= 0:
+                    logger.info("Broadcaster: no active clients, stopping")
+                    break
+
                 # Encode frame as JPEG
                 jpeg_data = encode_frame_jpeg(frame, self.jpeg_quality)
                 self._shared_frame = jpeg_data
@@ -1011,14 +1016,14 @@ def main():
     parser.add_argument(
         "--video",
         type=str,
-        default="/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4",
-        help="Path to video file"
+        default=None,
+        help="Path to video file (defaults to media/sample.mp4 if available)"
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8080,
-        help="Server port (default: 8080)"
+        default=9001,
+        help="Server port (default: 9001)"
     )
     parser.add_argument(
         "--host",
@@ -1045,13 +1050,15 @@ def main():
     )
     
     args = parser.parse_args()
-    
-    if not Path(args.video).exists():
-        logger.error(f"Video not found: {args.video}")
+
+    try:
+        video_path = require_video_path(args.video)
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
         return
     
     server = HTTPStreamServer(
-        video_path=args.video,
+        video_path=str(video_path),
         port=args.port,
         host=args.host,
         jpeg_quality=args.quality,
@@ -1067,6 +1074,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 

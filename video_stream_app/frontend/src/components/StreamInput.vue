@@ -150,12 +150,16 @@ import axios from 'axios'
 
 const emit = defineEmits(['connect', 'back'])
 
-// Source type: 'stream' or 'capture'
-const sourceType = ref('stream')
+// Source type: 'stream' or 'capture'. Local Electron deployments can default to
+// the capture-card workflow with VITE_DEFAULT_SOURCE=capture.
+const defaultSourceType = import.meta.env.VITE_DEFAULT_SOURCE === 'capture' ? 'capture' : 'stream'
+const defaultStreamUrl = import.meta.env.VITE_DEFAULT_STREAM_URL || 'http://localhost:9001/stream'
+const sourceType = ref(defaultSourceType)
 
 // Stream mode state
-const streamUrl = ref('http://localhost:9001/stream')
+const streamUrl = ref(defaultStreamUrl)
 const presets = [
+  { name: '本机模拟器', url: defaultStreamUrl },
   { name: '手术室1', url: 'rtsp://192.168.1.101:554/live' },
   { name: '手术室2', url: 'rtsp://192.168.1.102:554/live' },
   { name: '测试流', url: 'http://localhost:9001/stream' },
@@ -207,6 +211,9 @@ const loadCaptureDevices = async () => {
 onMounted(() => {
   isConnecting.value = false
   error.value = ''
+  if (sourceType.value === 'capture') {
+    loadCaptureDevices()
+  }
 })
 
 // Cleanup on unmount

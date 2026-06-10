@@ -14,6 +14,7 @@ from .config import settings
 from .database import init_db
 from .routers import video_router, analysis_router, model_router, webrtc_router, voice_router
 from .middleware import APILoggingMiddleware, api_logger
+from .services.frame_storage_service import get_sessions_storage_base
 
 # Setup logging
 logging.basicConfig(
@@ -56,7 +57,7 @@ if frontend_path.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_path / "assets")), name="assets")
 
 # Static files for session frames (direct access for fast playback)
-sessions_path = Path(__file__).parent.parent / "sessions"
+sessions_path = get_sessions_storage_base()
 if sessions_path.exists():
     app.mount("/sessions", StaticFiles(directory=str(sessions_path)), name="sessions")
     logger.info(f"Mounted sessions folder: {sessions_path}")
@@ -84,6 +85,31 @@ async def startup_event():
             logger.info("VLM model preloaded successfully")
         except Exception as e:
             logger.warning(f"Failed to preload VLM model: {e}")
+
+    # 预热专家模型，避免首个窗口分析时在 async event loop 上做几秒钟同步加载
+    # (Phase ~200MB + Triplet 290MB + YOLO 追踪 warmup 合计 3-5s；在事件循环上阻塞
+    # 会导致正在进行中的 MJPEG 代理生成器卡住，表现为视频流 "先流畅后突然卡死")。
+    import asyncio as _asyncio
+    async def _preload_experts():
+        try:
+            loop = _asyncio.get_event_loop()
+            def _sync_load():
+                from .services.phase_service import get_phase_service
+                from .services.triplet_service import get_triplet_service
+                from .services.yolo_service import get_yolo_service
+                # Ultralytics mutates CUDA_VISIBLE_DEVICES when loading a
+                # selected GPU. Initialize torch-native experts first so their
+                # physical cuda:N device handles are created before YOLO narrows
+                # visibility for its own predictor.
+                p = get_phase_service()
+                t = get_triplet_service()
+                y = get_yolo_service()
+                return bool(y), bool(p), bool(t)
+            y, p, t = await loop.run_in_executor(None, _sync_load)
+            logger.info(f"[Startup] Experts preloaded — yolo={y} phase={p} triplet={t}")
+        except Exception as e:
+            logger.warning(f"[Startup] Expert preload failed (will lazy-load): {e}")
+    _asyncio.create_task(_preload_experts())
 
 
 @app.on_event("shutdown")
@@ -155,4 +181,3 @@ if __name__ == "__main__":
         port=8001,
         reload=True
     )
-

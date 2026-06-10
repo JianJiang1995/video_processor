@@ -470,16 +470,24 @@ class MySQLService:
         others_json = json.dumps(others_data) if others_data else None
 
         with self.get_session() as session:
-            # 检查是否已存在同一 session_id + timestamp 的记录
+            # 检查是否已存在记录：
+            # - 帧级记录：按 (session_id, timestamp) 四舍五入匹配
+            # - 窗口记录：按 (session_id, window_id, analysis_type="window") 匹配
+            #   ← 支持两阶段流程时 Stage 2 覆盖 Stage 1
             existing = None
             if timestamp is not None:
-                # 使用四舍五入到 0.1 秒精度来匹配
                 ts_lower = round(timestamp, 1) - 0.05
                 ts_upper = round(timestamp, 1) + 0.05
                 existing = session.query(AnalysisResult).filter(
                     AnalysisResult.session_id == session_id,
                     AnalysisResult.timestamp >= ts_lower,
                     AnalysisResult.timestamp <= ts_upper
+                ).first()
+            elif analysis_type == "window" and window_id is not None:
+                existing = session.query(AnalysisResult).filter(
+                    AnalysisResult.session_id == session_id,
+                    AnalysisResult.window_id == window_id,
+                    AnalysisResult.analysis_type == "window"
                 ).first()
             
             if existing:

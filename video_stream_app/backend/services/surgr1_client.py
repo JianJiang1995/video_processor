@@ -364,19 +364,19 @@ class SurgR1Client:
             })
         
         try:
-            # Map analysis type to questions
-            custom_questions = None
-            if analysis_type != "all":
-                config = load_config()
-                questions_config = config.get("analysis", {}).get("questions", {})
-                question_map = {
-                    "phase": ["surgical_phase"],
-                    "action": ["surgical_action"],
-                    "tools": ["tool_localization"],
-                }
-                selected_keys = question_map.get(analysis_type, [])
-                custom_questions = [questions_config[k] for k in selected_keys if k in questions_config]
-            
+            # Pipeline v4: SurgR1 只问 Phase；action 由 Phase/Triplet Expert 回答，
+            # tools 由 YOLO Expert 回答。"all" 与 "phase" 等价。
+            config = load_config()
+            questions_config = config.get("analysis", {}).get("questions", {})
+            question_map = {
+                "phase": ["surgical_phase"],
+                "action": ["surgical_action"],  # 保留以备单独调用
+                "tools": ["tool_localization"],
+                "all": ["surgical_phase"],
+            }
+            selected_keys = question_map.get(analysis_type, ["surgical_phase"])
+            custom_questions = [questions_config[k] for k in selected_keys if k in questions_config]
+
             # Single batch API call
             batch_result = await self.analyze_batch(
                 image_paths=image_paths,
@@ -482,21 +482,18 @@ class SurgR1Client:
             cleanup_path = None
         
         try:
-            # Map analysis type to questions
+            # Pipeline v4: SurgR1 只问 Phase；"all" 映射到 phase。
+            config = load_config()
+            questions_config = config.get("analysis", {}).get("questions", {})
             question_map = {
                 "phase": ["surgical_phase"],
                 "action": ["surgical_action"],
                 "tools": ["tool_localization"],
-                "all": None  # Use default 3 questions
+                "all": ["surgical_phase"],
             }
-            
-            custom_questions = None
-            if analysis_type != "all":
-                config = load_config()
-                questions_config = config.get("analysis", {}).get("questions", {})
-                selected_keys = question_map.get(analysis_type, [])
-                custom_questions = [questions_config[k] for k in selected_keys if k in questions_config]
-            
+            selected_keys = question_map.get(analysis_type, ["surgical_phase"])
+            custom_questions = [questions_config[k] for k in selected_keys if k in questions_config]
+
             result = await self.analyze_image(image_path, questions=custom_questions)
             
             if result.get("success"):

@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design A - Classic Two-Column</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-base: #08090d;
+    --bg-primary: #0d0f14;
+    --bg-secondary: #13161e;
+    --bg-card: #191d27;
+    --bg-card-hover: #1e2330;
+    --bg-elevated: #252a36;
+    --border: #1e2330;
+    --border-subtle: #161a24;
+    --accent: #00d4aa;
+    --accent-dim: rgba(0, 212, 170, 0.12);
+    --accent-glow: rgba(0, 212, 170, 0.08);
+    --danger: #ff6b6b;
+    --warning: #ffd93d;
+    --success: #00d4aa;
+    --text-primary: #eef0f6;
+    --text-secondary: #8b95a8;
+    --text-tertiary: #5a6478;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ===== TOP BAR ===== */
+  .topbar {
+    height: 48px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    -webkit-app-region: drag;
+  }
+
+  .topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .app-logo {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, var(--accent), #00b894);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--bg-base);
+  }
+
+  .app-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+
+  .session-info {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    padding: 3px 10px;
+    background: var(--bg-secondary);
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .topbar-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.15s;
+  }
+
+  .topbar-btn:hover {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  /* ===== MAIN LAYOUT ===== */
+  .main {
+    height: calc(100vh - 48px);
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    grid-template-rows: 1fr auto;
+  }
+
+  /* ===== VIDEO AREA ===== */
+  .video-area {
+    grid-row: 1;
+    grid-column: 1;
+    background: var(--bg-base);
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+
+  .video-viewport {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    position: relative;
+  }
+
+  .video-frame {
+    width: 100%;
+    max-width: 960px;
+    aspect-ratio: 16/9;
+    background: #000;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  }
+
+  .video-placeholder {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #1a1e28 0%, #0d0f14 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .video-placeholder-icon {
+    font-size: 48px;
+    opacity: 0.3;
+  }
+
+  .video-placeholder-text {
+    font-size: 13px;
+    color: var(--text-tertiary);
+  }
+
+  /* Live badge */
+  .live-badge {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(8px);
+    border-radius: 100px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ff4757;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* SAM3 overlay indicator */
+  .sam-indicator {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    padding: 4px 10px;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(8px);
+    border-radius: 100px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    border: 1px solid rgba(0, 212, 170, 0.2);
+  }
+
+  /* Window number */
+  .window-number {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    padding: 4px 10px;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(8px);
+    border-radius: 100px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+  }
+
+  /* ===== CONTROL BAR ===== */
+  .control-bar {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border);
+    padding: 12px 24px 16px;
+  }
+
+  /* Progress bar */
+  .progress-container {
+    margin-bottom: 12px;
+    position: relative;
+  }
+
+  .progress-track {
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    position: relative;
+    cursor: pointer;
+  }
+
+  .progress-track:hover {
+    height: 6px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    width: 35%;
+    background: var(--accent);
+    border-radius: 2px;
+    position: relative;
+  }
+
+  .progress-head {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-shadow: 0 0 8px rgba(0, 212, 170, 0.4);
+  }
+
+  /* Window segments on progress bar */
+  .window-segments {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    display: flex;
+  }
+
+  .window-seg {
+    height: 100%;
+    border-right: 1px solid var(--bg-primary);
+    opacity: 0.3;
+  }
+
+  .window-seg.analyzed { background: var(--accent); opacity: 0.2; }
+  .window-seg.current { background: var(--accent); opacity: 0.4; }
+
+  /* Controls row */
+  .controls-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ctrl-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.15s;
+  }
+
+  .ctrl-btn:hover {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  .ctrl-btn.play {
+    width: 44px;
+    height: 44px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 18px;
+  }
+
+  .ctrl-btn.play:hover {
+    background: #00e6b8;
+    transform: scale(1.05);
+  }
+
+  .time-display {
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: 4px;
+  }
+
+  .controls-spacer { flex: 1; }
+
+  /* Service badges */
+  .service-badges {
+    display: flex;
+    gap: 6px;
+  }
+
+  .service-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    border: 1px solid var(--border);
+  }
+
+  .service-badge .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+  }
+
+  .service-badge .dot.on { background: var(--success); }
+  .service-badge .dot.off { background: var(--danger); }
+  .service-badge .dot.warn { background: var(--warning); }
+
+  .overview-btn {
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s;
+  }
+
+  .overview-btn:hover {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ===== SUMMARY PANEL ===== */
+  .summary-panel {
+    grid-row: 1;
+    grid-column: 2;
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .summary-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .summary-title {
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .summary-count {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    background: var(--bg-elevated);
+    padding: 2px 8px;
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .summary-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 8px 20px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .summary-tab {
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    transition: all 0.15s;
+  }
+
+  .summary-tab.active {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  .summary-tab:hover:not(.active) {
+    color: var(--text-secondary);
+  }
+
+  /* Current analysis */
+  .current-analysis {
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .current-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--accent);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .current-label .pulse-ring {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.5s infinite;
+  }
+
+  .current-text {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-primary);
+  }
+
+  .current-meta {
+    margin-top: 12px;
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .current-actions {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+  }
+
+  .action-btn {
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s;
+  }
+
+  .action-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* History cards */
+  .history-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 20px;
+  }
+
+  .history-scroll::-webkit-scrollbar { width: 4px; }
+  .history-scroll::-webkit-scrollbar-track { background: transparent; }
+  .history-scroll::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .history-card {
+    padding: 14px 16px;
+    background: var(--bg-card);
+    border-radius: var(--radius-md);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+  }
+
+  .history-card:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--border);
+  }
+
+  .history-card.active {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .history-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .history-window {
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .history-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .history-text {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .history-tags {
+    margin-top: 8px;
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .history-tag {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    color: var(--text-tertiary);
+  }
+
+  /* ===== LABEL for design name ===== */
+  .design-label {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 8px 16px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: var(--radius-sm);
+    z-index: 100;
+    letter-spacing: 0.5px;
+  }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="app-logo">VA</div>
+    <span class="app-title">Video Analyzer</span>
+    <span class="session-info">session_20260408_143022</span>
+  </div>
+  <div class="topbar-right">
+    <button class="topbar-btn" title="Voice Chat">&#x1F3A4;</button>
+    <button class="topbar-btn" title="Settings">&#x2699;</button>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- VIDEO AREA -->
+  <div class="video-area">
+    <div class="video-viewport">
+      <div class="video-frame">
+        <div class="video-placeholder">
+          <div class="video-placeholder-icon">&#x25B6;</div>
+          <div class="video-placeholder-text">Surgical Video Feed</div>
+        </div>
+        <div class="live-badge">
+          <div class="live-dot"></div>
+          LIVE
+        </div>
+        <div class="sam-indicator">SAM3 Overlay Active</div>
+        <div class="window-number">Window #7</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SUMMARY PANEL -->
+  <div class="summary-panel">
+    <div class="summary-header">
+      <div class="summary-title">
+        Analysis
+        <span class="summary-count">12</span>
+      </div>
+    </div>
+    <div class="summary-tabs">
+      <button class="summary-tab active">Summary</button>
+      <button class="summary-tab">Voice Chat</button>
+    </div>
+
+    <!-- Current -->
+    <div class="current-analysis">
+      <div class="current-label">
+        <div class="pulse-ring"></div>
+        CURRENT WINDOW
+      </div>
+      <div class="current-text">
+        Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis.
+        Two graspers are visible maintaining tissue tension while the needle driver completes
+        an interrupted stitch. Hemostasis appears adequate.
+      </div>
+      <div class="current-meta">
+        <span>W#7</span>
+        <span>00:35 - 00:40</span>
+        <span>Phase: Reconstruction</span>
+      </div>
+      <div class="current-actions">
+        <button class="action-btn">&#128264; Read</button>
+        <button class="action-btn">&#128203; Copy</button>
+        <button class="action-btn">&#128269; Detail</button>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="history-scroll">
+      <div class="history-card active">
+        <div class="history-card-header">
+          <span class="history-window">W#6</span>
+          <span class="history-time">00:30 - 00:35</span>
+        </div>
+        <div class="history-text">Clipping of the cystic artery completed. Surgeon transitions to dissection of the hepatocystic triangle with careful identification of critical view of safety.</div>
+        <div class="history-tags">
+          <span class="history-tag">Dissection</span>
+          <span class="history-tag">CVS</span>
+        </div>
+      </div>
+
+      <div class="history-card">
+        <div class="history-card-header">
+          <span class="history-window">W#5</span>
+          <span class="history-time">00:25 - 00:30</span>
+        </div>
+        <div class="history-text">Initial exposure of the gallbladder fundus. Retraction achieved with atraumatic grasper. Camera angle adjusted for optimal visualization.</div>
+        <div class="history-tags">
+          <span class="history-tag">Exposure</span>
+        </div>
+      </div>
+
+      <div class="history-card">
+        <div class="history-card-header">
+          <span class="history-window">W#4</span>
+          <span class="history-time">00:20 - 00:25</span>
+        </div>
+        <div class="history-text">Trocar placement completed. Four ports established in standard configuration. Pneumoperitoneum maintained at 12mmHg.</div>
+        <div class="history-tags">
+          <span class="history-tag">Setup</span>
+          <span class="history-tag">Access</span>
+        </div>
+      </div>
+
+      <div class="history-card">
+        <div class="history-card-header">
+          <span class="history-window">W#3</span>
+          <span class="history-time">00:15 - 00:20</span>
+        </div>
+        <div class="history-text">Adhesiolysis of peritoneal adhesions near the gallbladder fossa. Blunt dissection with occasional electrocautery for hemostasis.</div>
+        <div class="history-tags">
+          <span class="history-tag">Adhesiolysis</span>
+        </div>
+      </div>
+
+      <div class="history-card">
+        <div class="history-card-header">
+          <span class="history-window">W#2</span>
+          <span class="history-time">00:10 - 00:15</span>
+        </div>
+        <div class="history-text">Initial survey of the abdominal cavity. No abnormalities noted. Liver surface appears normal. Gallbladder is distended and mildly inflamed.</div>
+      </div>
+
+      <div class="history-card">
+        <div class="history-card-header">
+          <span class="history-window">W#1</span>
+          <span class="history-time">00:05 - 00:10</span>
+        </div>
+        <div class="history-text">Patient positioning confirmed. Draping and equipment check completed. Anesthesia team confirms stable vitals.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTROL BAR -->
+  <div class="control-bar">
+    <div class="progress-container">
+      <div class="progress-track">
+        <div class="window-segments">
+          <div class="window-seg analyzed" style="width:14.2%"></div>
+          <div class="window-seg analyzed" style="width:14.2%"></div>
+          <div class="window-seg analyzed" style="width:14.2%"></div>
+          <div class="window-seg analyzed" style="width:14.2%"></div>
+          <div class="window-seg analyzed" style="width:14.2%"></div>
+          <div class="window-seg analyzed" style="width:14.2%"></div>
+          <div class="window-seg current" style="width:14.2%"></div>
+        </div>
+        <div class="progress-fill">
+          <div class="progress-head"></div>
+        </div>
+      </div>
+    </div>
+    <div class="controls-row">
+      <button class="ctrl-btn">&#x23EE;</button>
+      <button class="ctrl-btn">&#x23EA;</button>
+      <button class="ctrl-btn play">&#x25B6;</button>
+      <button class="ctrl-btn">&#x23E9;</button>
+      <button class="ctrl-btn">&#x23ED;</button>
+      <span class="time-display">00:35:12 / 01:42:30</span>
+      <div class="controls-spacer"></div>
+      <div class="service-badges">
+        <div class="service-badge"><span class="dot on"></span>SurgR1</div>
+        <div class="service-badge"><span class="dot on"></span>GLM</div>
+        <div class="service-badge"><span class="dot warn"></span>SAM3</div>
+        <div class="service-badge"><span class="dot on"></span>TTS</div>
+        <div class="service-badge"><span class="dot off"></span>ASR</div>
+      </div>
+      <button class="overview-btn">
+        &#9638;&#9638; Overview
+      </button>
+    </div>
+  </div>
+
+</div>
+
+<div class="design-label">DESIGN A - Classic Two-Column</div>
+
+</body>
+</html>

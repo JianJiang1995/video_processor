@@ -115,7 +115,7 @@ function createWindow() {
 
   // 开发模式加载 Vite 服务器，生产模式加载打包文件
   if (process.env.NODE_ENV === 'development' || process.argv.includes('--dev')) {
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5174'
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5133'
     mainWindow.loadURL(devServerUrl)
     mainWindow.webContents.openDevTools()
   } else {

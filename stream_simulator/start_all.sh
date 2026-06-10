@@ -15,8 +15,42 @@
 set -e
 cd "$(dirname "$0")"
 
+SCRIPT_DIR="$(pwd)"
+
+resolve_default_video() {
+    if [ -n "${STREAM_SIMULATOR_VIDEO:-}" ] && [ -f "${STREAM_SIMULATOR_VIDEO}" ]; then
+        printf '%s\n' "${STREAM_SIMULATOR_VIDEO}"
+        return 0
+    fi
+
+    if [ -f "${SCRIPT_DIR}/media/sample.mp4" ]; then
+        printf '%s\n' "${SCRIPT_DIR}/media/sample.mp4"
+        return 0
+    fi
+
+    local first_media_video
+    first_media_video="$(compgen -G "${SCRIPT_DIR}/media/*" | while read -r file; do
+        case "${file##*.}" in
+            mp4|MP4|mov|MOV|avi|AVI|mkv|MKV|webm|WEBM|flv|FLV|m4v|M4V)
+                printf '%s\n' "$file"
+                break
+                ;;
+        esac
+    done)"
+
+    if [ -n "${first_media_video}" ] && [ -f "${first_media_video}" ]; then
+        printf '%s\n' "${first_media_video}"
+        return 0
+    fi
+
+    return 1
+}
+
 # Default video path
-VIDEO_PATH="${1:-/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4}"
+VIDEO_PATH="${1:-}"
+if [ -z "${VIDEO_PATH}" ]; then
+    VIDEO_PATH="$(resolve_default_video || true)"
+fi
 
 # Check for loop mode (second argument)
 LOOP_MODE=""
@@ -68,9 +102,9 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 # Check if video exists
-if [ ! -f "$VIDEO_PATH" ]; then
+if [ -z "$VIDEO_PATH" ] || [ ! -f "$VIDEO_PATH" ]; then
     echo -e "${YELLOW}Warning: Video not found: $VIDEO_PATH${NC}"
-    echo "Please provide a valid video path."
+    echo "Please provide a valid video path, set STREAM_SIMULATOR_VIDEO, or place a sample at stream_simulator/media/sample.mp4."
     exit 1
 fi
 
@@ -114,8 +148,8 @@ HTTP_PID=$!
 sleep 1
 
 # Start WebRTC server
-echo "Starting WebRTC server on port $WEBRTC_PORT..."
-python webrtc_server.py --video "$VIDEO_PATH" --port $WEBRTC_PORT $FPS_ARG &
+echo "Starting WebRTC server on port $WEBRTC_PORT... $LOOP_MODE"
+python webrtc_server.py --video "$VIDEO_PATH" --port $WEBRTC_PORT $LOOP_FLAG $FPS_ARG &
 WEBRTC_PID=$!
 
 echo ""
@@ -125,6 +159,5 @@ echo ""
 
 # Wait for any child to exit
 wait
-
 
 

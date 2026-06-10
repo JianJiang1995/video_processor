@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design E2 - Final Layout (Monitor + Nav Rail + Right Detail)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    /* Warm Slate + Amber */
+    --bg-base: #161616;
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252525;
+    --bg-card: #2a2a2a;
+    --bg-card-hover: #333;
+    --bg-elevated: #3a3a3a;
+    --border: #383838;
+    --border-subtle: #2e2e2e;
+
+    --accent: #f0a030;
+    --accent-light: #ffc870;
+    --accent-dim: rgba(240, 160, 48, 0.10);
+    --accent-glow: rgba(240, 160, 48, 0.15);
+
+    --success: #4ecdc4;
+    --warning: #f0a030;
+    --danger: #e74c3c;
+    --info: #74b9ff;
+
+    --text-primary: #e8e6e3;
+    --text-secondary: #a8a5a0;
+    --text-tertiary: #6b6862;
+
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-xs: 5px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ===== TOP-LEVEL: NavRail + Main ===== */
+  .app {
+    height: 100vh;
+    display: grid;
+    grid-template-columns: 56px 1fr;
+  }
+
+  /* ===== LEFT NAV RAIL ===== */
+  .nav-rail {
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+  }
+
+  .nav-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), #e67e22);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 14px;
+    color: var(--bg-base);
+    margin-bottom: 16px;
+    cursor: pointer;
+  }
+
+  .nav-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    transition: all 0.15s;
+  }
+
+  .nav-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+
+  .nav-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .nav-btn.active::after {
+    content: '';
+    position: absolute;
+    left: -4px;
+    width: 3px;
+    height: 18px;
+    background: var(--accent);
+    border-radius: 0 3px 3px 0;
+  }
+
+  .nav-tooltip {
+    display: none;
+    position: absolute;
+    left: 52px;
+    padding: 4px 10px;
+    background: var(--bg-elevated);
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    z-index: 100;
+    pointer-events: none;
+  }
+
+  .nav-btn:hover .nav-tooltip {
+    display: block;
+  }
+
+  .nav-spacer { flex: 1; }
+
+  .nav-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-elevated);
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    cursor: pointer;
+  }
+
+  /* ===== MAIN AREA ===== */
+  .main-area {
+    display: grid;
+    grid-template-rows: 44px 1fr auto 240px;
+    overflow: hidden;
+  }
+
+  /* ===== HEADER BAR ===== */
+  .header {
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 14px;
+  }
+
+  .h-title { font-size: 13px; font-weight: 600; }
+
+  .h-sep { width: 1px; height: 16px; background: var(--border); }
+
+  .h-crumb {
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+
+  .h-crumb span { color: var(--text-secondary); }
+
+  .h-badge {
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .h-badge.live {
+    background: rgba(231, 76, 60, 0.12);
+    border: 1px solid rgba(231, 76, 60, 0.2);
+    color: var(--danger);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .h-badge.session {
+    background: var(--bg-card);
+    color: var(--text-tertiary);
+  }
+
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--danger);
+    animation: blink 1.5s infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .h-spacer { flex: 1; }
+
+  .h-btn {
+    width: 30px; height: 30px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .h-btn:hover { background: var(--bg-card); color: var(--text-secondary); }
+
+  /* ===== VIDEO + RIGHT DETAIL SPLIT ===== */
+  .content-row {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    overflow: hidden;
+  }
+
+  /* VIDEO AREA */
+  .video-area {
+    background: #0a0a0a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .video-canvas {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #1a1a1a, #0e0e0e, #1a1a1a);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .v-ph { text-align: center; opacity: 0.25; }
+  .v-ph-icon { font-size: 52px; margin-bottom: 8px; }
+  .v-ph-text { font-size: 14px; color: var(--text-tertiary); letter-spacing: 3px; text-transform: uppercase; }
+
+  .v-overlay {
+    position: absolute;
+    padding: 5px 12px;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(8px);
+    border-radius: 8px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .v-overlay.tl { top: 16px; left: 16px; color: var(--danger); display: flex; align-items: center; gap: 5px; font-weight: 600; }
+  .v-overlay.tr { top: 16px; right: 16px; color: var(--accent); border: 1px solid var(--accent-dim); }
+  .v-overlay.bl { bottom: 16px; left: 16px; color: var(--text-secondary); }
+
+  /* ===== RIGHT DETAIL PANEL ===== */
+  .detail-panel {
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .dp-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .dp-title {
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1;
+  }
+
+  .dp-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .dp-close {
+    width: 26px; height: 26px;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .dp-close:hover { background: var(--bg-card); color: var(--text-secondary); }
+
+  /* Current/Selected window detail */
+  .dp-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px;
+  }
+
+  .dp-content::-webkit-scrollbar { width: 3px; }
+  .dp-content::-webkit-scrollbar-track { background: transparent; }
+  .dp-content::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .dp-window-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .dp-window-num {
+    font-size: 22px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .dp-window-tag {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--bg-base);
+    background: var(--accent);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .dp-time {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .dp-phase {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    background: var(--bg-card);
+    border-radius: 100px;
+    font-size: 11px;
+    color: var(--accent);
+    margin-bottom: 18px;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .dp-phase-dot {
+    width: 6px; height: 6px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  /* Full text - no truncation */
+  .dp-full-text {
+    font-size: 14px;
+    line-height: 1.85;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .dp-divider {
+    height: 1px;
+    background: var(--border-subtle);
+    margin: 18px 0;
+  }
+
+  /* Detail metadata */
+  .dp-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .dp-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+  }
+
+  .dp-meta-label {
+    color: var(--text-tertiary);
+  }
+
+  .dp-meta-value {
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Actions */
+  .dp-actions {
+    padding: 14px 18px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    gap: 6px;
+  }
+
+  .dp-btn {
+    flex: 1;
+    padding: 8px 0;
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .dp-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .dp-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg-base);
+    font-weight: 500;
+  }
+
+  .dp-btn.primary:hover {
+    background: var(--accent-light);
+  }
+
+  /* ===== CONTROL STRIP ===== */
+  .ctrl-strip {
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-subtle);
+    padding: 10px 20px 12px;
+  }
+
+  .ctrl-progress {
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .ctrl-progress:hover { height: 6px; }
+
+  .ctrl-fill {
+    height: 100%;
+    width: 35%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light));
+    border-radius: 2px;
+    position: relative;
+  }
+
+  .ctrl-head {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--accent-light);
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-shadow: 0 0 10px var(--accent-glow);
+  }
+
+  /* Window segment marks */
+  .ctrl-segments {
+    position: absolute;
+    inset: 0;
+    display: flex;
+  }
+
+  .ctrl-seg {
+    flex: 1;
+    border-right: 1px solid var(--bg-primary);
+    position: relative;
+  }
+
+  .ctrl-seg.analyzed { background: var(--accent-dim); }
+  .ctrl-seg.current { background: rgba(240,160,48,0.2); }
+  .ctrl-seg.selected { background: rgba(240,160,48,0.3); outline: 1px solid var(--accent); outline-offset: -1px; }
+
+  .ctrl-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .cb {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .cb:hover { color: var(--text-primary); }
+
+  .cb.play {
+    width: 40px; height: 40px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 16px;
+  }
+
+  .cb.play:hover { background: var(--accent-light); }
+
+  .ctrl-time {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: 4px;
+  }
+
+  .ctrl-spacer { flex: 1; }
+
+  .svc-row { display: flex; gap: 4px; }
+
+  .svc-tag {
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: var(--bg-card);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .svc-d { width: 4px; height: 4px; border-radius: 50%; }
+  .svc-d.on { background: var(--success); }
+  .svc-d.off { background: var(--danger); }
+
+  /* ===== BOTTOM PANEL: Horizontal Scroll Cards ===== */
+  .bottom-panel {
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .bp-header {
+    padding: 10px 20px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .bp-tabs {
+    display: flex;
+    gap: 2px;
+  }
+
+  .bp-tab {
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .bp-tab.active {
+    background: var(--bg-card);
+    color: var(--text-primary);
+  }
+
+  .bp-tab:hover:not(.active) { color: var(--text-secondary); }
+
+  .bp-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .bp-search {
+    padding: 4px 12px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+    width: 160px;
+    outline: none;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .bp-search:focus { border-color: var(--accent); }
+  .bp-search::placeholder { color: var(--text-tertiary); }
+
+  .bp-overview {
+    padding: 4px 12px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .bp-overview:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Card scroll */
+  .card-scroll {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+    padding: 10px 20px 14px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .card-scroll::-webkit-scrollbar { height: 4px; }
+  .card-scroll::-webkit-scrollbar-track { background: transparent; }
+  .card-scroll::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .scroll-card {
+    min-width: 220px;
+    max-width: 220px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-subtle);
+    padding: 12px;
+    cursor: pointer;
+    scroll-snap-align: start;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+
+  .scroll-card:hover {
+    border-color: var(--border);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+  }
+
+  .scroll-card.selected {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .sc-thumb {
+    width: 100%;
+    height: 72px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    margin-bottom: 8px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .sc-thumb-time {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    padding: 1px 5px;
+    background: rgba(0,0,0,0.7);
+    border-radius: 3px;
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+  }
+
+  .sc-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  .sc-win {
+    font-size: 12px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .sc-phase {
+    font-size: 9px;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    color: var(--text-tertiary);
+  }
+
+  .sc-text {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    flex: 1;
+  }
+
+  .sc-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    margin-top: 6px;
+  }
+
+  /* ===== DESIGN LABEL ===== */
+  .design-label {
+    position: fixed;
+    top: 52px;
+    right: 12px;
+    padding: 6px 14px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: var(--radius-sm);
+    z-index: 100;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- LEFT NAV RAIL -->
+  <div class="nav-rail">
+    <div class="nav-logo">VA</div>
+    <button class="nav-btn active" title="Analysis">
+      &#x1F4F9;
+      <span class="nav-tooltip">Video Analysis</span>
+    </button>
+    <button class="nav-btn" title="Overview">
+      &#x2B1A;
+      <span class="nav-tooltip">Overview</span>
+    </button>
+    <button class="nav-btn" title="Voice Chat">
+      &#x1F3A4;
+      <span class="nav-tooltip">Voice Chat</span>
+    </button>
+    <button class="nav-btn" title="Timeline">
+      &#x1F552;
+      <span class="nav-tooltip">Timeline</span>
+    </button>
+    <div class="nav-spacer"></div>
+    <button class="nav-btn" title="Settings">
+      &#x2699;
+      <span class="nav-tooltip">Settings</span>
+    </button>
+    <div class="nav-avatar">JJ</div>
+  </div>
+
+  <!-- MAIN AREA -->
+  <div class="main-area">
+
+    <!-- HEADER -->
+    <div class="header">
+      <span class="h-title">Surg-R1 手术助手</span>
+      <div class="h-sep"></div>
+      <div class="h-crumb">Sessions / <span>Laparoscopic Cholecystectomy</span></div>
+      <div class="h-spacer"></div>
+      <div class="h-badge live"><div class="live-dot"></div> LIVE</div>
+      <div class="h-badge session">session_20260408</div>
+      <button class="h-btn" title="Settings">&#x2699;</button>
+    </div>
+
+    <!-- VIDEO + RIGHT DETAIL -->
+    <div class="content-row">
+      <!-- VIDEO -->
+      <div class="video-area">
+        <div class="video-canvas">
+          <div class="v-ph">
+            <div class="v-ph-icon">&#x25B6;</div>
+            <div class="v-ph-text">Surgical Video Feed</div>
+          </div>
+        </div>
+        <div class="v-overlay tl"><div class="live-dot"></div> LIVE</div>
+        <div class="v-overlay tr">SAM3 Overlay</div>
+        <div class="v-overlay bl">Window #7</div>
+      </div>
+
+      <!-- RIGHT DETAIL PANEL -->
+      <div class="detail-panel">
+        <div class="dp-header">
+          <span class="dp-title">Window Detail</span>
+          <span class="dp-badge">Current</span>
+        </div>
+        <div class="dp-content">
+          <div class="dp-window-label">
+            <span class="dp-window-num">Window #7</span>
+            <span class="dp-window-tag">LIVE</span>
+          </div>
+          <div class="dp-time">
+            &#x23F1; 00:35:00 — 00:40:00
+          </div>
+          <div class="dp-phase">
+            <span class="dp-phase-dot"></span>
+            Phase: Reconstruction
+          </div>
+
+          <div class="dp-full-text">Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis. Two graspers are visible maintaining tissue tension while the needle driver completes an interrupted stitch. Hemostasis appears adequate with minimal bleeding at the suture line.
+
+The anastomosis is being constructed with 4-0 PDS interrupted sutures. Approximately 3 of 8 planned stitches have been placed. The bile duct appears to have good color and perfusion. No signs of ischemia at the cut edges.
+
+Camera angle provides a clear view of the operative field. Irrigation has been performed intermittently to maintain visualization. The assistant is providing appropriate countertraction on the proximal duct.
+
+Overall surgical technique is methodical with appropriate tissue handling. No complications observed at this stage of the procedure.</div>
+
+          <div class="dp-divider"></div>
+
+          <div class="dp-meta">
+            <div class="dp-meta-row">
+              <span class="dp-meta-label">Duration</span>
+              <span class="dp-meta-value">5.0s</span>
+            </div>
+            <div class="dp-meta-row">
+              <span class="dp-meta-label">Frames Analyzed</span>
+              <span class="dp-meta-value">3 / 5</span>
+            </div>
+            <div class="dp-meta-row">
+              <span class="dp-meta-label">Model</span>
+              <span class="dp-meta-value">SurgR1 + GLM-4</span>
+            </div>
+            <div class="dp-meta-row">
+              <span class="dp-meta-label">Confidence</span>
+              <span class="dp-meta-value">High</span>
+            </div>
+          </div>
+        </div>
+        <div class="dp-actions">
+          <button class="dp-btn primary">&#128264; Read Aloud</button>
+          <button class="dp-btn">&#128203; Copy</button>
+          <button class="dp-btn">&#127917; SAM3</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTROL STRIP -->
+    <div class="ctrl-strip">
+      <div class="ctrl-progress">
+        <div class="ctrl-segments">
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg current selected"></div>
+        </div>
+        <div class="ctrl-fill">
+          <div class="ctrl-head"></div>
+        </div>
+      </div>
+      <div class="ctrl-row">
+        <button class="cb">&#x23EE;</button>
+        <button class="cb">&#x23EA;</button>
+        <button class="cb play">&#x25B6;</button>
+        <button class="cb">&#x23E9;</button>
+        <button class="cb">&#x23ED;</button>
+        <span class="ctrl-time">00:35:12 / 01:42:30</span>
+        <div class="ctrl-spacer"></div>
+        <div class="svc-row">
+          <div class="svc-tag"><span class="svc-d on"></span>SurgR1</div>
+          <div class="svc-tag"><span class="svc-d on"></span>GLM</div>
+          <div class="svc-tag"><span class="svc-d on"></span>SAM3</div>
+          <div class="svc-tag"><span class="svc-d on"></span>TTS</div>
+          <div class="svc-tag"><span class="svc-d off"></span>ASR</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOTTOM PANEL: Horizontal Scroll Cards -->
+    <div class="bottom-panel">
+      <div class="bp-header">
+        <div class="bp-tabs">
+          <button class="bp-tab active">Analysis Timeline</button>
+          <button class="bp-tab">Voice Chat</button>
+        </div>
+        <div class="bp-right">
+          <input class="bp-search" placeholder="&#x1F50D; Search..." />
+          <button class="bp-overview">&#x2B1A; Grid Overview</button>
+        </div>
+      </div>
+      <div class="card-scroll">
+
+        <div class="scroll-card selected">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:35</div></div>
+          <div class="sc-top">
+            <span class="sc-win">#7</span>
+            <span class="sc-phase">Reconstruction</span>
+          </div>
+          <div class="sc-text">Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis. Two graspers maintain tissue tension.</div>
+          <div class="sc-time">00:35 — 00:40</div>
+        </div>
+
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:30</div></div>
+          <div class="sc-top">
+            <span class="sc-win">#6</span>
+            <span class="sc-phase">Dissection</span>
+          </div>
+          <div class="sc-text">Clipping of the cystic artery completed. Surgeon transitions to dissection of the hepatocystic triangle.</div>
+          <div class="sc-time">00:30 — 00:35</div>
+        </div>
+
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:25</div></div>
+          <div class="sc-top">
+            <span class="sc-win">#5</span>
+            <span class="sc-phase">Exposure</span>
+          </div>
+          <div class="sc-text">Initial exposure of the gallbladder fundus. Retraction achieved with atraumatic grasper.</div>
+          <div class="sc-time">00:25 — 00:30</div>
+        </div>
+
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:20</div></div>
+          <div class="sc-top">
+            <span class="sc-win">#4</span>
+            <span class="sc-phase">Access</span>
+          </div>
+          <div class="sc-text">Trocar placement completed. Four ports in standard configuration. Pneumoperitoneum at 12mmHg.</div>
+          <div class="sc-time">00:20 — 00:25</div>
+        </div>
+
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:15</div></div>
+          <div class="sc-top">
+            <span class="sc-win">#3</span>
+            <span class="sc-phase">Adhesiolysis</span>
+          </div>
+          <div class="sc-text">Adhesiolysis of peritoneal adhesions near the gallbladder fossa.</div>
+          <div class="sc-time">00:15 — 00:20</div>
+        </div>
+
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:10</div></div>
+          <div class="sc-top">
+            <span class="sc-win">#2</span>
+            <span class="sc-phase">Survey</span>
+          </div>
+          <div class="sc-text">Initial survey of abdominal cavity. Gallbladder distended and mildly inflamed.</div>
+          <div class="sc-time">00:10 — 00:15</div>
+        </div>
+
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:05</div></div>
+          <div class="sc-top">
+            <span class="sc-win">#1</span>
+            <span class="sc-phase">Preparation</span>
+          </div>
+          <div class="sc-text">Patient positioning confirmed. Draping and equipment check completed.</div>
+          <div class="sc-time">00:05 — 00:10</div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<div class="design-label">DESIGN E2 — Final: Monitor + Nav Rail + Right Detail</div>
+
+</body>
+</html>

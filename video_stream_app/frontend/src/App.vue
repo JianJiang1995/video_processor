@@ -28,116 +28,196 @@
 
     <!-- Main Video Analyzer View -->
     <template v-else>
-      <!-- Header -->
-      <header class="app-header">
-        <div class="logo" @click="goHome">
-          <div class="logo-icon">🏥</div>
-          <div class="logo-text">Surg-R1<span>手术助手</span></div>
-        </div>
-        
-        <div class="header-center">
-          <span class="mode-badge" :class="mode">
-            {{ mode === 'local' ? '📁 本地视频' : '📡 实时视频流' }}
-          </span>
-          <span v-if="currentSession && mode === 'stream'" class="session-id-badge">
-            ID: {{ currentSession.session_id?.substring(0, 8) || '' }}
-          </span>
-          <span v-if="currentSession" class="session-name">
-            {{ currentSession.video_name }}
-          </span>
-        </div>
+      <!-- Nav Rail (left) -->
+      <NavRail
+        :activeView="navActiveView"
+        :isAnalyzing="isProcessing"
+        :summaryCount="summaries.length"
+        @navigate="handleNavigation"
+        @toggleAnalyze="toggleAnalysis"
+      />
 
-        <div class="header-actions">
-          <button
-            v-if="summaries.length > 0"
-            class="btn btn-overview"
-            :class="{ pulsing: isProcessing }"
-            @click="enterOverview"
-          >
-            一览{{ isProcessing ? ` (${summaries.length})` : '' }}
-          </button>
-          <button class="btn btn-secondary" @click="goHome">
-            ← 返回
-          </button>
-        </div>
-      </header>
+      <!-- Center + Right layout -->
+      <div class="app-main-wrapper">
+        <!-- Header -->
+        <header class="app-header">
+          <div class="logo" @click="goHome">
+            <div class="logo-icon">&#x1F3E5;</div>
+            <div class="logo-text">Surg-R1<span>手术助手</span></div>
+          </div>
 
-      <!-- Main Content -->
-      <main class="app-main">
-        <!-- Video Section -->
-        <section class="video-section" @click="handleVideoSectionClick">
-          <VideoPlayer
-            :session="currentSession"
-            :currentTime="currentTime"
-            :isPlaying="isPlaying"
-            :isPaused="!isPlaying && mode === 'stream'"
-            :mode="mode"
-            :showSam3="showSam3"
-            :sam3Available="sam3Status.available"
-            :loopWindow="loopWindow"
-            :streamEnded="streamEnded"
-            @timeupdate="handleTimeUpdate"
-            @play="handlePlay"
-            @pause="handlePause"
-            @seek="handleSeek"
-            @upload="handleUpload"
-            @load="handleLoad"
-            @sam3TimeUpdate="handleSam3TimeUpdate"
-            @exitLoop="exitLoopMode"
-            @loopLoadFailed="handleLoopLoadFailed"
-          />
-          <ControlBar
-            :currentTime="currentTime"
-            :duration="duration"
-            :isPlaying="isPlaying"
-            :volume="volume"
-            :mode="mode"
-            :isLive="mode === 'stream'"
-            :analyzedWindows="analyzedWindows"
-            :summaries="summaries"
-            :highlightedWindowId="highlightedWindowId"
-            :isAnalyzing="isProcessing"
-            :surgr1Status="surgr1Status"
-            :glmStatus="glmStatus"
-            :sam3Status="sam3Status"
-            :asrStatus="asrStatus"
-            :ttsStatus="ttsStatus"
-            :showSam3="showSam3"
-            :surgr1Processing="surgr1ProcessingStatus"
-            :sam3Time="sam3Time"
-            :windowDuration="windowDuration"
-            @play="handlePlay"
-            @pause="handlePause"
-            @seek="handleSeek"
-            @volume="handleVolumeChange"
-            @analyze="startAnalysis"
-            @stopAnalyze="stopAnalysis"
-            @seekToWindow="handleSeekToWindow"
-            @hoverWindow="handleWindowHover"
-            @dragSeek="handleDragSeek"
-            @toggleSam3="handleToggleSam3"
-          />
-        </section>
+          <div class="header-center">
+            <span class="mode-badge" :class="mode">
+              {{ mode === 'local' ? '&#x1F4C1; 本地视频' : '&#x1F4E1; 实时视频流' }}
+            </span>
+            <span v-if="currentSession" class="header-session-id">
+              Session {{ currentSession.session_id?.substring(0, 8) || '' }}
+            </span>
+            <span v-if="currentSession" class="session-name">
+              {{ currentSession.video_name }}
+            </span>
+          </div>
 
-        <!-- Summary Panel -->
-        <section class="summary-section">
-          <SummaryPanel
+          <div class="header-actions">
+            <button class="btn btn-secondary" @click="goHome">
+              &#x2190; 返回
+            </button>
+          </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="app-main">
+          <!-- Video + Controls (center) -->
+          <div class="app-main-center">
+            <section
+              class="video-section"
+              :style="{ minHeight: videoSectionMinHeight + 'px' }"
+              @click="handleVideoSectionClick"
+            >
+              <VideoPlayer
+                :session="currentSession"
+                :currentTime="currentTime"
+                :isPlaying="isPlaying"
+                :isPaused="!isPlaying && mode === 'stream'"
+                :mode="mode"
+                :showSam3="showSam3"
+                :sam3Available="sam3Status.available"
+                :loopWindow="loopWindow"
+                :streamEnded="streamEnded"
+                @timeupdate="handleTimeUpdate"
+                @play="handlePlay"
+                @pause="handlePause"
+                @seek="handleSeek"
+                @upload="handleUpload"
+                @load="handleLoad"
+                @sam3TimeUpdate="handleSam3TimeUpdate"
+                @exitLoop="exitLoopMode"
+                @loopLoadFailed="handleLoopLoadFailed"
+              />
+              <ControlBar
+                :currentTime="currentTime"
+                :duration="duration"
+                :isPlaying="isPlaying"
+                :volume="volume"
+                :mode="mode"
+                :isLive="mode === 'stream'"
+                :analyzedWindows="analyzedWindows"
+                :summaries="summaries"
+                :highlightedWindowId="highlightedWindowId"
+                :isAnalyzing="isProcessing"
+                :surgr1Status="surgr1Status"
+                :glmStatus="glmStatus"
+                :sam3Status="sam3Status"
+                :asrStatus="asrStatus"
+                :ttsStatus="ttsStatus"
+                :showSam3="showSam3"
+                :surgr1Processing="surgr1ProcessingStatus"
+                :sam3Time="sam3Time"
+                :windowDuration="windowDuration"
+                @play="handlePlay"
+                @pause="handlePause"
+                @seek="handleSeek"
+                @volume="handleVolumeChange"
+                @analyze="startAnalysis"
+                @stopAnalyze="stopAnalysis"
+                @seekToWindow="handleSeekToWindow"
+                @hoverWindow="handleWindowHover"
+                @dragSeek="handleDragSeek"
+                @toggleSam3="handleToggleSam3"
+              />
+            </section>
+
+            <!-- 历史窗口分析 (always visible) -->
+            <div
+              class="video-resize-handle"
+              title="拖拽调整视频区高度"
+              @pointerdown="startVideoResize"
+            ></div>
+
+            <div
+              class="bottom-card-strip"
+              :style="{ height: bottomStripHeight + 'px' }"
+            >
+              <div class="bcs-header">
+                <span class="bcs-title">历史窗口分析</span>
+                <span class="bcs-count" v-if="summaries.length > 0">
+                  {{ summaries.length }} 个窗口
+                </span>
+                <button
+                  class="bcs-overview-btn"
+                  :disabled="summaries.length === 0"
+                  @click="enterOverview"
+                >
+                  &#x2B1A; 网格视图
+                </button>
+              </div>
+              <div class="bcs-scroll" v-if="summaries.length > 0">
+                <div
+                  v-for="s in sortedSummaries"
+                  :key="s.window_id"
+                  class="bcs-card"
+                  :class="{
+                    selected: s.window_id === selectedWindowId,
+                    'stage-quick': s.stage === 1,
+                    'stage-refined': s.stage === 2,
+                  }"
+                  :title="s.summary"
+                  @click="handleBottomCardClick(s)"
+                >
+                  <div class="bcs-card-top">
+                    <span class="bcs-card-win">窗口{{ toChineseNumeral(s.window_id + 1) }}</span>
+                    <span class="bcs-card-time">
+                      {{ formatWindowTime(s.start_time) }}
+                    </span>
+                    <span v-if="s.stage === 1" class="bcs-card-stage quick" title="快速初稿，SurgR1 精修中">⚡</span>
+                  </div>
+                  <div class="bcs-card-thumb">
+                    <img
+                      v-if="bottomThumbnails[s.window_id]"
+                      :src="bottomThumbnails[s.window_id]"
+                      alt=""
+                    />
+                    <div
+                      v-else
+                      class="bcs-card-thumb-placeholder"
+                      :class="{ loading: bottomThumbLoading[s.window_id] }"
+                    ></div>
+                  </div>
+                  <div class="bcs-card-text">{{ s.summary }}</div>
+                </div>
+              </div>
+              <div v-else class="bcs-empty">
+                <span class="bcs-empty-hint">
+                  {{ isProcessing ? '分析进行中，窗口总结将在此逐条出现…'
+                                  : '点击「开始分析」后，各窗口的手术总结会按时间顺序显示在这里。' }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Panel (Analysis/Chat tabs) -->
+          <div
+            class="right-panel-resize-handle"
+            title="拖拽调整右侧面板宽度"
+            @pointerdown="startRightPanelResize"
+          ></div>
+
+          <RightPanel
+            v-model:activeTab="rightPanelTab"
+            :style="{ width: rightPanelWidth + 'px' }"
             :summaries="summaries"
             :currentSummary="currentSummary"
-            :currentTime="currentTime"
-            :isProcessing="isProcessing"
-            :mode="mode"
-            :highlightedWindowId="highlightedWindowId"
+            :selectedWindowId="selectedWindowId"
             :sessionId="currentSession?.session_id || ''"
+            :isProcessing="isProcessing"
             @tts="handleTTS"
-            @sam2="handleSAM2"
-            @seek="handleSeek"
+            @sam3="handleSAM2"
             @seekToWindow="handleSeekToWindow"
-            @play="handlePlay"
+            @chatMessage="handleVoiceMessage"
           />
-        </section>
-      </main>
-      
+        </main>
+      </div>
+
       <!-- Frame Analysis Popup (shown during drag/seek) -->
       <FrameAnalysisPopup
         :visible="frameAnalysisPopup.visible"
@@ -146,18 +226,11 @@
         :position="frameAnalysisPopup.position"
         @close="closeFrameAnalysisPopup"
       />
-      
-      <!-- Voice Chat Component -->
-      <VoiceChat 
-        :sessionId="currentSession?.session_id || 'default'"
-        @message="handleVoiceMessage"
-        @transcript="handleVoiceTranscript"
-      />
-      
+
       <!-- Toast Message -->
       <Transition name="toast">
         <div v-if="toastVisible" class="toast-message">
-          <span class="toast-icon">⚠️</span>
+          <span class="toast-icon">&#x26A0;&#xFE0F;</span>
           <span class="toast-text">{{ toastMessage }}</span>
         </div>
       </Transition>
@@ -166,8 +239,8 @@
       <Transition name="toast">
         <div v-if="showOverviewToast" class="overview-toast">
           <span class="overview-toast-text">分析完成</span>
-          <button class="overview-toast-btn" @click="enterOverview">进入一览模式 →</button>
-          <button class="overview-toast-dismiss" @click="showOverviewToast = false">✕</button>
+          <button class="overview-toast-btn" @click="enterOverview">进入一览模式 &#x2192;</button>
+          <button class="overview-toast-dismiss" @click="showOverviewToast = false">&#x2715;</button>
         </div>
       </Transition>
     </template>
@@ -175,7 +248,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { apiUrl } from './utils/electronBridge.js'
 import analysisQueue from './utils/AnalysisQueue.js'
@@ -187,6 +260,8 @@ import SummaryPanel from './components/SummaryPanel.vue'
 import VoiceChat from './components/VoiceChat.vue'
 import FrameAnalysisPopup from './components/FrameAnalysisPopup.vue'
 import WindowOverview from './components/WindowOverview.vue'
+import NavRail from './components/NavRail.vue'
+import RightPanel from './components/RightPanel.vue'
 
 // View state
 const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview'
@@ -199,6 +274,8 @@ const duration = ref(0)
 const isPlaying = ref(false)
 const volume = ref(0.8)
 const summaries = ref([])
+const bottomThumbnails = reactive({})
+const bottomThumbLoading = reactive({})
 const isProcessing = ref(false)
 
 // New states for enhanced features
@@ -212,6 +289,13 @@ const loopWindow = ref(null)  // { window_id, start_time, end_time }
 // Flag to prevent clearing loopWindow during loop-triggered seeks
 let isLoopSeek = false
 const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime due to processing delay)
+
+// New E3 layout state
+const rightPanelTab = ref('analysis')  // 'analysis' or 'chat'
+const selectedWindowId = ref(-1)  // Selected window in bottom card strip
+const navActiveView = ref('analysis')  // Nav rail active view
+const rightPanelWidth = ref(Math.max(500, Number(localStorage.getItem('surg_right_panel_width')) || 500))
+const bottomStripHeight = ref(Number(localStorage.getItem('surg_bottom_strip_height')) || 236)
 const frameAnalysisPopup = ref({
   visible: false,
   data: null,
@@ -262,6 +346,92 @@ const createSessionAbortController = () => {
 // Get the current abort signal (for axios requests)
 const getSessionSignal = () => {
   return sessionAbortController?.signal
+}
+
+const bottomThumbQueue = []
+const bottomThumbQueued = new Set()
+let bottomThumbActive = 0
+
+const clearBottomThumbnails = () => {
+  Object.keys(bottomThumbnails).forEach(key => delete bottomThumbnails[key])
+  Object.keys(bottomThumbLoading).forEach(key => delete bottomThumbLoading[key])
+  bottomThumbQueue.length = 0
+  bottomThumbQueued.clear()
+  bottomThumbActive = 0
+}
+
+const fetchBottomThumbnail = async (summary) => {
+  const wid = summary?.window_id
+  const sid = currentSession.value?.session_id
+  if (wid == null || !sid || bottomThumbnails[wid]) return
+
+  const startTime = Number(summary.start_time ?? summary.window_start ?? 0)
+  const endTime = Number(summary.end_time ?? summary.window_end ?? startTime + windowDuration.value)
+  const midTime = Math.max(0, (startTime + endTime) / 2)
+
+  try {
+    const batchRes = await axios.get(`/api/analysis/frames-batch/${sid}`, {
+      params: {
+        start: Math.max(0, midTime - 1),
+        end: midTime + 1,
+        max_frames: 8,
+        use_url: true,
+        use_preview: true,
+      },
+      signal: getSessionSignal(),
+    })
+    const frames = batchRes.data?.frames || []
+    if (batchRes.data?.success && frames.length > 0) {
+      const best = frames.reduce((a, b) => {
+        return Math.abs((b.timestamp || 0) - midTime) < Math.abs((a.timestamp || 0) - midTime) ? b : a
+      }, frames[0])
+      if (best?.url) {
+        if (currentSession.value?.session_id !== sid) return
+        bottomThumbnails[wid] = best.url
+        return
+      }
+    }
+
+    const frameRes = await axios.get(`/api/analysis/frame-at-timestamp/${sid}`, {
+      params: { timestamp: midTime, tolerance: 5.0 },
+      signal: getSessionSignal(),
+    })
+    if (frameRes.data?.success && frameRes.data.image_base64) {
+      if (currentSession.value?.session_id !== sid) return
+      bottomThumbnails[wid] = `data:image/jpeg;base64,${frameRes.data.image_base64}`
+    }
+  } catch (error) {
+    if (axios.isCancel(error) || error.name === 'AbortError') return
+    console.warn(`[BottomStrip] thumbnail failed for window ${wid}:`, error.message)
+  }
+}
+
+const pumpBottomThumbQueue = () => {
+  while (bottomThumbActive < 1 && bottomThumbQueue.length > 0) {
+    const summary = bottomThumbQueue.shift()
+    const wid = summary?.window_id
+    if (wid == null || bottomThumbnails[wid]) {
+      if (wid != null) bottomThumbQueued.delete(wid)
+      continue
+    }
+
+    bottomThumbActive += 1
+    bottomThumbLoading[wid] = true
+    fetchBottomThumbnail(summary).finally(() => {
+      bottomThumbActive = Math.max(0, bottomThumbActive - 1)
+      bottomThumbQueued.delete(wid)
+      bottomThumbLoading[wid] = false
+      pumpBottomThumbQueue()
+    })
+  }
+}
+
+const enqueueBottomThumbnail = (summary) => {
+  const wid = summary?.window_id
+  if (wid == null || bottomThumbnails[wid] || bottomThumbQueued.has(wid)) return
+  bottomThumbQueued.add(wid)
+  bottomThumbQueue.push(summary)
+  pumpBottomThumbQueue()
 }
 
 // Abort all session requests
@@ -346,6 +516,7 @@ const handleResumeSession = (session) => {
 const handleStreamConnect = ({ session, autoAnalyze }) => {
   // Clear previous session data first
   summaries.value = []
+  clearBottomThumbnails()
   highlightedWindowId.value = -1
   userSelectedWindow.value = false
   loopWindow.value = null
@@ -431,6 +602,7 @@ const goHome = () => {
   currentView.value = 'select'
   currentSession.value = null
   summaries.value = []
+  clearBottomThumbnails()
   isProcessing.value = false
   isPlaying.value = false
   currentTime.value = 0
@@ -558,6 +730,7 @@ const handleUpload = async (file) => {
     currentSession.value = response.data
     duration.value = response.data.duration
     summaries.value = []
+    clearBottomThumbnails()
     currentTime.value = 0
     
     // Auto-start SurgR1 continuous processing when video is uploaded
@@ -576,6 +749,7 @@ const handleLoad = async (path) => {
     currentSession.value = response.data
     duration.value = response.data.duration
     summaries.value = []
+    clearBottomThumbnails()
     currentTime.value = 0
     
     // Auto-start SurgR1 continuous processing when video is loaded
@@ -589,9 +763,47 @@ const handleLoad = async (path) => {
 const loadExistingSummaries = async (sessionId) => {
   try {
     const response = await axios.get(`/api/analysis/summaries/${sessionId}`)
-    summaries.value = response.data  } catch (error) {
+    summaries.value = response.data
+    summaries.value.forEach(enqueueBottomThumbnail)
+  } catch (error) {
     console.error('Failed to load summaries:', error)
   }
+}
+
+const refreshSurgr1Status = async () => {
+  surgr1Status.value = { ...surgr1Status.value, checking: true }
+  try {
+    const res = await axios.get('/api/analysis/surgr1/status', { timeout: 12000 })
+    const available = !!res.data.available
+    surgr1Status.value = { available, checking: false }
+    return available
+  } catch (error) {
+    console.warn('[Status] SurgR1 check failed:', error.message)
+    surgr1Status.value = { available: false, checking: false }
+    return false
+  }
+}
+
+const refreshGlmStatus = async () => {
+  glmStatus.value = { ...glmStatus.value, checking: true }
+  try {
+    const res = await axios.get('/api/analysis/glm/status', { timeout: 12000 })
+    const available = !!res.data.available
+    glmStatus.value = { available, checking: false }
+    return available
+  } catch (error) {
+    console.warn('[Status] VLM check failed:', error.message)
+    glmStatus.value = { available: false, checking: false }
+    return false
+  }
+}
+
+const ensureRequiredAnalysisServices = async () => {
+  const [surgr1Available, glmAvailable] = await Promise.all([
+    refreshSurgr1Status(),
+    refreshGlmStatus(),
+  ])
+  return { surgr1Available, glmAvailable }
 }
 
 // Start continuous SurgR1 processing in background
@@ -599,13 +811,8 @@ const startSurgR1Continuous = async (sessionId) => {
   // Create a new abort controller for this session
   createSessionAbortController()
   
-  // Wait for status check to complete if still checking
-  if (surgr1Status.value.checking) {
-    console.log('Waiting for SurgR1 status check to complete...')
-    // Wait up to 5 seconds for status check
-    for (let i = 0; i < 50 && surgr1Status.value.checking; i++) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
+  if (surgr1Status.value.checking || !surgr1Status.value.available) {
+    await refreshSurgr1Status()
   }
   
   // Try to start anyway - the backend will handle if service is unavailable
@@ -722,15 +929,17 @@ const stopSurgR1StatusPolling = () => {
 
 const startAnalysis = async () => {
   if (!currentSession.value) return
-  
-  // Check if GLM is available
-  if (!glmStatus.value.available) {
-    alert('GLM 服务不可用，请确保 GLM 服务已启动')
+
+  const { surgr1Available, glmAvailable } = await ensureRequiredAnalysisServices()
+
+  // Check VLM (Gemini/GLM) availability — backend picks provider from config
+  if (!glmAvailable) {
+    alert('VLM 服务（Gemini）不可用，请检查 GEMINI_API_KEY 或网络代理')
     return
   }
-  
+
   // Check if SurgR1 is available
-  if (!surgr1Status.value.available) {
+  if (!surgr1Available) {
     alert('SurgR1 服务不可用，请先启动 R1 服务')
     return
   }
@@ -778,9 +987,25 @@ const startAnalysis = async () => {
       if (existingIndex >= 0) {
         summaries.value[existingIndex] = data
       } else {
-        summaries.value.push(data)
-        summaries.value.sort((a, b) => a.start_time - b.start_time)
+        // [perf] SSE 通常按时间顺序推送，绝大多数情况可直接 push 无需 sort。
+        // 只在乱序到达（新 window_id 不是最大）时做一次 O(n) 的顺序插入，
+        // 避免每条消息都跑 O(n log n) sort。
+        const arr = summaries.value
+        const last = arr.length > 0 ? arr[arr.length - 1] : null
+        if (!last || (data.start_time ?? 0) >= (last.start_time ?? 0)) {
+          arr.push(data)
+        } else {
+          let lo = 0, hi = arr.length
+          const st = data.start_time ?? 0
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1
+            if ((arr[mid].start_time ?? 0) <= st) lo = mid + 1
+            else hi = mid
+          }
+          arr.splice(lo, 0, data)
+        }
       }
+      enqueueBottomThumbnail(data)
       
       // Highlight new window briefly - only for NEW windows, not updates
       // Also skip if user is in loop playback mode (userSelectedWindow is true)
@@ -859,6 +1084,111 @@ const enterOverview = () => {
   currentView.value = 'overview'
 }
 
+// --- E3 Layout handlers ---
+// [perf] summaries 已按 start_time 升序维护（见 SSE 顺序插入逻辑），
+// 底部条需要最新的在前（window_id 降序 ≈ start_time 降序），直接 reverse 即可，
+// O(n) 代替 O(n log n) 的 sort。
+const sortedSummaries = computed(() => {
+  return summaries.value.slice().reverse()
+})
+
+const videoSectionMinHeight = computed(() => {
+  return Math.max(360, window.innerHeight - bottomStripHeight.value - 260)
+})
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+
+const startRightPanelResize = (event) => {
+  event.preventDefault()
+  const startX = event.clientX
+  const startWidth = rightPanelWidth.value
+  document.body.classList.add('is-resizing-panel')
+
+  const onMove = (e) => {
+    rightPanelWidth.value = clamp(startWidth - (e.clientX - startX), 420, 860)
+  }
+  const onUp = () => {
+    localStorage.setItem('surg_right_panel_width', String(rightPanelWidth.value))
+    document.body.classList.remove('is-resizing-panel')
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp, { once: true })
+}
+
+const startVideoResize = (event) => {
+  event.preventDefault()
+  const startY = event.clientY
+  const startHeight = bottomStripHeight.value
+  document.body.classList.add('is-resizing-video')
+
+  const onMove = (e) => {
+    bottomStripHeight.value = clamp(startHeight - (e.clientY - startY), 120, 440)
+  }
+  const onUp = () => {
+    localStorage.setItem('surg_bottom_strip_height', String(bottomStripHeight.value))
+    document.body.classList.remove('is-resizing-video')
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp, { once: true })
+}
+
+const formatWindowTime = (seconds) => {
+  if (seconds == null || !isFinite(seconds)) return '--:--'
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+const CN_DIGITS = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+const toChineseNumeral = (n) => {
+  if (n == null || !isFinite(n)) return ''
+  const num = Math.floor(n)
+  if (num < 0) return String(num)
+  if (num < 10) return CN_DIGITS[num]
+  if (num === 10) return '十'
+  if (num < 20) return '十' + CN_DIGITS[num - 10]
+  if (num < 100) {
+    const tens = Math.floor(num / 10)
+    const ones = num % 10
+    return CN_DIGITS[tens] + '十' + (ones === 0 ? '' : CN_DIGITS[ones])
+  }
+  return String(num)
+}
+
+const handleNavigation = (view) => {
+  navActiveView.value = view
+  if (view === 'analysis') {
+    rightPanelTab.value = 'analysis'
+  } else if (view === 'chat') {
+    rightPanelTab.value = 'chat'
+  } else if (view === 'overview') {
+    enterOverview()
+  } else if (view === 'home') {
+    goHome()
+  }
+}
+
+const toggleAnalysis = () => {
+  if (isProcessing.value) {
+    stopAnalysis()
+  } else {
+    startAnalysis()
+  }
+}
+
+const handleBottomCardClick = (summary) => {
+  selectedWindowId.value = summary.window_id
+  rightPanelTab.value = 'analysis'
+  // Also seek to this window
+  handleSeekToWindow(summary.window_id)
+}
+
 const handleOverviewBack = () => {
   currentView.value = 'main'
 }
@@ -879,6 +1209,9 @@ const startStreamTimer = () => {
   streamEnded.value = false
   streamWasActive.value = false
   
+  // [perf] 原来每 100ms 更新 currentTime，会驱动 ControlBar 的 progressPercent /
+  // windowCount / currentSummary 等一串 computed 跟着重算，与 MJPEG 解码争主线程。
+  // 直播的时间显示精度到 250ms 肉眼无感（秒级时间戳），但 CPU 负载显著降低。
   streamTimerInterval = setInterval(() => {
     // Don't update time if in loop playback mode (VideoPlayer handles time updates)
     if (loopWindow.value) return
@@ -894,7 +1227,7 @@ const startStreamTimer = () => {
     
     // Also update duration for display purposes
     duration.value = safeElapsed
-  }, 100)  // Update every 100ms for smooth display
+  }, 250)  // 直播时间显示刷新：250ms 足够，避免主线程与视频解码争用
   
   // Start checking if stream has ended (check every 2 seconds)
   startStreamEndCheck()
@@ -931,11 +1264,11 @@ const startStreamEndCheck = () => {
       const baseUrl = `${urlObj.protocol}//${urlObj.host}`
       
       // Check if this is a direct external stream (stream_simulator) vs proxy stream
-      // Proxy streams go through our backend (localhost:5174 or localhost:8001) and don't have /info endpoint
+      // Proxy streams go through our backend (localhost:5133 or localhost:8001) and don't have /info endpoint
       // Direct streams (e.g., localhost:9001) from stream_simulator have /info endpoint
       const isProxyStream = urlObj.pathname.includes('/api/video/') || 
                             urlObj.pathname.includes('/mjpeg-proxy/') ||
-                            urlObj.host.includes(':5174') ||  // Vite dev server
+                            urlObj.host.includes(':5133') ||  // Vite dev server
                             urlObj.host.includes(':8001')     // Backend server
       
       // Only check /info for direct external streams (stream_simulator)
@@ -1334,32 +1667,13 @@ watch(currentTime, (newTime) => {
 
 // Check all service statuses
 const checkAnalysisServices = async () => {
-  // #region agent log
-  const startTime = Date.now();
-  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:checkAnalysisServices',message:'Service check START',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-  // #endregion
-  
   // Check all services in parallel with individual timing
   const checks = [
     // SurgR1
-    axios.get('/api/analysis/surgr1/status', { timeout: 5000 })
-      .then(res => { 
-        // #region agent log
-        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:surgr1Status',message:'SurgR1 check done',data:{elapsed:Date.now()-startTime,available:res.data.available},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
-        surgr1Status.value = { available: res.data.available, checking: false } 
-      })
-      .catch((e) => { 
-        // #region agent log
-        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:surgr1Status',message:'SurgR1 check FAILED',data:{elapsed:Date.now()-startTime,error:e.message},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
-        surgr1Status.value = { available: false, checking: false } 
-      }),
+    refreshSurgr1Status(),
     
     // GLM
-    axios.get('/api/analysis/glm/status', { timeout: 5000 })
-      .then(res => { glmStatus.value = { available: res.data.available, checking: false } })
-      .catch(() => { glmStatus.value = { available: false, checking: false } }),
+    refreshGlmStatus(),
     
     // SAM3
     axios.get('/api/analysis/sam3/status', { timeout: 5000 })
@@ -1373,25 +1687,11 @@ const checkAnalysisServices = async () => {
     
     // TTS - This was causing 60s timeout!
     axios.get('/api/voice/tts/status', { timeout: 5000 })
-      .then(res => { 
-        // #region agent log
-        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:ttsStatus',message:'TTS check done',data:{elapsed:Date.now()-startTime,available:res.data.available},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
-        ttsStatus.value = { available: res.data.available, checking: false } 
-      })
-      .catch((e) => { 
-        // #region agent log
-        fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:ttsStatus',message:'TTS check FAILED/TIMEOUT',data:{elapsed:Date.now()-startTime,error:e.message},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
-        ttsStatus.value = { available: false, checking: false } 
-      })
+      .then(res => { ttsStatus.value = { available: res.data.available, checking: false } })
+      .catch(() => { ttsStatus.value = { available: false, checking: false } })
   ]
   
   await Promise.allSettled(checks)
-  
-  // #region agent log
-  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:checkAnalysisServices',message:'Service check END',data:{totalElapsed:Date.now()-startTime},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-  // #endregion
 }
 
 // Status check interval
@@ -1419,16 +1719,8 @@ const handleBeforeUnload = () => {
 }
 
 onMounted(async () => {
-  // #region agent log
-  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:onMounted',message:'App mounted START',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
-  
   // 首先获取配置
   await fetchConfig()
-  
-  // #region agent log
-  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:onMounted',message:'Config fetched, starting service check',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   
   checkAnalysisServices()
   // Refresh status every 30 seconds
@@ -1436,10 +1728,6 @@ onMounted(async () => {
   
   // Add beforeunload handler for reliable cleanup
   window.addEventListener('beforeunload', handleBeforeUnload)
-  
-  // #region agent log
-  fetch('http://localhost:7244/ingest/4c43c557-65ee-4714-a50a-64ce4a04fdbb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.vue:onMounted',message:'App mounted END',data:{},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
 })
 
 onUnmounted(() => {
@@ -1482,8 +1770,90 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* E3 Layout: NavRail + Main Wrapper */
+.app-container {
+  display: flex;
+  /* 100vh 而非 min-height：整个 app 锁在视口内，底部"历史窗口分析"条不再掉到屏幕下方 */
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-main-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.video-resize-handle {
+  height: 10px;
+  flex: 0 0 10px;
+  cursor: row-resize;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  position: relative;
+}
+
+.video-resize-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 72px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  transform: translate(-50%, -50%);
+}
+
+.video-resize-handle:hover::before {
+  background: var(--accent-primary);
+}
+
+.right-panel-resize-handle {
+  width: 10px;
+  flex: 0 0 10px;
+  cursor: col-resize;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  position: relative;
+}
+
+.right-panel-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 72px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  transform: translate(-50%, -50%);
+}
+
+.right-panel-resize-handle:hover::before {
+  background: var(--accent-primary);
+}
+
+:global(body.is-resizing-panel),
+:global(body.is-resizing-video) {
+  user-select: none;
+}
+
+:global(body.is-resizing-panel *) {
+  cursor: col-resize !important;
+}
+
+:global(body.is-resizing-video *) {
+  cursor: row-resize !important;
+}
+
 .stream-setup {
   min-height: 100vh;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1493,18 +1863,18 @@ onUnmounted(() => {
 .header-center {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 1.1rem;
 }
 
 .mode-badge {
-  font-size: 0.8rem;
-  padding: 0.35rem 0.75rem;
+  font-size: 0.9rem;
+  padding: 0.42rem 0.85rem;
   border-radius: var(--radius-sm);
   background: var(--bg-tertiary);
 }
 
 .mode-badge.stream {
-  background: rgba(0, 212, 170, 0.15);
+  background: var(--accent-glow);
   color: var(--accent-primary);
 }
 
@@ -1514,7 +1884,7 @@ onUnmounted(() => {
 }
 
 .session-id-badge {
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   padding: 0.25rem 0.5rem;
   border-radius: var(--radius-sm);
   background: rgba(255, 193, 7, 0.15);
@@ -1524,7 +1894,7 @@ onUnmounted(() => {
 }
 
 .session-name {
-  font-size: 0.9rem;
+  font-size: 1rem;
   color: var(--text-secondary);
   max-width: 200px;
   overflow: hidden;
@@ -1550,7 +1920,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.5rem;
   font-weight: 500;
-  font-size: 0.9rem;
+  font-size: 1rem;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
   z-index: 9999;
 }
@@ -1593,7 +1963,7 @@ onUnmounted(() => {
 }
 
 .overview-toast-text {
-  font-size: 0.9rem;
+  font-size: 1rem;
   color: var(--text-secondary);
 }
 
@@ -1604,7 +1974,7 @@ onUnmounted(() => {
   padding: 0.4rem 1rem;
   border-radius: var(--radius-sm);
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.95rem;
   cursor: pointer;
   transition: opacity 0.2s;
   white-space: nowrap;
@@ -1618,7 +1988,7 @@ onUnmounted(() => {
   border: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 1rem;
   padding: 2px 4px;
 }
 .overview-toast-dismiss:hover {
@@ -1633,7 +2003,7 @@ onUnmounted(() => {
   padding: 0.35rem 0.8rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   font-weight: 500;
   transition: all 0.2s;
 }
@@ -1646,6 +2016,6 @@ onUnmounted(() => {
 }
 @keyframes overviewPulse {
   0%, 100% { box-shadow: none; }
-  50% { box-shadow: 0 0 10px rgba(0, 212, 170, 0.35); }
+  50% { box-shadow: 0 0 10px rgba(240, 160, 48, 0.35); }
 }
 </style>

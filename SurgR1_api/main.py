@@ -220,8 +220,15 @@ class SurgR1Model:
         if questions is None:
             questions_dict = QUESTIONS
         else:
-            # If custom questions provided, use them with generic keys
-            questions_dict = {f"q{i}": q for i, q in enumerate(questions)}
+            # 自定义 questions：若传来的是训练格式的 <image>，同样需要替换成
+            # vLLM 需要的 <|vision_start|><|image_pad|><|vision_end|>，
+            # 否则 vLLM 会报 "Expected there to be 1 prompt updates... found 0"。
+            questions_dict = {
+                f"q{i}": (q.replace("<image>", VLLM_IMAGE_PLACEHOLDER)
+                          if "<image>" in q and VLLM_IMAGE_PLACEHOLDER not in q
+                          else q)
+                for i, q in enumerate(questions)
+            }
         
         # Build sampling params with optional overrides
         sampling_params = SamplingParams(

@@ -33,6 +33,26 @@ function loadAppConfig() {
 
 const appConfig = loadAppConfig()
 
+// ============= X11 Forwarding / Remote Display Compatibility =============
+// When DISPLAY points to a remote X server (SSH X11 forwarding / MobaXterm),
+// GPU acceleration causes:
+//   - Black/frozen regions on window resize
+//   - Extremely slow rendering
+//   - Occasional crashes
+// Detect remote display and force software rendering in that case.
+const displayEnv = process.env.DISPLAY || ''
+const isRemoteDisplay = displayEnv.startsWith('localhost:') ||
+                        displayEnv.includes(':') && !displayEnv.startsWith(':0') && !displayEnv.startsWith(':1')
+const forceSoftwareRender = isRemoteDisplay || process.env.ELECTRON_DISABLE_GPU === '1'
+
+if (forceSoftwareRender) {
+  console.log(`[GPU] Remote display detected (DISPLAY=${displayEnv}) - disabling hardware acceleration`)
+  app.disableHardwareAcceleration()
+}
+
+// Sandbox conflicts with many server environments
+app.commandLine.appendSwitch('no-sandbox')
+
 // ============= Service Manager =============
 
 const serviceManager = new ServiceManager()
@@ -76,8 +96,19 @@ function createWindow() {
     mainWindow.show()
   })
 
+  // Force repaint on resize (workaround for X11 forwarding black artifacts)
+  let resizeDebounce = null
+  mainWindow.on('resize', () => {
+    if (resizeDebounce) clearTimeout(resizeDebounce)
+    resizeDebounce = setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.invalidate()
+      }
+    }, 100)
+  })
+
   if (process.env.NODE_ENV === 'development' || process.argv.includes('--dev')) {
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5174'
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5133'
     mainWindow.loadURL(devServerUrl)
     mainWindow.webContents.openDevTools()
   } else {

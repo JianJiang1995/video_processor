@@ -5,9 +5,12 @@ import os
 import asyncio
 import time
 import logging
+import threading
+import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -26,6 +29,169 @@ router = APIRouter(prefix="/api/video", tags=["video"])
 
 # Store active processors
 active_processors = {}
+
+
+class DisplayStreamState:
+    """Shared latest-frame reader for UI playback.
+
+    The UI should not queue every MJPEG frame. This reader continuously keeps
+    only the latest encoded JPEG; slow clients naturally drop old frames.
+    """
+
+    def __init__(self, session_id: str, video_path: str, fps: float, quality: int, max_width: int):
+        self.session_id = session_id
+        self.video_path = video_path
+        self.fps = max(1.0, float(fps))
+        self.quality = int(quality)
+        self.max_width = int(max_width or 0)
+        self.latest_jpeg: Optional[bytes] = None
+        self.sequence = 0
+        self.clients = 0
+        self.running = False
+        self.last_client_time = time.time()
+        self.lock = threading.Lock()
+        self.thread: Optional[threading.Thread] = None
+        self._local_file_mode = False
+
+    def _resolve_source(self):
+        """Use the simulator backing file directly when possible.
+
+        The local stream simulator exposes 1080p MJPEG on /stream. Pulling that
+        for UI display forces an unnecessary JPEG decode/re-encode loop. For
+        localhost simulator streams we can open the source mp4 directly and
+        simulate realtime playback with much lower CPU and no socket buffering.
+        """
+        parsed = urlparse(self.video_path)
+        if parsed.scheme in ("http", "https") and parsed.hostname in {"localhost", "127.0.0.1"}:
+            try:
+                info_url = f"{parsed.scheme}://{parsed.netloc}/info"
+                with urllib.request.urlopen(info_url, timeout=1.0) as response:
+                    info = json.loads(response.read().decode("utf-8"))
+                source_path = info.get("video_path")
+                source_fps = float(info.get("fps") or self.fps)
+                if source_path and os.path.exists(source_path):
+                    logger.info(
+                        f"[DisplayStream] Using simulator source file directly: {source_path}"
+                    )
+                    return source_path, True, source_fps
+            except Exception as e:
+                logger.debug(f"[DisplayStream] Simulator source resolve skipped: {e}")
+
+        return self.video_path, False, self.fps
+
+    def start(self):
+        with self.lock:
+            self.clients += 1
+            self.last_client_time = time.time()
+            if self.running:
+                return
+            self.running = True
+            self.thread = threading.Thread(
+                target=self._reader_loop,
+                name=f"display-stream-{self.session_id[:6]}",
+                daemon=True,
+            )
+            self.thread.start()
+
+    def release(self):
+        with self.lock:
+            self.clients = max(0, self.clients - 1)
+            self.last_client_time = time.time()
+
+    def stop(self):
+        with self.lock:
+            self.running = False
+
+    def snapshot(self):
+        with self.lock:
+            return self.sequence, self.latest_jpeg
+
+    def _prepare_frame(self, frame):
+        if self.max_width:
+            h, w = frame.shape[:2]
+            if w > self.max_width:
+                new_h = max(1, int(h * (self.max_width / w)))
+                frame = cv2.resize(frame, (self.max_width, new_h), interpolation=cv2.INTER_AREA)
+        return frame
+
+    def _reader_loop(self):
+        cap = None
+        try:
+            source_path, self._local_file_mode, source_fps = self._resolve_source()
+            cap = cv2.VideoCapture(source_path, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if not cap.isOpened():
+                logger.error(f"[DisplayStream] Cannot open video: {source_path}")
+                return
+
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.quality]
+            publish_fps = min(self.fps, max(1.0, float(source_fps or self.fps)))
+            min_interval = 1.0 / publish_fps
+            last_publish = 0.0
+            next_frame_time = time.perf_counter()
+            logger.info(
+                f"[DisplayStream] Started {self.session_id}: fps={publish_fps:.1f}, "
+                f"quality={self.quality}, max_width={self.max_width or 'source'}, "
+                f"source={'file' if self._local_file_mode else 'stream'}"
+            )
+
+            while True:
+                with self.lock:
+                    if not self.running:
+                        break
+                    if self.clients <= 0 and time.time() - self.last_client_time > 3:
+                        self.running = False
+                        break
+
+                if self._local_file_mode:
+                    now_perf = time.perf_counter()
+                    if now_perf < next_frame_time:
+                        time.sleep(min(0.01, next_frame_time - now_perf))
+                        continue
+                    next_frame_time += min_interval
+
+                ret, frame = cap.read()
+                if not ret:
+                    if self._local_file_mode:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        next_frame_time = time.perf_counter() + min_interval
+                    else:
+                        time.sleep(0.02)
+                    continue
+
+                now = time.time()
+                if not self._local_file_mode and now - last_publish < min_interval:
+                    time.sleep(0.001)
+                    continue
+                last_publish = now
+
+                if self._local_file_mode:
+                    lag = time.perf_counter() - next_frame_time
+                    if lag > min_interval:
+                        skip_count = min(int(lag / min_interval), 10)
+                        for _ in range(skip_count):
+                            cap.grab()
+                        next_frame_time += skip_count * min_interval
+
+                frame = self._prepare_frame(frame)
+                ok, jpeg = cv2.imencode(".jpg", frame, encode_params)
+                if not ok:
+                    continue
+
+                with self.lock:
+                    self.latest_jpeg = jpeg.tobytes()
+                    self.sequence += 1
+        except Exception as e:
+            logger.warning(f"[DisplayStream] Reader stopped for {self.session_id}: {e}")
+        finally:
+            if cap is not None:
+                cap.release()
+            with self.lock:
+                self.running = False
+            logger.info(f"[DisplayStream] Ended {self.session_id}")
+
+
+display_streams = {}
 
 
 class VideoUploadResponse(BaseModel):
@@ -657,6 +823,9 @@ async def mjpeg_proxy_stream(
     session_id: str,
     fps: float = Query(25.0, ge=1.0, le=60.0, description="Target FPS for streaming"),
     quality: int = Query(85, ge=50, le=100, description="JPEG quality (50-100)"),
+    max_width: int = Query(0, ge=0, le=3840, description="Resize frames wider than this value; 0 keeps source size"),
+    passthrough: bool = Query(False, description="For HTTP MJPEG sources, forward bytes without decode/resize/re-encode"),
+    show_yolo: bool = Query(False, description="Enable YOLO tool detection overlay (默认关闭：bbox 闪烁影响观看，YOLO 仍在窗口分析里使用)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -669,6 +838,8 @@ async def mjpeg_proxy_stream(
         session_id: Video session ID
         fps: Target frames per second (default 25)
         quality: JPEG compression quality (default 85)
+        max_width: Downscale displayed frames to reduce bandwidth/render load
+        passthrough: Preserve original HTTP MJPEG bytes; disables fps/quality/max_width
     """
     session = get_video_session(db, session_id)
     if not session:
@@ -704,9 +875,48 @@ async def mjpeg_proxy_stream(
         
         return cap
     
+    # ============================================================
+    # Fast path：HTTP/HTTPS MJPEG 源（如 stream_simulator）可以"字节透传"，
+    # 不走 cv2 解码/再 JPEG 编码。这样：
+    #   - 不占 CPU/GPU 做双重编解码
+    #   - 原始帧序直接转发，节奏由 simulator 决定（它已经做好 25fps pacing）
+    #   - 实测 simulator 源站 p95=54ms / max=59ms 非常稳 → 浏览器也能跟上
+    # 只保留 cv2 路径给本地文件 / RTSP / device://（这些格式不是现成 MJPEG）。
+    # ============================================================
+    if passthrough and video_path.startswith(("http://", "https://")) and not show_yolo:
+        import httpx as _httpx
+        async def passthrough_mjpeg():
+            # stream_simulator 直出 multipart/x-mixed-replace，我们只转发字节。
+            # trust_env=False：backend 启动时 export 了 https_proxy（给 Gemini 用），
+            # 千万不能把 localhost:9001 流量也走那个代理。
+            try:
+                async with _httpx.AsyncClient(timeout=None, trust_env=False) as client:
+                    async with client.stream("GET", video_path, headers={"Accept": "*/*"}) as resp:
+                        async for chunk in resp.aiter_raw(chunk_size=8192):
+                            if chunk:
+                                yield chunk
+            except Exception as e:
+                logger.warning(f"[MJPEG Proxy passthrough] closed: {e}")
+        return StreamingResponse(
+            passthrough_mjpeg(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Access-Control-Allow-Origin": "*",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     async def generate_mjpeg_frames():
-        """Generator that yields MJPEG frames with real-time pacing"""
+        """Generator that yields MJPEG frames with real-time pacing (cv2 path, for
+        local files / RTSP / device URIs that need re-encoding)"""
         cap = None
+        # YOLO bbox overlay：默认关闭（show_yolo=False）。
+        # YOLO 仍在 analysis.py 的窗口分析里被 expert_fusion 使用，
+        # 只是不在实时视频流上画 bbox —— 避免跟踪器冷启动卡顿和 bbox 闪烁。
+        yolo_svc = None
         try:
             # Open video source (works for files, RTSP, HTTP streams, device://)
             cap = _open_video_for_mjpeg(video_path)
@@ -720,62 +930,93 @@ async def mjpeg_proxy_stream(
             actual_fps = cap.get(cv2.CAP_PROP_FPS) or source_fps
             target_fps = min(fps, actual_fps)  # Don't exceed source FPS
             frame_interval = 1.0 / target_fps
-            
-            logger.info(f"[MJPEG Proxy] Starting stream for {session_id} at {target_fps:.1f} FPS")
-            
-            start_time = time.time()
+
+            logger.info(
+                f"[MJPEG Proxy] Starting stream for {session_id} at {target_fps:.1f} FPS, "
+                f"quality={quality}, max_width={max_width or 'source'}"
+            )
+
+            # Pacing state：start_time 在"第一次成功 cap.read()"之后再设，
+            # 否则 HTTP/RTSP 首次连接耗时会让第 0 帧起就"已经迟到"，导致后续
+            # N 帧追赶式 burst（用户看到开头巨快）。后续偏差超过 1 个 frame_interval
+            # 就直接丢弃积压并重锚相位，避免"烧帧追赶"式卡顿。
+            start_time: Optional[float] = None
             frame_idx = 0
             consecutive_errors = 0
-            
-            while True:
-                ret, frame = cap.read()
-                
-                if not ret:
-                    consecutive_errors += 1
-                    if consecutive_errors > 10:
-                        logger.warning(f"[MJPEG Proxy] Too many read errors, stopping")
-                        break
-                    # For streams, try to continue
-                    await asyncio.sleep(0.01)
-                    continue
-                
-                consecutive_errors = 0
-                
-                # Real-time pacing: wait until it's time for this frame
-                target_time = start_time + (frame_idx * frame_interval)
-                current_time = time.time()
-                wait_time = target_time - current_time
-                
-                if wait_time > 0:
-                    await asyncio.sleep(wait_time)
-                elif wait_time < -0.5:
-                    # We're falling behind - skip frames to catch up
-                    start_time = current_time - (frame_idx * frame_interval)
-                
-                # Encode frame as JPEG
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
-                success, jpeg_data = cv2.imencode('.jpg', frame, encode_params)
-                
-                if not success:
-                    continue
-                
-                # Yield MJPEG frame with proper headers
-                jpeg_bytes = jpeg_data.tobytes()
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n"
-                    b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n"
-                    b"\r\n" + jpeg_bytes + b"\r\n"
-                )
-                
-                frame_idx += 1
-                
-                # Log progress periodically
-                if frame_idx % 250 == 0:
-                    elapsed = time.time() - start_time
-                    actual_rate = frame_idx / elapsed if elapsed > 0 else 0
-                    logger.debug(f"[MJPEG Proxy] {session_id}: {frame_idx} frames, {actual_rate:.1f} fps")
-        
+
+            # cap.read() 与 cv2.imencode 都是同步 C 调用，直接在 async 生成器里 run
+            # 会阻塞事件循环（实测 max stall 300+ ms，就是用户看到的"中间卡顿"）。
+            # 把它们 offload 到一个专用线程池，让事件循环全程自由。
+            import concurrent.futures as _cf
+            executor = _cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"mjpeg-{session_id[:6]}")
+            loop = asyncio.get_event_loop()
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+
+            def _sync_read():
+                return cap.read()
+
+            def _prepare_frame(f):
+                if max_width and f is not None:
+                    h, w = f.shape[:2]
+                    if w > max_width:
+                        new_h = max(1, int(h * (max_width / w)))
+                        f = cv2.resize(f, (max_width, new_h), interpolation=cv2.INTER_AREA)
+                return f
+
+            def _sync_encode(f):
+                f = _prepare_frame(f)
+                return cv2.imencode('.jpg', f, encode_params)
+
+            try:
+                while True:
+                    ret, frame = await loop.run_in_executor(executor, _sync_read)
+
+                    if not ret:
+                        consecutive_errors += 1
+                        if consecutive_errors > 10:
+                            logger.warning(f"[MJPEG Proxy] Too many read errors, stopping")
+                            break
+                        await asyncio.sleep(0.01)
+                        continue
+
+                    consecutive_errors = 0
+
+                    # 首帧：把 start_time 锚定到真正出第一帧的时刻
+                    if start_time is None:
+                        start_time = time.time()
+
+                    target_time = start_time + (frame_idx * frame_interval)
+                    current_time = time.time()
+                    wait_time = target_time - current_time
+
+                    if wait_time > 0:
+                        await asyncio.sleep(wait_time)
+                    elif wait_time < -frame_interval:
+                        # 偏差超过一个帧间隔 → 重锚相位，避免 burst 补帧
+                        start_time = current_time - frame_idx * frame_interval
+
+                    success, jpeg_data = await loop.run_in_executor(executor, _sync_encode, frame)
+                    if not success:
+                        continue
+
+                    jpeg_bytes = jpeg_data.tobytes()
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(jpeg_bytes)).encode() + b"\r\n"
+                        b"\r\n" + jpeg_bytes + b"\r\n"
+                    )
+
+                    frame_idx += 1
+
+                    # Log progress periodically
+                    if frame_idx % 250 == 0:
+                        elapsed = time.time() - start_time
+                        actual_rate = frame_idx / elapsed if elapsed > 0 else 0
+                        logger.debug(f"[MJPEG Proxy] {session_id}: {frame_idx} frames, {actual_rate:.1f} fps")
+            finally:
+                executor.shutdown(wait=False)
+
         except asyncio.CancelledError:
             logger.info(f"[MJPEG Proxy] Stream cancelled for {session_id}")
         except Exception as e:
@@ -792,9 +1033,124 @@ async def mjpeg_proxy_stream(
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0",
-            "Access-Control-Allow-Origin": "*"
+            "Access-Control-Allow-Origin": "*",
+            # 防止反向代理/Vite dev server 把流式响应缓到一定大小才 flush
+            # 造成"开头一批帧一起涌出"的视觉 burst。
+            "X-Accel-Buffering": "no",
         }
     )
+
+
+@router.get("/display-mjpeg/{session_id}")
+async def display_mjpeg_stream(
+    session_id: str,
+    fps: float = Query(20.0, ge=1.0, le=30.0, description="Display FPS"),
+    quality: int = Query(68, ge=40, le=90, description="JPEG quality"),
+    max_width: int = Query(1280, ge=320, le=1920, description="Display max width"),
+    db: Session = Depends(get_db),
+):
+    """Latest-frame MJPEG stream for UI playback.
+
+    Unlike /mjpeg-proxy, this endpoint never queues old frames for the client.
+    If the browser or network stalls, the next emitted frame is the newest one.
+    """
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    video_path = session.get("video_path", "")
+    if not video_path:
+        raise HTTPException(400, "No video path for session")
+
+    key = (session_id, video_path, int(fps), int(quality), int(max_width))
+    state = display_streams.get(key)
+    if state is None or not state.running:
+        state = DisplayStreamState(session_id, video_path, fps, quality, max_width)
+        display_streams[key] = state
+
+    async def generate_latest_frames():
+        state.start()
+        last_seq = -1
+        frame_interval = 1.0 / max(1.0, fps)
+        try:
+            while True:
+                seq, jpeg = state.snapshot()
+                if jpeg and seq != last_seq:
+                    last_seq = seq
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n"
+                        b"\r\n" + jpeg + b"\r\n"
+                    )
+                await asyncio.sleep(frame_interval)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            state.release()
+
+    return StreamingResponse(
+        generate_latest_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Access-Control-Allow-Origin": "*",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.websocket("/ws-display/{session_id}")
+async def websocket_display_stream(
+    websocket: WebSocket,
+    session_id: str,
+    fps: float = Query(18.0, ge=1.0, le=30.0),
+    quality: int = Query(64, ge=40, le=90),
+    max_width: int = Query(960, ge=320, le=1920),
+    db: Session = Depends(get_db),
+):
+    """Latest-frame WebSocket display stream.
+
+    This is the browser preview path for remote/X11 testing. It sends binary
+    JPEG frames and keeps no per-client backlog, so a slow renderer naturally
+    drops old frames instead of drifting behind realtime.
+    """
+    session = get_video_session(db, session_id)
+    if not session:
+        await websocket.close(code=1008, reason="Session not found")
+        return
+
+    video_path = session.get("video_path", "")
+    if not video_path:
+        await websocket.close(code=1008, reason="No video path")
+        return
+
+    await websocket.accept()
+
+    key = (session_id, video_path, int(fps), int(quality), int(max_width))
+    state = display_streams.get(key)
+    if state is None or not state.running:
+        state = DisplayStreamState(session_id, video_path, fps, quality, max_width)
+        display_streams[key] = state
+
+    state.start()
+    last_seq = -1
+    frame_interval = 1.0 / max(1.0, fps)
+    try:
+        while True:
+            seq, jpeg = state.snapshot()
+            if jpeg and seq != last_seq:
+                last_seq = seq
+                await websocket.send_bytes(jpeg)
+            await asyncio.sleep(frame_interval)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug(f"[DisplayWS] Closed for {session_id}: {e}")
+    finally:
+        state.release()
 
 
 @router.get("/frame/{session_id}")
@@ -922,4 +1278,3 @@ async def delete_all_sessions(
         "message": "All sessions deleted successfully",
         "details": result
     }
-

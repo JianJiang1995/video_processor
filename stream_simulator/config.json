@@ -1,5 +1,5 @@
 {
-  "video_path": "/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4",
+  "video_path": "media/sample.mp4",
   "loop": true,
   "streams": {
     "rtsp": {
@@ -9,7 +9,7 @@
     },
     "http": {
       "enabled": true,
-      "port": 8080,
+      "port": 9001,
       "endpoints": {
         "mjpeg": "/stream",
         "flv": "/stream.flv",
@@ -18,7 +18,7 @@
     },
     "webrtc": {
       "enabled": true,
-      "port": 8088
+      "port": 9002
     }
   }
 }

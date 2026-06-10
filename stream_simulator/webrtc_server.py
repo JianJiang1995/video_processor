@@ -25,6 +25,8 @@ import cv2
 import numpy as np
 from aiohttp import web
 
+from path_utils import require_video_path
+
 # Upload directory
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -43,6 +45,8 @@ logger = logging.getLogger(__name__)
 # Active peer connections
 pcs: Set["RTCPeerConnection"] = set()
 fps_override: Optional[float] = None
+loop_mode = False
+display_max_width = 1280
 
 
 class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
@@ -53,12 +57,19 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
     
     kind = "video"
     
-    def __init__(self, video_path: str, loop: bool = False, fps_override: Optional[float] = None):
+    def __init__(
+        self,
+        video_path: str,
+        loop: bool = False,
+        fps_override: Optional[float] = None,
+        max_width: int = 1280,
+    ):
         if AIORTC_AVAILABLE:
             super().__init__()
         
         self.video_path = video_path
         self.loop = loop
+        self.max_width = max_width
         
         # Open video
         self.cap = cv2.VideoCapture(video_path)
@@ -72,14 +83,25 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.duration = self.total_frames / self.original_fps if self.original_fps > 0 else 0
+        if self.max_width and self.width > self.max_width:
+            self.output_width = self.max_width
+            self.output_height = max(1, int(self.height * (self.max_width / self.width)))
+        else:
+            self.output_width = self.width
+            self.output_height = self.height
         
-        logger.info(f"Video: {Path(video_path).name} ({self.width}x{self.height} @ {self.fps:.1f}fps)")
+        logger.info(
+            f"Video: {Path(video_path).name} "
+            f"({self.width}x{self.height} -> {self.output_width}x{self.output_height} @ {self.fps:.1f}fps)"
+        )
         
         # Timing
         self._start_time = None
         self._pts = 0
         self._frame_idx = 0
-        self._time_base = fractions.Fraction(1, int(self.fps * 1000))
+        self._time_base = fractions.Fraction(1, 90000)
+        self._frame_interval = 1.0 / self.fps
+        self._pts_step = int(90000 / self.fps)
     
     def _read_frame(self) -> Optional[np.ndarray]:
         ret, frame = self.cap.read()
@@ -103,7 +125,7 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
             self._start_time = time.time()
         
         # Timing control
-        frame_time = self._pts / (self.fps * 1000)
+        frame_time = self._frame_idx * self._frame_interval
         current_time = time.time() - self._start_time
         wait_time = frame_time - current_time
         if wait_time > 0:
@@ -112,7 +134,13 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
         # Read frame
         bgr_frame = self._read_frame()
         if bgr_frame is None:
-            bgr_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+            bgr_frame = np.zeros((self.output_height, self.output_width, 3), dtype=np.uint8)
+        elif self.output_width != self.width:
+            bgr_frame = cv2.resize(
+                bgr_frame,
+                (self.output_width, self.output_height),
+                interpolation=cv2.INTER_AREA,
+            )
         
         # Convert BGR to RGB
         rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
@@ -122,7 +150,7 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
         frame.pts = self._pts
         frame.time_base = self._time_base
         
-        self._pts += int(1000 / self.fps) * 1000
+        self._pts += self._pts_step
         
         return frame
     
@@ -719,7 +747,12 @@ async def offer(request: web.Request) -> web.Response:
             pcs.discard(pc)
     
     # Add video track
-    track = VideoFileTrack(video_path, loop=False, fps_override=fps_override)  # Stop at video end
+    track = VideoFileTrack(
+        video_path,
+        loop=loop_mode,
+        fps_override=fps_override,
+        max_width=display_max_width,
+    )
     pc.addTrack(track)
     
     await pc.setRemoteDescription(offer_sdp)
@@ -875,14 +908,14 @@ def main():
     parser.add_argument(
         "--video",
         type=str,
-        default="/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4",
-        help="Path to video file"
+        default=None,
+        help="Path to video file (defaults to media/sample.mp4 if available)"
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8088,
-        help="Server port (default: 8088)"
+        default=9002,
+        help="Server port (default: 9002)"
     )
     parser.add_argument(
         "--host",
@@ -896,20 +929,37 @@ def main():
         default=None,
         help="Override FPS for streaming (default: use video FPS)"
     )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Loop video when it reaches the end"
+    )
+    parser.add_argument(
+        "--max-width",
+        type=int,
+        default=1280,
+        help="Resize WebRTC display stream wider than this value (default: 1280)"
+    )
     
     args = parser.parse_args()
-    
-    if not Path(args.video).exists():
-        logger.error(f"Video not found: {args.video}")
+
+    try:
+        resolved_video = require_video_path(args.video)
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
         return
     
     if not AIORTC_AVAILABLE:
         logger.error("aiortc not installed. Run: pip install aiortc")
         return
     
-    video_path = args.video
+    video_path = str(resolved_video)
     global fps_override
     fps_override = args.fps
+    global loop_mode
+    loop_mode = args.loop
+    global display_max_width
+    display_max_width = args.max_width
     
     app = web.Application()
     app.router.add_get("/", index)
@@ -933,6 +983,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-

@@ -21,6 +21,8 @@ import os
 import logging
 from pathlib import Path
 
+from path_utils import require_video_path
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -175,8 +177,8 @@ def main():
     parser.add_argument(
         "--video",
         type=str,
-        default="/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4",
-        help="Path to video file"
+        default=None,
+        help="Path to video file (defaults to media/sample.mp4 if available)"
     )
     parser.add_argument(
         "--port",
@@ -201,8 +203,9 @@ def main():
     print_rtsp_alternatives()
     
     try:
+        video_path = require_video_path(args.video)
         server = RTSPServer(
-            video_path=args.video,
+            video_path=str(video_path),
             port=args.port,
             stream_path=args.path,
             loop=not args.no_loop

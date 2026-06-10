@@ -103,7 +103,7 @@
             @click="handleCardClick(s)"
           >
             <!-- Thumbnail -->
-            <div class="card-thumb" ref="thumbRefs">
+            <div class="card-thumb" :ref="(el) => registerCardThumb(el, s.window_id)">
               <img
                 v-if="thumbnails[s.window_id]"
                 :src="thumbnails[s.window_id]"
@@ -413,16 +413,52 @@ async function scrollChatBottom() {
   }
 }
 
-async function loadThumbnail(summary) {
-  const wid = summary.window_id
-  if (thumbnails[wid] || loadingThumbs.has(wid)) return
-  loadingThumbs.add(wid)
+// ============================================================
+// Lazy thumbnail loading with IntersectionObserver + concurrency limit.
+// 过去：挂载时对所有 summaries 一次性并发 fetch /frame-at-timestamp，每张
+// 缩略图是几十 KB 的 base64，N 大时主线程长任务严重（> 50 条时肉眼可见卡顿）。
+// 现在：
+//   1. 只有卡片进入视口（IntersectionObserver）才触发 loadThumbnail
+//   2. 全局最多 MAX_CONCURRENT_THUMBS 个并行请求，其余排队
+// ============================================================
+const MAX_CONCURRENT_THUMBS = 2
+const thumbQueue = []          // FIFO of summaries waiting to be fetched
+const queuedWids = new Set()   // window_id 已经入队或正在加载，避免重复
+let activeThumbFetches = 0
+const cardElToWid = new WeakMap()  // 卡片 DOM 元素 → window_id
+const widToSummary = new Map()     // window_id → summary 对象（供队列消费时反查）
+let thumbObserver = null
 
+async function fetchThumbnail(summary) {
+  const wid = summary.window_id
+  if (thumbnails[wid]) return
   const midTime = ((summary.start_time || 0) + (summary.end_time || 0)) / 2
   const sid = props.session?.session_id
   if (!sid) return
 
   try {
+    const start = Math.max(0, midTime - 1)
+    const end = midTime + 1
+    const batchRes = await axios.get(`/api/analysis/frames-batch/${sid}`, {
+      params: {
+        start,
+        end,
+        max_frames: 20,
+        use_url: true,
+        use_preview: true,
+      }
+    })
+    const frames = batchRes.data?.frames || []
+    if (batchRes.data?.success && frames.length > 0) {
+      const best = frames.reduce((a, b) => {
+        return Math.abs((b.timestamp || 0) - midTime) < Math.abs((a.timestamp || 0) - midTime) ? b : a
+      }, frames[0])
+      if (best?.url) {
+        thumbnails[wid] = best.url
+        return
+      }
+    }
+
     const res = await axios.get(`/api/analysis/frame-at-timestamp/${sid}`, {
       params: { timestamp: midTime, tolerance: 5.0 }
     })
@@ -431,30 +467,91 @@ async function loadThumbnail(summary) {
     }
   } catch {
     // silent fail — card stays without thumbnail
-  } finally {
-    loadingThumbs.delete(wid)
   }
 }
 
-function loadVisibleThumbnails() {
-  for (const s of props.summaries) {
-    if (!thumbnails[s.window_id] && !loadingThumbs.has(s.window_id)) {
-      loadThumbnail(s)
+function pumpThumbQueue() {
+  while (activeThumbFetches < MAX_CONCURRENT_THUMBS && thumbQueue.length > 0) {
+    const summary = thumbQueue.shift()
+    if (!summary) continue
+    const wid = summary.window_id
+    if (thumbnails[wid]) {
+      queuedWids.delete(wid)
+      continue
     }
+    activeThumbFetches++
+    loadingThumbs.add(wid)
+    fetchThumbnail(summary).finally(() => {
+      activeThumbFetches--
+      loadingThumbs.delete(wid)
+      queuedWids.delete(wid)
+      pumpThumbQueue()
+    })
   }
 }
 
-watch(() => props.summaries.length, () => {
-  loadVisibleThumbnails()
-})
+function enqueueThumbnail(summary) {
+  if (!summary) return
+  const wid = summary.window_id
+  if (thumbnails[wid] || queuedWids.has(wid)) return
+  widToSummary.set(wid, summary)
+  queuedWids.add(wid)
+  thumbQueue.push(summary)
+  pumpThumbQueue()
+}
+
+// 函数 ref：每张 card-thumb 挂载时注册到 observer
+function registerCardThumb(el, wid) {
+  if (!el) return
+  cardElToWid.set(el, wid)
+  if (thumbObserver) {
+    thumbObserver.observe(el)
+  }
+}
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
-  loadVisibleThumbnails()
+
+  // IntersectionObserver 不可用时退化为"立即加载所有"，但仍走并发队列限流
+  if (typeof IntersectionObserver !== 'undefined') {
+    thumbObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+        const wid = cardElToWid.get(entry.target)
+        if (wid == null) continue
+        const s = widToSummary.get(wid) || props.summaries.find(x => x.window_id === wid)
+        if (s) enqueueThumbnail(s)
+        // 一旦开始加载就不再观察该卡片，减少回调
+        thumbObserver.unobserve(entry.target)
+      }
+    }, {
+      root: null,
+      rootMargin: '200px 0px',  // 提前 200px 预加载，滚动时基本无白屏
+      threshold: 0.01,
+    })
+  } else {
+    for (const s of props.summaries) enqueueThumbnail(s)
+  }
+})
+
+watch(() => props.summaries.length, async () => {
+  // summaries 变化（新窗口到达）时，等下一帧 DOM 更新再让 observer 去 observe 新卡片
+  await nextTick()
+  // 无 IntersectionObserver 的环境下主动把新 summary 入队
+  if (!thumbObserver) {
+    for (const s of props.summaries) enqueueThumbnail(s)
+  }
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  if (thumbObserver) {
+    thumbObserver.disconnect()
+    thumbObserver = null
+  }
+  thumbQueue.length = 0
+  queuedWids.clear()
+  widToSummary.clear()
 })
 </script>
 
@@ -494,7 +591,7 @@ onUnmounted(() => {
   padding: 0.35rem 0.75rem;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -505,7 +602,7 @@ onUnmounted(() => {
   color: var(--text-primary);
   border-color: var(--accent-primary);
 }
-.back-arrow { font-size: 0.9rem; }
+.back-arrow { font-size: 1.05rem; }
 
 .title-group {
   display: flex;
@@ -514,7 +611,7 @@ onUnmounted(() => {
 }
 
 .overview-title {
-  font-size: 1.1rem;
+  font-size: 1.3rem;
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.02em;
@@ -524,13 +621,13 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: baseline;
   gap: 0.15rem;
-  font-size: 0.75rem;
+  font-size: 0.9rem;
   background: var(--accent-glow);
   border: 1px solid rgba(0, 212, 170, 0.2);
   padding: 0.15rem 0.55rem;
   border-radius: 999px;
 }
-.count-num { color: var(--accent-primary); font-weight: 700; font-size: 0.85rem; }
+.count-num { color: var(--accent-primary); font-weight: 700; font-size: 1rem; }
 .count-sep { color: var(--text-tertiary); }
 .count-total { color: var(--text-tertiary); }
 
@@ -541,7 +638,7 @@ onUnmounted(() => {
 }
 
 .total-duration {
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   color: var(--text-tertiary);
   display: flex;
   align-items: center;
@@ -759,8 +856,8 @@ onUnmounted(() => {
   color: var(--accent-primary);
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 0.75rem;
-  padding: 1px 6px;
+  font-size: 0.95rem;
+  padding: 2px 8px;
   border-radius: 4px;
   backdrop-filter: blur(4px);
 }
@@ -772,8 +869,8 @@ onUnmounted(() => {
   background: rgba(0, 0, 0, 0.65);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 0.65rem;
-  padding: 1px 5px;
+  font-size: 0.85rem;
+  padding: 2px 7px;
   border-radius: 3px;
   backdrop-filter: blur(4px);
 }
@@ -797,9 +894,9 @@ onUnmounted(() => {
 }
 
 .card-summary {
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: 1.65;
   word-break: break-word;
 }
 

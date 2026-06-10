@@ -4,8 +4,8 @@ Handles GPT summarization, SAM2 masks, and TTS
 """
 import asyncio
 import time
-from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
+from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ import json
 from PIL import Image
 from io import BytesIO
 import base64
+import httpx
 
 from ..database import (
     get_db, get_video_session, get_video_session_by_id,
@@ -29,6 +30,7 @@ from ..services.sam3_client import get_sam3_client, ensure_sam3_available
 from ..services.glm_client import get_glm_client, ensure_glm_available
 from ..services.vlm_factory import get_vlm_client, ensure_vlm_available, check_vlm_health, get_summarization_provider, load_config, cleanup_session_resources
 from ..services.gemini_client import get_gemini_client
+from ..services.embedding_service import get_embedding_service
 from ..services.tts_cosyvoice_client import get_tts_client, ensure_tts_available
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
@@ -68,6 +70,104 @@ active_surgr1_tasks: dict = {}
 # Global stream start times for time synchronization
 # Key: session_id, Value: float (unix timestamp when processing started)
 stream_start_times: dict = {}
+
+# R1 /health can be delayed while the model is busy. Keep a short last-good
+# cache so the UI does not mark a running local service as unavailable.
+surgr1_status_cache = {
+    "available": False,
+    "last_success": 0.0,
+    "last_checked": 0.0,
+}
+
+PHASE_LABEL_CN = {
+    "Preparation": "准备阶段",
+    "CalotTriangleDissection": "肝胆三角解剖",
+    "ClippingCutting": "夹闭切断",
+    "GallbladderDissection": "胆囊分离",
+    "GallbladderRetraction": "胆囊牵拉",
+    "CleaningCoagulation": "清洁凝血",
+    "GallbladderPackaging": "胆囊取出/装袋",
+    "preparation": "准备阶段",
+    "calot_triangle_dissection": "肝胆三角解剖",
+    "clipping_cutting": "夹闭切断",
+    "gallbladder_dissection": "胆囊分离",
+    "gallbladder_retraction": "胆囊牵拉",
+    "cleaning_coagulation": "清洁凝血",
+    "gallbladder_packaging": "胆囊取出/装袋",
+}
+
+PHASE_EXPERT_CANONICAL = {
+    "preparation": "Preparation",
+    "calot_triangle_dissection": "CalotTriangleDissection",
+    "clipping_cutting": "ClippingCutting",
+    "gallbladder_dissection": "GallbladderDissection",
+    "gallbladder_retraction": "GallbladderRetraction",
+    "cleaning_coagulation": "CleaningCoagulation",
+    "gallbladder_packaging": "GallbladderPackaging",
+}
+
+TOOL_LABEL_CN = {
+    "bipolar": "双极电凝",
+    "clipper": "施夹器",
+    "grasper": "抓钳",
+    "hook": "电钩",
+    "irrigator": "冲洗器",
+    "scissors": "剪刀",
+    "snare": "圈套器",
+    "specimen_bag": "标本袋",
+}
+
+
+def _canonical_phase(label: str) -> str:
+    return PHASE_EXPERT_CANONICAL.get(label or "", label or "Unknown")
+
+
+def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end_time: float, frame_count: int) -> str:
+    """Build a deterministic live summary from fast local experts.
+
+    This is the realtime path: no Gemini/R1 call is allowed here. It keeps the
+    surgery progress panel close to the actual video clock, while slower R1/VLM
+    passes can overwrite the same window later as Stage 2.
+    """
+    phase_raw = (expert_pack.get("phase") or {}).get("label", "")
+    phase = _canonical_phase(phase_raw)
+    phase_cn = PHASE_LABEL_CN.get(phase_raw) or PHASE_LABEL_CN.get(phase) or "当前阶段"
+
+    tools = (expert_pack.get("yolo") or {}).get("tools", [])[:5]
+    tool_names = []
+    for t in tools:
+        label = t.get("label", "")
+        name = TOOL_LABEL_CN.get(label, label)
+        if name:
+            tool_names.append(name)
+    tool_text = "、".join(tool_names) if tool_names else "暂未稳定检出器械"
+
+    triplets = (expert_pack.get("triplet") or {}).get("triplet", [])[:2]
+    triplet_text = "；".join(t.get("label", "") for t in triplets if t.get("label"))
+
+    time_text = f"{start_time:.0f}-{end_time:.0f}s"
+    if triplet_text:
+        return f"【专家实时快照 {time_text}】当前判断为{phase_cn}，YOLO 检出{tool_text}。动作三元组提示：{triplet_text}。该段为实时快照，R1/Gemini 精修结果稍后覆盖。"
+    return f"【专家实时快照 {time_text}】当前判断为{phase_cn}，YOLO 检出{tool_text}。已基于 {frame_count} 帧快速更新手术进程，R1/Gemini 精修结果稍后覆盖。"
+
+
+def _queue_embedding(session_id: str, window_id: int, summary_text: str,
+                     start_time: float = 0, end_time: float = 0):
+    """Queue embedding generation for a window summary (non-blocking, failure-tolerant)."""
+    try:
+        _embedding_svc = get_embedding_service()
+        if _embedding_svc and summary_text and not summary_text.startswith("["):
+            asyncio.create_task(_embedding_svc.add_window_embedding(
+                session_id=session_id,
+                window_id=window_id,
+                summary_text=summary_text,
+                metadata={
+                    "start_time": start_time,
+                    "end_time": end_time,
+                }
+            ))
+    except Exception as e:
+        logger.warning(f"[Embedding] Failed to queue embedding for window {window_id}: {e}")
 
 
 def open_video_source(video_path: str):
@@ -178,12 +278,14 @@ async def frame_capture_for_playback(
     import time as time_module
     
     FRAME_SAVE_INTERVAL = 0.1  # 10 FPS for smooth loop playback
+    loop = asyncio.get_running_loop()
     
     # Mark as running
     frame_capture_flags[session_id] = True
     
     # Open a separate video capture (supports device://, rtsp://, http://, files)
-    cap = open_video_source(video_source)
+    # [perf] open_video_source 阻塞，放 executor
+    cap = await loop.run_in_executor(None, open_video_source, video_source)
     if not cap or not cap.isOpened():
         logger.warning(f"[FrameCapture] Could not open video source for session {session_id}")
         return
@@ -209,7 +311,8 @@ async def frame_capture_for_playback(
         frame_storage = get_frame_storage_service()
         
         while frame_capture_flags.get(session_id, False) and surgr1_continuous_flags.get(session_id, False):
-            ret, bgr_frame = cap.read()
+            # [perf] cap.read() 放 executor 避免阻塞 asyncio loop
+            ret, bgr_frame = await loop.run_in_executor(None, cap.read)
             
             if not ret:
                 if is_realtime_stream:
@@ -217,7 +320,7 @@ async def frame_capture_for_playback(
                     continue
                 else:
                     # End of file - restart
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    await loop.run_in_executor(None, cap.set, cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
             
             # Calculate current time
@@ -257,7 +360,10 @@ async def frame_capture_for_playback(
     finally:
         frame_capture_flags[session_id] = False
         if cap is not None:
-            cap.release()
+            try:
+                await loop.run_in_executor(None, cap.release)
+            except Exception:
+                pass
         logger.info(f"[FrameCapture] Stopped for session {session_id}, saved {saved_frame_idx} frames")
 
 
@@ -358,6 +464,17 @@ class AnalyzeFramesBatchRequest(BaseModel):
     frames: List[FrameData]
     enable_glm_verification: bool = False  # 启用GLM验证R1分析结果
     glm_verification_async: bool = True    # GLM验证是否异步执行（不阻塞返回）
+
+
+class SemanticSearchRequest(BaseModel):
+    session_id: str
+    query: str
+    top_k: int = 5
+
+
+class TextSearchRequest(BaseModel):
+    session_id: str
+    query: str
 
 
 @router.post("/analyze-frames-batch")
@@ -825,7 +942,11 @@ async def analyze_window(
             summary_text=result["summary"],
             summary_chinese=result["summary"] if request.use_chinese else None
         )
-        
+
+        # Generate embedding for semantic search
+        _queue_embedding(session["session_id"], window.window_id, result["summary"],
+                         window.start_time, window.end_time)
+
         return {
             "window_id": window.window_id,
             "start_time": window.start_time,
@@ -947,7 +1068,11 @@ async def analyze_window_with_vlm(
         tools_detected=[f.get("tools", "") for f in frame_analyses],
         key_actions=[f.get("action", "") for f in frame_analyses]
     )
-    
+
+    # Generate embedding for semantic search
+    _queue_embedding(session["session_id"], window.window_id, summary_text,
+                     window.start_time, window.end_time)
+
     return {
         "window_id": window.window_id,
         "start_time": window.start_time,
@@ -1506,13 +1631,26 @@ async def surgr1_continuous_task(
     """
     import cv2
     import time as time_module
-    
+    from ..services.yolo_service import get_yolo_service
+
     db = next(get_db())
     sam3_client = None
     consistency_checker = None
     cap = None  # Initialize cap outside try block for proper cleanup
     frame_capture_task = None  # Initialize frame capture task for proper cleanup
-    
+    loop = asyncio.get_running_loop()
+
+    # --- Blocking helpers, run in executor to avoid blocking the event loop ---
+    # [perf] 关键优化：cap.read / cvtColor / PIL 构造 / yolo.detect 都是同步 CPU/IO
+    # 操作，过去直接在协程里同步调用会堵住整个 FastAPI 事件循环（含 MJPEG 代理、
+    # SSE、其它 HTTP），导致前端视频卡顿。现在统一丢到默认 ThreadPoolExecutor。
+    def _blocking_read(c):
+        return c.read()
+
+    def _bgr_to_pil(bgr):
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb)
+
     try:
         surgr1_client = await ensure_surgr1_available()
         
@@ -1529,7 +1667,8 @@ async def surgr1_continuous_task(
                 sam3_client = None
         
         # Open video/stream (supports device://, rtsp://, http://, files)
-        cap = open_video_source(video_path)
+        # [perf] open_video_source 在 HTTP/RTSP 上可能阻塞数秒，放 executor
+        cap = await loop.run_in_executor(None, open_video_source, video_path)
         if not cap or not cap.isOpened():
             logger.error(f"Cannot open video: {video_path}")
             surgr1_continuous_flags[session_id] = False
@@ -1617,7 +1756,9 @@ async def surgr1_continuous_task(
         STREAM_CHECK_INTERVAL = 2.0  # Check stream status every 2 seconds during failures
         
         while surgr1_continuous_flags.get(session_id, False):
-            ret, bgr_frame = cap.read()
+            # [perf] cap.read() 对 HTTP MJPEG / RTSP 会阻塞到下一帧到达，
+            # 过去直接同步调用会堵住 asyncio loop → MJPEG 代理/SSE 全部卡住
+            ret, bgr_frame = await loop.run_in_executor(None, _blocking_read, cap)
             
             if not ret:
                 # For streams, wait and retry; for files, loop
@@ -1644,7 +1785,7 @@ async def surgr1_continuous_task(
                     continue
                 else:
                     # End of file - restart from beginning for continuous processing
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    await loop.run_in_executor(None, cap.set, cv2.CAP_PROP_POS_FRAMES, 0)
                     frame_idx = 0
                     last_surgr1_time = -surgr1_interval
                     if consistency_checker:
@@ -1661,10 +1802,8 @@ async def surgr1_continuous_task(
             else:
                 current_time = frame_idx / fps
             
-            # Convert to PIL Image
-            rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-            from PIL import Image
-            pil_image = Image.fromarray(rgb_frame)
+            # Convert to PIL Image (colorspace + PIL 构造是 CPU 密集，放 executor)
+            pil_image = await loop.run_in_executor(None, _bgr_to_pil, bgr_frame)
             
             # 【解耦】帧保存已移至独立的 frame_capture_service（25fps固定存储）
             # 分析服务只负责处理帧，不再保存帧
@@ -1740,8 +1879,22 @@ async def surgr1_continuous_task(
                         # 使用最后一个结果更新 SAM3 的 bbox
                         if batch_results:
                             last_result = batch_results[-1]
-                            last_tool_localization = last_result.get("tools", "")
-                            last_bboxes = parse_bboxes_from_surgr1(last_tool_localization)
+                            # Use YOLO for tool detection instead of SurgR1
+                            yolo_svc = get_yolo_service()
+                            last_batch_frame = batch_to_process_done[-1] if batch_to_process_done else None
+                            if yolo_svc and last_batch_frame and "image" in last_batch_frame:
+                                # [perf] yolo_svc.detect 是同步 GPU 推理（~几十 ms），
+                                # 放到 executor 避免阻塞 asyncio loop
+                                yolo_detections = await loop.run_in_executor(
+                                    None, yolo_svc.detect, last_batch_frame["image"]
+                                )
+                                last_bboxes = yolo_svc.detections_to_sam3_format(yolo_detections)
+                                last_tool_localization = json.dumps(yolo_detections)
+                                logger.info(f"[YOLO] Detected {len(yolo_detections)} tools: {[d['label'] for d in yolo_detections]}")
+                            else:
+                                # Fallback to SurgR1 tool localization if YOLO unavailable
+                                last_tool_localization = last_result.get("tools", "")
+                                last_bboxes = parse_bboxes_from_surgr1(last_tool_localization)
                             logger.info(f"[SurgR1 Batch] Completed {len(batch_results)} frames, last has {len(last_bboxes)} bboxes")
                     
                     except Exception as e:
@@ -1956,10 +2109,18 @@ async def surgr1_continuous_task(
             
             frame_idx += 1
             
-            # Small delay to prevent CPU overload
-            await asyncio.sleep(0.01)
+            # [perf] 实时流下 cap.read() 已经 await 等帧，不需要再 sleep；
+            # 本地文件或设备拉流会以 cv2 最大速度读，需要节流到 fps 避免 100% CPU
+            if is_realtime_stream:
+                # 让出事件循环一跳，避免饿死其它协程；不做固定延迟
+                await asyncio.sleep(0)
+            else:
+                # 本地文件/设备：按名义 fps 节流（最多读到 2x 正常速度）
+                target_interval = max(1.0 / (fps * 2.0), 0.005)
+                await asyncio.sleep(target_interval)
         
-        cap.release()
+        # [perf] cap.release() 对某些 backend（FFMPEG/RTSP）会阻塞数秒，放 executor
+        await loop.run_in_executor(None, cap.release)
         logger.info(f"SurgR1 continuous task stopped for {session_id}")
     
     except asyncio.CancelledError:
@@ -2014,9 +2175,10 @@ async def surgr1_continuous_task(
         active_surgr1_tasks.pop(session_id, None)
         
         # CRITICAL: Release video capture to free stream connection
+        # [perf] release 对 FFMPEG/RTSP 可能阻塞，放 executor
         if cap is not None:
             try:
-                cap.release()
+                await loop.run_in_executor(None, cap.release)
                 logger.info(f"Released video capture for session {session_id}")
             except Exception as e:
                 logger.warning(f"Error releasing video capture: {e}")
@@ -2151,10 +2313,17 @@ async def glm_summarization_task(
             sample_interval=settings.SAMPLE_INTERVAL
         )
         
-        # Wait for SurgR1 results if none exist yet (up to 30 seconds)
+        # Wait for SurgR1 results if none exist yet (up to 30 seconds).
+        # In live mode we do not gate Stage 1 on R1: frame_capture_service already
+        # saves stream frames independently, so the fast expert+Gemini draft can
+        # start from saved frames and Stage 2 can refine it later when R1 lands.
         all_frames = None
         wait_count = 0
         max_wait = 30  # seconds
+        mysql_service = get_mysql_service()
+        video_session = mysql_service.get_video_session(session_id)
+        storage_path = video_session.get("storage_path") if video_session else None
+        frame_storage = get_frame_storage_service()
         
         while wait_count < max_wait:
             # Check cancellation
@@ -2166,13 +2335,19 @@ async def glm_summarization_task(
             all_frames = get_frames_by_session(db, db_session_id)
             if all_frames and len(all_frames) > 0:
                 break
+
+            if is_live and storage_path:
+                capture_stats = get_frame_capture_service().get_capture_stats(session_id) or {}
+                if (capture_stats.get("last_capture_time") or 0) > 0:
+                    logger.info("[GLM Task] Live saved frames available; starting Stage 1 before R1")
+                    break
             
             logger.info(f"Waiting for SurgR1 results... ({wait_count}s)")
             await asyncio.sleep(1)
             wait_count += 1
             db.expire_all()  # Refresh database cache
         
-        if not all_frames or len(all_frames) == 0:
+        if (not all_frames or len(all_frames) == 0) and not is_live:
             logger.warning(f"No SurgR1 results available for session {session_id} after waiting")
             # Create a placeholder summary to inform user
             create_window_summary(
@@ -2190,7 +2365,7 @@ async def glm_summarization_task(
         
         # Group frames by window
         window_frames = {}
-        for frame in all_frames:
+        for frame in all_frames or []:
             # Handle both dict and object access patterns, ensure ts is not None
             ts = frame.get("timestamp") if isinstance(frame, dict) else getattr(frame, "timestamp", None)
             ts = ts if ts is not None else 0  # Ensure ts is never None
@@ -2229,8 +2404,13 @@ async def glm_summarization_task(
         
         # Track processed windows to continue from where we left off
         processed_windows = set()
+        # Stage 1 is allowed to run before R1 in live mode. A window is added to
+        # processed_windows only after Stage 2/final processing, so keep a
+        # separate set to avoid repeatedly emitting the same draft.
+        stage1_processed_windows = set()
         last_window_id = -1
-        max_wait_for_new_frames = 120  # Wait up to 120 seconds for new frames
+        # 放宽到 10 分钟：真实流处理中 SurgR1 可能短暂积压；cancellation flag 仍负责"用户点停止"。
+        max_wait_for_new_frames = 600
         no_new_frames_count = 0
         loop_count = 0
         
@@ -2296,7 +2476,49 @@ async def glm_summarization_task(
             MIN_FRAMES_PER_WINDOW = max(3, int(EXPECTED_FRAMES_PER_WINDOW * min_frames_ratio))
             
             # 获取所有窗口ID并排序
-            all_window_ids = sorted(window_frames.keys())
+            r1_window_ids = sorted(window_frames.keys())
+            stage1_ready_windows = []
+
+            # Live fast path: use independently saved stream frames to emit
+            # Stage 1 without waiting for SurgR1. This is the intended v4
+            # two-stage contract: experts+Gemini first, R1+Gemini refinement
+            # later. We still require saved frames in the target window so
+            # expert_fusion has real images to inspect.
+            if is_live and storage_path:
+                try:
+                    capture_stats = get_frame_capture_service().get_capture_stats(session_id) or {}
+                    live_elapsed = float(capture_stats.get("last_capture_time") or 0)
+                    if live_elapsed > 0:
+                        max_completed = int(live_elapsed / settings.WINDOW_DURATION)
+                        candidate_ids = set(range(0, max_completed))
+
+                        # Realtime fast track: for the currently playing window,
+                        # emit an expert-only snapshot after a few seconds. Do
+                        # not wait for the full 10s window, Gemini, or R1.
+                        current_wid = int(live_elapsed / settings.WINDOW_DURATION)
+                        current_start = current_wid * settings.WINDOW_DURATION
+                        if live_elapsed - current_start >= min(3.0, settings.WINDOW_DURATION * 0.3):
+                            candidate_ids.add(current_wid)
+
+                        for wid in sorted(candidate_ids):
+                            if wid in stage1_processed_windows:
+                                continue
+                            start_time = wid * settings.WINDOW_DURATION
+                            end_time = start_time + settings.WINDOW_DURATION
+                            if live_elapsed + 0.2 < end_time and wid != current_wid:
+                                continue
+                            saved = frame_storage.list_frames_in_range(
+                                storage_path=storage_path,
+                                start_time=start_time,
+                                end_time=end_time,
+                                subfolder="frames"
+                            )
+                            if len(saved) >= 3:
+                                stage1_ready_windows.append(wid)
+                except Exception as e:
+                    logger.warning(f"[GLM Task] Live Stage 1 readiness check failed: {e}")
+
+            all_window_ids = sorted(set(r1_window_ids) | set(stage1_ready_windows))
             max_window_id = max(all_window_ids) if all_window_ids else -1
             
             # 窗口就绪条件（放宽条件以适应实际处理延迟）：
@@ -2306,12 +2528,17 @@ async def glm_summarization_task(
             # 4. 【新增】帧数不足但已被跳过（下一个窗口已开始+2）→ 强制处理，避免永久跳过
             new_windows = []
             waiting_windows = []  # 等待更多帧的窗口
+
+            # Add live Stage 1 windows first. They are not final, so they are
+            # not marked processed here; Stage 2 can still run later when R1
+            # frame analyses arrive.
+            new_windows.extend(stage1_ready_windows)
             
             # ========== 在线模式：第一个窗口特殊化，尽早出结果 ==========
             # 离线模式：正常等满帧再处理，保证准确率
             first_window_fast = is_live and (len(processed_windows) == 0)
             
-            for wid in all_window_ids:
+            for wid in r1_window_ids:
                 if wid in processed_windows:
                     continue
                     
@@ -2353,6 +2580,8 @@ async def glm_summarization_task(
                 else:
                     # 帧数不足，继续等待 R1 处理更多帧
                     waiting_windows.append((wid, frame_count, f"需要{MIN_FRAMES_PER_WINDOW}帧(当前{frame_count})"))
+
+            new_windows = sorted(set(new_windows))
             
             # Log window frame counts for debugging
             window_frame_counts = {wid: len(window_frames[wid]) for wid in window_frames.keys()}
@@ -2399,8 +2628,6 @@ async def glm_summarization_task(
             window_metadata = {}
             
             from ..services.temporal_analyze import process_window_for_glm
-            from ..services.frame_storage_service import get_frame_storage_service
-            from ..services.mysql_service import get_mysql_service
             from ..services.analysis_logger import get_analysis_logger, close_analysis_logger
             from PIL import Image
             from pathlib import Path
@@ -2418,7 +2645,7 @@ async def glm_summarization_task(
                 if analysis_cancellation_flags.get(session_id, False):
                     break
                     
-                frames = window_frames[window_id]
+                frames = window_frames.get(window_id, [])
                 start_time = window_id * settings.WINDOW_DURATION
                 end_time = start_time + settings.WINDOW_DURATION
                 
@@ -2427,27 +2654,31 @@ async def glm_summarization_task(
                 for f in frames:
                     if isinstance(f, dict):
                         frame_analyses.append({
-                            "frame_idx": f.get("frame_idx", 0),
-                            "timestamp": f.get("timestamp", 0),
+                            "frame_idx": f.get("frame_idx") or 0,
+                            "timestamp": f.get("timestamp") or 0,
                             "phase": f.get("surgical_phase", "") or "",
                             "action": f.get("surgical_action", "") or "",
                             "tools": f.get("tool_localization", "") or ""
                         })
                     else:
                         frame_analyses.append({
-                            "frame_idx": getattr(f, "frame_idx", 0),
-                            "timestamp": getattr(f, "timestamp", 0),
+                            "frame_idx": getattr(f, "frame_idx", None) or 0,
+                            "timestamp": getattr(f, "timestamp", None) or 0,
                             "phase": getattr(f, "surgical_phase", "") or "",
                             "action": getattr(f, "surgical_action", "") or "",
                             "tools": getattr(f, "tool_localization", "") or ""
                         })
                 
-                # Temporal Analysis
-                temporal_result = process_window_for_glm(
-                    frame_analyses=frame_analyses,
-                    window_id=window_id,
-                    window_duration=settings.WINDOW_DURATION
-                )
+                # Temporal Analysis. Live Stage 1 can run before R1 has saved
+                # any frame analyses, so allow an empty frame_analyses list.
+                if frame_analyses:
+                    temporal_result = process_window_for_glm(
+                        frame_analyses=frame_analyses,
+                        window_id=window_id,
+                        window_duration=settings.WINDOW_DURATION
+                    )
+                else:
+                    temporal_result = {"consistency": {"cleaned_data": {}}}
                 consistency = temporal_result.get("consistency", {})
                 
                 logger.info(f"[Temporal] Window {window_id}: {consistency.get('cleaned_data', {})}")
@@ -2495,7 +2726,8 @@ async def glm_summarization_task(
                 windows_to_process.append({
                     "window_id": window_id,
                     "frame_analyses": frame_analyses,
-                    "images": window_images  # GLM多模态验证：图片 + R1分析结果
+                    "images": window_images,  # GLM多模态验证：图片 + R1分析结果
+                    "stage1_only": window_id in stage1_ready_windows and not frame_analyses
                 })
                 
                 # 存储元数据
@@ -2523,50 +2755,201 @@ async def glm_summarization_task(
                     
                     sorted_windows = sorted(windows_to_process, key=lambda w: w.get("window_id", 0))
                     
+                    # Pipeline v4: 两阶段流程
+                    # Stage 1 = live mode: local experts only, no VLM/R1 wait;
+                    # offline mode: experts → Gemini text-only.
+                    # Stage 2 = 专家 + SurgR1 CoT + 1 张图 → Gemini 多模态（精修）
+                    import numpy as _np
+                    from ..services.expert_fusion import run_experts_on_window
+
+                    phase_map = {
+                        "准备阶段": "Preparation", "准备": "Preparation", "准备期": "Preparation",
+                        "肝胆三角解剖": "CalotTriangleDissection", "Calot三角": "CalotTriangleDissection",
+                        "夹闭切断": "ClippingCutting",
+                        "胆囊分离": "GallbladderDissection",
+                        "胆囊取出": "GallbladderPackaging",
+                        "清洁凝血": "CleaningCoagulation",
+                        "胆囊牵拉": "GallbladderRetraction",
+                    }
+
+                    def _pil_list_to_bgr(pil_list):
+                        out = []
+                        for im in pil_list or []:
+                            try:
+                                arr = _np.array(im.convert("RGB"))
+                                out.append(arr[:, :, ::-1].copy())  # RGB→BGR
+                            except Exception:
+                                pass
+                        return out
+
                     for window_data in sorted_windows:
                         # Check cancellation
                         if analysis_cancellation_flags.get(session_id, False):
                             logger.info(f"[GLM Task] Cancelled during window processing")
                             break
-                        
+
                         window_id = window_data["window_id"]
                         meta = window_metadata.get(window_id, {})
                         frame_analyses = meta.get("frame_analyses", [])
-                        
+
+                        # ===================== Stage 1: 专家 → Gemini 文本 =====================
+                        stage1_summary_text = ""
+                        stage1_phase = "Unknown"
+                        expert_pack: Dict[str, Any] = {}
+                        should_emit_stage1 = window_id not in stage1_processed_windows
                         try:
-                            # 构建历史上下文
-                            history_context = await history_manager.build_history_context()
-                            
-                            # 调用 VLM 分析
-                            # 在线模式：限制图片数量(最多3张)、减少 max_tokens 加速响应
-                            # 离线模式：发送所有图片、更多 tokens 保证准确率
+                            pil_images = window_data.get("images") or []
+                            bgr_frames = _pil_list_to_bgr(pil_images[:5])
+                            # 传入会话内已经走过的阶段集合，让 Phase Expert 不再闪回回退阶段
+                            reached = set(getattr(history_manager, "_reached_phases", set()) or set())
+                            if bgr_frames:
+                                loop = asyncio.get_event_loop()
+                                expert_pack = await loop.run_in_executor(
+                                    None,
+                                    lambda: run_experts_on_window(bgr_frames, reached_phases=reached),
+                                )
+                            expert_text = expert_pack.get("text", "【专家模型判断】(未启用)")
+
+                            if should_emit_stage1:
+                                if is_live:
+                                    # Real-time means local expert output must
+                                    # reach the UI without waiting on Gemini/R1.
+                                    stage1_summary_text = _expert_snapshot_summary(
+                                        expert_pack=expert_pack,
+                                        start_time=meta.get("start_time", 0),
+                                        end_time=meta.get("end_time", 0),
+                                        frame_count=len(bgr_frames),
+                                    )
+                                    stage1_phase = _canonical_phase(
+                                        expert_pack.get("phase", {}).get("label", "Unknown") or "Unknown"
+                                    )
+                                else:
+                                    history_context = await history_manager.build_history_context()
+                                    stage1_result = await vlm_client.integrate_experts_text_only(
+                                        expert_context=expert_text,
+                                        history_context=history_context,
+                                        temperature=0.5,
+                                        max_tokens=512,
+                                    )
+                                    if stage1_result.get("success"):
+                                        stage1_summary_text = stage1_result.get("summary", "")
+                                        stage1_phase = next(
+                                            (en for cn, en in phase_map.items() if cn in stage1_summary_text),
+                                            _canonical_phase(expert_pack.get("phase", {}).get("label", "Unknown") or "Unknown"),
+                                        )
+                        except Exception as s1e:
+                            logger.warning(f"[GLM Task] Stage 1 failed for window {window_id}: {s1e}")
+
+                        # 立即保存 Stage 1（前端 SSE 很快就看到）
+                        if stage1_summary_text:
+                            create_window_summary(
+                                db=db,
+                                session_id=db_session_id,
+                                window_id=window_id,
+                                start_time=meta.get("start_time", 0),
+                                end_time=meta.get("end_time", 0),
+                                summary_text=stage1_summary_text,
+                                dominant_phase=stage1_phase,
+                                tools_detected=[t["label"] for t in expert_pack.get("yolo", {}).get("tools", [])],
+                                key_actions=[],
+                                others_data={
+                                    "stage": 1,
+                                    "experts": {
+                                        "phase": expert_pack.get("phase", {}),
+                                        "triplet": expert_pack.get("triplet", {}),
+                                        "yolo": {
+                                            "tools": expert_pack.get("yolo", {}).get("tools", []),
+                                            "total_detections": expert_pack.get("yolo", {}).get("total_detections", 0),
+                                        },
+                                        "available": expert_pack.get("available", []),
+                                    },
+                                },
+                            )
+                            stage1_processed_windows.add(window_id)
+
+                        # If this live window was triggered only by saved
+                        # playback frames, R1 has not produced frame analyses
+                        # yet. Stop after Stage 1 and let a later loop run
+                        # Stage 2 once the R1 rows are available.
+                        if not frame_analyses:
+                            if stage1_summary_text:
+                                logger.info(f"[GLM Task] Window {window_id} Stage 1 saved; waiting for R1 Stage 2")
+                            continue
+
+                        if not should_emit_stage1:
+                            try:
+                                existing_summary = next(
+                                    (
+                                        s for s in get_summaries_by_session(db, db_session_id)
+                                        if (s.get("window_id") if isinstance(s, dict) else getattr(s, "window_id", None)) == window_id
+                                    ),
+                                    None,
+                                )
+                                if existing_summary:
+                                    stage1_summary_text = (
+                                        existing_summary.get("glm_summary", "")
+                                        if isinstance(existing_summary, dict)
+                                        else getattr(existing_summary, "summary_text", "")
+                                    ) or ""
+                            except Exception as e:
+                                logger.debug(f"[GLM Task] Could not load previous Stage 1 for window {window_id}: {e}")
+
+                        # ===================== Stage 2: 专家 + SurgR1 + 图像 =====================
+                        try:
+                            # 10s 窗口 / 1fps = ~10 帧；Stage 2 取 3 张（首/中/尾）给 Gemini 多模态
                             window_images = window_data.get("images")
-                            if is_live and window_images and len(window_images) > 3:
-                                # 在线模式：均匀采样最多3张图片
-                                step = len(window_images) / 3
-                                window_images = [window_images[int(i * step)] for i in range(3)]
-                            
+                            if window_images and len(window_images) > 3:
+                                n = len(window_images)
+                                window_images = [
+                                    window_images[0],
+                                    window_images[n // 2],
+                                    window_images[-1],
+                                ]
+
+                            conflict_context = None
+                            if expert_pack.get("text"):
+                                conflict_context = expert_pack["text"]
+
+                            history_context = await history_manager.build_history_context()
                             result = await vlm_client.integrate_analysis_results(
                                 frame_analyses=window_data.get("frame_analyses", []),
                                 images=window_images,
                                 history_context=history_context,
+                                conflict_context=conflict_context,
                                 temperature=0.7 if is_live else 0.9,
-                                max_tokens=1500
+                                max_tokens=1500,
                             )
-                            
+
                             if result.get("success"):
                                 summary_text = result.get("summary", "")
-                                others_data = result.get("others")
-                                
-                                phase_map = {"准备阶段": "Preparation", "准备期": "Preparation",
-                                    "肝胆三角解剖": "CalotTriangleDissection", "Calot三角": "CalotTriangleDissection",
-                                    "夹闭切断": "ClippingCutting", "胆囊分离": "GallbladderDissection",
-                                    "胆囊取出": "GallbladderPackaging", "清洁凝血": "CleaningCoagulation",
-                                    "胆囊牵拉": "GallbladderRetraction"}
+                                others_data_raw = result.get("others")
                                 gemini_phase = next((en for cn, en in phase_map.items() if cn in summary_text), "")
                                 r1_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
-                                dominant_phase = gemini_phase if gemini_phase else r1_phase
-                                
+                                dominant_phase = gemini_phase or r1_phase or stage1_phase or "Unknown"
+                                # SurgR1 CoT: 原始响应是 <think>...</think><answer>...</answer>
+                                # 拆成可读段落，每帧一块（至多 4 帧）
+                                import re as _re
+                                def _extract_cot(raw):
+                                    if not raw:
+                                        return None
+                                    tm = _re.search(r"<think>(.*?)</think>", raw, _re.DOTALL)
+                                    am = _re.search(r"<answer>(.*?)</answer>", raw, _re.DOTALL)
+                                    think = tm.group(1).strip() if tm else ""
+                                    answer = am.group(1).strip() if am else raw.strip()
+                                    return think, answer
+                                cot_blocks = []
+                                for f in frame_analyses[:4]:
+                                    raw_phase = f.get("phase", "")
+                                    if not raw_phase:
+                                        continue
+                                    think, answer = _extract_cot(raw_phase)
+                                    ts = f.get("timestamp", 0)
+                                    if think:
+                                        cot_blocks.append(f"[t={ts:.1f}s]\n推理：{think}\n判断：{answer}")
+                                    else:
+                                        cot_blocks.append(f"[t={ts:.1f}s] {answer}")
+                                surgr1_reasoning = "\n\n".join(cot_blocks)
+
                                 await history_manager.add_summary(WindowSummary(
                                     window_id=window_id,
                                     start_time=meta.get("start_time", 0),
@@ -2577,17 +2960,36 @@ async def glm_summarization_task(
                                     cvs_status=""
                                 ))
                             else:
-                                summary_text = f"[分析出错: {result.get('error', '未知错误')}]"
-                                others_data = None
-                                dominant_phase = "Unknown"
-                            
+                                # Stage 2 失败也不吞 Stage 1 的结果
+                                summary_text = stage1_summary_text or f"[分析出错: {result.get('error', '未知错误')}]"
+                                others_data_raw = None
+                                dominant_phase = stage1_phase
+                                surgr1_reasoning = ""
                         except Exception as inner_e:
-                            logger.error(f"[GLM Task] Window {window_id} failed: {inner_e}")
-                            summary_text = f"[分析出错: {str(inner_e)}]"
-                            others_data = None
-                            dominant_phase = "Unknown"
-                        
-                        # 立即保存到 DB（前端轮询就能看到）
+                            logger.error(f"[GLM Task] Stage 2 failed for window {window_id}: {inner_e}")
+                            summary_text = stage1_summary_text or f"[分析出错: {str(inner_e)}]"
+                            others_data_raw = None
+                            dominant_phase = stage1_phase
+                            surgr1_reasoning = ""
+
+                        # Stage 2 others_data：保留 stage1 的 experts 数据并附加 CoT + raw others
+                        others_data = {
+                            "stage": 2,
+                            "stage1_summary": stage1_summary_text,
+                            "experts": {
+                                "phase": expert_pack.get("phase", {}),
+                                "triplet": expert_pack.get("triplet", {}),
+                                "yolo": {
+                                    "tools": expert_pack.get("yolo", {}).get("tools", []),
+                                    "total_detections": expert_pack.get("yolo", {}).get("total_detections", 0),
+                                },
+                                "available": expert_pack.get("available", []),
+                            },
+                            "surgr1_reasoning": surgr1_reasoning,
+                            "gemini_others": others_data_raw,
+                        }
+
+                        # 覆盖同一窗口记录（mysql_service 已支持 window_id 级别 upsert）
                         create_window_summary(
                             db=db,
                             session_id=db_session_id,
@@ -2601,6 +3003,10 @@ async def glm_summarization_task(
                             others_data=others_data
                         )
                         
+                        # Generate embedding for semantic search
+                        _queue_embedding(db_session_id, window_id, summary_text,
+                                         meta.get("start_time", 0), meta.get("end_time", 0))
+
                         # 记录日志
                         analysis_log.log_glm_window(
                             window_id=window_id,
@@ -2610,7 +3016,7 @@ async def glm_summarization_task(
                             images_loaded=meta.get("images_loaded", 0),
                             frame_count=len(frame_analyses)
                         )
-                        
+
                         processed_windows.add(window_id)
                         logger.info(f"[GLM Task] Window {window_id} saved to DB: {summary_text[:60]}...")
                     
@@ -2760,6 +3166,10 @@ async def process_video_surgr1_glm_task(
                     dominant_phase=dominant_phase,
                     others_data=others_data
                 )
+                # Generate embedding for semantic search
+                _queue_embedding(db_session_id, meta["window_id"], summary_text,
+                                 meta["start_time"], meta["end_time"])
+
                 logger.info(f"Completed window {meta['window_id']} with SurgR1+GLM (pipeline)")
             except Exception as e:
                 logger.error(f"Failed to save Gemini result for window {meta['window_id']}: {e}")
@@ -3087,7 +3497,11 @@ async def process_video_task(
                     end_time=window.end_time,
                     summary_text=result["summary"]
                 )
-        
+
+                # Generate embedding for semantic search
+                _queue_embedding(db_session_id, window.window_id, result["summary"],
+                                 window.start_time, window.end_time)
+
         # Update session status
         from ..database import update_session_status
         update_session_status(db, session_id, "completed")
@@ -3160,42 +3574,78 @@ async def get_summary_at_time(
 @router.get("/stream-summaries/{session_id}")
 async def stream_summaries(
     session_id: str,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """Stream summaries as they are generated (SSE)"""
     from ..database import get_session_record
-    
+
     session = get_video_session(db, session_id)
     if not session:
         raise HTTPException(404, "Session not found")
-    
+
     async def event_generator():
-        last_window_id = -1
-        max_iterations = 600  # Max 10 minutes (600 * 1s)
+        # Pipeline v4: 同一个 window 可能先来 stage=1，后被 stage=2 覆盖，都要推给前端。
+        last_stage_by_window: Dict[int, int] = {}
+        # 4 小时，足够长视频跑完；真实停止靠 session status / cancellation_flag 驱动。
+        max_iterations = 14400
         iteration = 0
-        
+
+        try:
+            # 客户端断连检测：浏览器关闭 tab / 刷新 / 切换 session 都会让 SSE 连接中断，
+            # 这种情况下我们主动给 session 打上 cancellation 标记，让背景 GLM 任务能在
+            # 下一轮 loop 里自己停掉，不会继续消耗事件循环。
+            pass
+        except Exception:
+            pass
+
         while iteration < max_iterations:
+            # 每轮先看客户端是不是走了
+            if await request.is_disconnected():
+                logger.info(f"[SSE] Client disconnected for {session_id}, cancelling background task")
+                analysis_cancellation_flags[session_id] = True
+                break
             iteration += 1
-            
+
             try:
                 summaries = get_summaries_by_session(db, session["session_id"])
-                
-                for s in summaries:
-                    # Handle both dict and object access
+
+                # 按 window_id 升序推送，保证前端收到顺序稳定
+                ordered = sorted(
+                    [s for s in summaries if (s.get("window_id") if isinstance(s, dict) else getattr(s, "window_id", None)) is not None],
+                    key=lambda s: (s.get("window_id", 0) if isinstance(s, dict) else getattr(s, "window_id", 0))
+                )
+
+                for s in ordered:
                     s_window_id = s.get("window_id", 0) if isinstance(s, dict) else getattr(s, "window_id", 0)
-                    if s_window_id is not None and s_window_id > last_window_id:
-                        s_start = s.get("window_start", 0) if isinstance(s, dict) else getattr(s, "start_time", 0)
-                        s_end = s.get("window_end", 0) if isinstance(s, dict) else getattr(s, "end_time", 0)
-                        s_summary = s.get("glm_summary", "") if isinstance(s, dict) else getattr(s, "summary_text", "")
-                        
-                        data = json.dumps({
+                    s_start = s.get("window_start", 0) if isinstance(s, dict) else getattr(s, "start_time", 0)
+                    s_end = s.get("window_end", 0) if isinstance(s, dict) else getattr(s, "end_time", 0)
+                    s_summary = s.get("glm_summary", "") if isinstance(s, dict) else getattr(s, "summary_text", "")
+                    s_phase = s.get("surgical_phase") if isinstance(s, dict) else getattr(s, "surgical_phase", None)
+                    s_others = (s.get("others") if isinstance(s, dict) else getattr(s, "others_data", None)) or {}
+                    # 兼容旧行（无 stage 字段，视为 stage=2 已完成）
+                    stage = int(s_others.get("stage", 2)) if isinstance(s_others, dict) else 2
+                    prev_stage = last_stage_by_window.get(s_window_id, 0)
+
+                    if stage > prev_stage:
+                        payload = {
                             "window_id": s_window_id,
                             "start_time": s_start,
                             "end_time": s_end,
-                            "summary": s_summary
-                        })
-                        yield f"data: {data}\n\n"
-                        last_window_id = s_window_id
+                            "summary": s_summary,
+                            "phase": s_phase,
+                            "stage": stage,
+                        }
+                        # 附带 experts / 推理链（前端渲染深度面板）
+                        if isinstance(s_others, dict):
+                            if "experts" in s_others:
+                                payload["experts"] = s_others["experts"]
+                            if "surgr1_reasoning" in s_others and s_others["surgr1_reasoning"]:
+                                payload["surgr1_reasoning"] = s_others["surgr1_reasoning"]
+                            if "stage1_summary" in s_others and s_others["stage1_summary"]:
+                                payload["stage1_summary"] = s_others["stage1_summary"]
+                        yield f"data: {json.dumps(payload)}\n\n"
+                        last_stage_by_window[s_window_id] = stage
                 
                 # Check if processing is complete or cancelled - reload session from cache/DB
                 current_session = get_session_record(session_id)
@@ -3215,8 +3665,10 @@ async def stream_summaries(
                     
             except Exception as e:
                 logger.warning(f"[SSE] Error in event_generator: {e}")
-            
-            await asyncio.sleep(1)
+
+            # 2s 节拍：10s 窗口下 2s 检查一次足够及时；减半 DB 扫描频率，
+            # 让事件循环在 Gemini/embedding 高耗时任务之间更从容。
+            await asyncio.sleep(2)
         
         # Send final completed message if we hit max iterations
         if iteration >= max_iterations:
@@ -3522,7 +3974,11 @@ async def integrate_analysis_results(
         tools_detected=[f.get("tools", "") for f in frame_analyses],
         key_actions=[f.get("action", "") for f in frame_analyses]
     )
-    
+
+    # Generate embedding for semantic search
+    _queue_embedding(session["session_id"], window.window_id, summary_text,
+                     window.start_time, window.end_time)
+
     return {
         "window_id": window.window_id,
         "start_time": window.start_time,
@@ -3538,17 +3994,44 @@ async def integrate_analysis_results(
 @router.get("/surgr1/status")
 async def surgr1_status():
     """Check SurgR1 service status"""
+    now = time.time()
     try:
         surgr1_client = get_surgr1_client()
-        is_healthy = await surgr1_client.check_health()
+
+        # Use a dedicated short-timeout client for status checks. The normal
+        # SurgR1 client has a long inference timeout; reusing it for UI health
+        # makes the frontend show false "unavailable" states when the model is
+        # busy but still alive.
+        async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
+            response = await client.get(f"{surgr1_client.api_url}/health")
+        is_healthy = response.status_code == 200
+        if is_healthy:
+            surgr1_status_cache.update({
+                "available": True,
+                "last_success": now,
+                "last_checked": now,
+            })
         return {
             "available": is_healthy,
-            "api_url": surgr1_client.api_url
+            "api_url": surgr1_client.api_url,
+            "cached": False,
         }
     except Exception as e:
+        surgr1_client = get_surgr1_client()
+        last_success = surgr1_status_cache.get("last_success", 0.0)
+        if last_success and now - last_success < 300:
+            surgr1_status_cache["last_checked"] = now
+            return {
+                "available": True,
+                "api_url": surgr1_client.api_url,
+                "cached": True,
+                "warning": f"health check delayed; using last success {int(now - last_success)}s ago",
+            }
         return {
             "available": False,
-            "error": str(e)
+            "api_url": surgr1_client.api_url,
+            "error": str(e),
+            "cached": False,
         }
 
 
@@ -3831,7 +4314,9 @@ async def stream_sam3_segmented_video(
     
     # Open video
     import cv2
-    cap = cv2.VideoCapture(session["video_path"])
+    loop = asyncio.get_running_loop()
+    # [perf] VideoCapture 构造 + FPS 探测同步阻塞，放 executor
+    cap = await loop.run_in_executor(None, cv2.VideoCapture, session["video_path"])
     if not cap.isOpened():
         raise HTTPException(400, "Cannot open video file")
     
@@ -3843,9 +4328,14 @@ async def stream_sam3_segmented_video(
         frame_idx = 0
         last_frame_time = 0
         
+        def _bgr_to_pil(bgr):
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            return Image.fromarray(rgb)
+        
         try:
             while True:
-                ret, bgr_frame = cap.read()
+                # [perf] cap.read / cvtColor 同步阻塞，放 executor
+                ret, bgr_frame = await loop.run_in_executor(None, cap.read)
                 if not ret:
                     break
                 
@@ -3858,9 +4348,7 @@ async def stream_sam3_segmented_video(
                 
                 last_frame_time = current_time
                 
-                # Convert to PIL Image
-                rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-                pil_image = Image.fromarray(rgb_frame)
+                pil_image = await loop.run_in_executor(None, _bgr_to_pil, bgr_frame)
                 
                 # Get SurgR1 analysis
                 try:
@@ -3914,7 +4402,10 @@ async def stream_sam3_segmented_video(
                 await asyncio.sleep(0.01)
                 
         finally:
-            cap.release()
+            try:
+                await loop.run_in_executor(None, cap.release)
+            except Exception:
+                pass
     
     return StreamingResponse(
         generate_frames(),
@@ -3983,29 +4474,41 @@ async def get_frame_at_timestamp(
             try:
                 import cv2
                 import base64
-                cap = cv2.VideoCapture(video_path)
-                if cap.isOpened():
-                    # Skip first few frames to get fresh frame (avoid cached/buffered frame)
-                    frame = None
-                    for _ in range(3):  # Read 3 frames, use the last one
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
-                    cap.release()
-                    if frame is not None:
-                        # Encode frame to base64
-                        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        image_base64 = base64.b64encode(buffer).decode('utf-8')
-                        return {
-                            "success": True,
-                            "has_saved_frame": False,
-                            "is_live_frame": True,
-                            "timestamp": timestamp,
-                            "actual_timestamp": timestamp,
-                            "image_base64": image_base64,
-                            "analysis": None,
-                            "message": "Live frame from stream (no saved frame available)"
-                        }
+                # [perf] cv2 连接 HTTP 源 + 读 3 帧 + JPEG 编码都是同步阻塞，
+                # 全部塞到一个闭包里交给 executor，避免阻塞 asyncio loop
+                def _grab_live_frame(vp: str):
+                    c = cv2.VideoCapture(vp)
+                    try:
+                        if not c.isOpened():
+                            return None
+                        frame = None
+                        for _ in range(3):  # Read 3 frames, use the last one
+                            ret, frame = c.read()
+                            if not ret:
+                                frame = None
+                                break
+                        if frame is None:
+                            return None
+                        ok, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        if not ok:
+                            return None
+                        return base64.b64encode(buf).decode('utf-8')
+                    finally:
+                        c.release()
+
+                loop = asyncio.get_running_loop()
+                image_base64 = await loop.run_in_executor(None, _grab_live_frame, video_path)
+                if image_base64:
+                    return {
+                        "success": True,
+                        "has_saved_frame": False,
+                        "is_live_frame": True,
+                        "timestamp": timestamp,
+                        "actual_timestamp": timestamp,
+                        "image_base64": image_base64,
+                        "analysis": None,
+                        "message": "Live frame from stream (no saved frame available)"
+                    }
             except Exception as e:
                 logger.warning(f"Failed to get live frame from stream: {e}")
         
@@ -4582,3 +5085,49 @@ async def get_exportable_windows(session_id: str, db: Session = Depends(get_db))
         "windows": windows
     }
 
+
+# ==============================================================================
+# Embedding-based semantic search endpoints
+# ==============================================================================
+
+@router.post("/search/semantic")
+async def semantic_search(request: SemanticSearchRequest):
+    """Semantic search across window summaries using Gemini embeddings."""
+    embedding_service = get_embedding_service()
+    if not embedding_service:
+        raise HTTPException(status_code=503, detail="Embedding service not available")
+    results = await embedding_service.search_similar(
+        session_id=request.session_id,
+        query_text=request.query,
+        top_k=request.top_k
+    )
+    return {"results": results, "query": request.query}
+
+
+@router.get("/search/similar-window/{session_id}/{window_id}")
+async def find_similar_windows(session_id: str, window_id: int, top_k: int = 5):
+    """Find windows similar to a given window."""
+    embedding_service = get_embedding_service()
+    if not embedding_service:
+        raise HTTPException(status_code=503, detail="Embedding service not available")
+    results = await embedding_service.find_similar_windows(session_id, window_id, top_k)
+    return {"results": results, "source_window": window_id}
+
+
+@router.post("/search/text")
+async def text_search(request: TextSearchRequest):
+    """Exact text search across window summaries."""
+    embedding_service = get_embedding_service()
+    if not embedding_service:
+        raise HTTPException(status_code=503, detail="Embedding service not available")
+    results = embedding_service.text_search(request.session_id, request.query)
+    return {"results": results, "query": request.query}
+
+
+@router.get("/search/embedding-stats/{session_id}")
+async def embedding_stats(session_id: str):
+    """Get embedding statistics for a session."""
+    embedding_service = get_embedding_service()
+    if not embedding_service:
+        raise HTTPException(status_code=503, detail="Embedding service not available")
+    return embedding_service.get_session_stats(session_id)

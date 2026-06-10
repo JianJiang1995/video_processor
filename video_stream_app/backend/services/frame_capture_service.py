@@ -45,7 +45,12 @@ def load_frame_capture_config() -> Dict[str, Any]:
         "fps": 25,
         "quality": 85,
         "preview_fps": 10,
-        "preview_quality": 40
+        "preview_quality": 40,
+        "live_fps": 5,
+        "live_quality": 68,
+        "live_preview_fps": 2,
+        "live_retention_seconds": 300,
+        "prune_every_frames": 50
     }
     
     try:
@@ -81,6 +86,8 @@ class FrameCaptureState:
     preview_fps: int = 10
     quality: int = 85
     preview_quality: int = 40
+    retention_seconds: int = 0
+    prune_every_frames: int = 50
 
 
 # 全局帧捕获线程注册表
@@ -151,10 +158,12 @@ def frame_capture_thread_func(
         storage_path=storage_path,
         video_source=video_source,
         is_realtime_stream=is_realtime_stream,
-        capture_fps=config["fps"],
-        preview_fps=config["preview_fps"],
-        quality=config["quality"],
-        preview_quality=config["preview_quality"]
+        capture_fps=int(config.get("live_fps", config["fps"])) if is_realtime_stream else int(config["fps"]),
+        preview_fps=int(config.get("live_preview_fps", config["preview_fps"])) if is_realtime_stream else int(config["preview_fps"]),
+        quality=int(config.get("live_quality", config["quality"])) if is_realtime_stream else int(config["quality"]),
+        preview_quality=int(config["preview_quality"]),
+        retention_seconds=int(config.get("live_retention_seconds", 0)) if is_realtime_stream else 0,
+        prune_every_frames=int(config.get("prune_every_frames", 50))
     )
     
     with _capture_lock:
@@ -165,7 +174,11 @@ def frame_capture_thread_func(
     preview_interval = 1.0 / state.preview_fps  # 10fps = 0.1s
     
     logger.info(f"[FrameCaptureService] Starting capture THREAD for session {session_id}")
-    logger.info(f"[FrameCaptureService] Config: capture_fps={state.capture_fps}, preview_fps={state.preview_fps}")    
+    logger.info(
+        f"[FrameCaptureService] Config: capture_fps={state.capture_fps}, "
+        f"preview_fps={state.preview_fps}, quality={state.quality}, "
+        f"retention={state.retention_seconds or 'unlimited'}s"
+    )
     # 打开视频源
     cap = open_video_source(video_source)
     if not cap or not cap.isOpened():
@@ -240,7 +253,8 @@ def frame_capture_thread_func(
                         frame_data=bgr_frame,
                         frame_idx=saved_frame_idx,
                         subfolder="frames",
-                        save_preview=should_save_preview
+                        save_preview=should_save_preview,
+                        quality=state.quality
                     )
                     
                     save_time = time.time() - save_start
@@ -265,6 +279,19 @@ def frame_capture_thread_func(
                         if saved_frame_idx % state.capture_fps == 0:
                             elapsed = current_time
                             logger.info(f"[FrameCaptureService] Session {session_id}: saved {saved_frame_idx} frames at {elapsed:.1f}s")
+
+                        if (
+                            is_realtime_stream
+                            and state.retention_seconds > 0
+                            and saved_frame_idx % max(1, state.prune_every_frames) == 0
+                        ):
+                            cutoff = max(0.0, current_time - state.retention_seconds)
+                            removed = frame_storage.prune_frames_older_than(storage_path, cutoff)
+                            if removed["frames"] or removed["preview"]:
+                                logger.info(
+                                    f"[FrameCaptureService] Pruned old frames for {session_id}: "
+                                    f"frames={removed['frames']}, preview={removed['preview']}, cutoff={cutoff:.1f}s"
+                                )
                 
                 except Exception as e:
                     logger.warning(f"[FrameCaptureService] Failed to save frame: {e}")

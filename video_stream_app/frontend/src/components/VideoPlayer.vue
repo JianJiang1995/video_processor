@@ -164,7 +164,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onUnmounted, computed } from 'vue'
 import { isElectron, getBackendUrl, getCachedFrame, cacheFrame, getLocalFrame } from '@/utils/electronBridge'
 
 // 后端 URL（Electron 环境下从配置读取，浏览器环境为空使用相对路径）
@@ -246,18 +246,18 @@ const isHttpStream = computed(() => isHttpMjpegStream.value || isRtspStream.valu
 // - RTSP streams need our proxy for MJPEG conversion
 const streamUrl = computed(() => {
   if (!props.session?.session_id) return ''
-  
+
   if (isRtspStream.value) {
     // RTSP needs proxy for MJPEG conversion with frame pacing
     return `${backendUrl.value}/api/video/mjpeg-proxy/${props.session.session_id}?fps=25&quality=85`
   }
-  
+
   if (isHttpMjpegStream.value) {
-    // HTTP streams (like stream_simulator) are already MJPEG with frame pacing
-    // Use directly to avoid double-encoding overhead
+    // HTTP streams (like stream_simulator) are already MJPEG with frame pacing.
+    // Electron should connect to the source stream directly.
     return props.session.video_path
   }
-  
+
   return ''
 })
 
@@ -272,9 +272,8 @@ const onStreamError = () => {
 
 // Capture current frame when pausing stream
 const captureFrame = () => {
-  if (!streamImgRef.value) return null
-  
   try {
+    if (!streamImgRef.value) return null
     const img = streamImgRef.value
     // Check if image is loaded and has valid dimensions
     if (!img.naturalWidth || !img.naturalHeight) {
@@ -481,8 +480,9 @@ const loadLoopWindowFrames = async () => {
   const sessionId = props.session.session_id
   // Use configured window duration from props
   const windowDuration = props.windowDuration
-  // Use 25fps for smoother loop playback (up from 15fps), max 500 frames
-  const maxFrames = Math.min(Math.ceil(windowDuration * 25), 500)
+  // Loop preview is for review, not primary playback. Keep it bounded so opening
+  // grid/loop views does not compete with the live stream renderer.
+  const maxFrames = Math.min(Math.ceil(windowDuration * 15), 240)
   const useLocalCache = isElectron()
   // Electron: prefer full frames for real-time & coherent playback (preview may be partial)
   const usePreview = !useLocalCache  
@@ -658,29 +658,33 @@ const loadLoopWindowFrames = async () => {
       
       return true
     } else {
-      // Browser mode: use remote URLs with preloading
+      // Browser mode: use remote URLs. 过去这里 Promise.all 同时并发 30 个
+      // 预加载——经由 Vite proxy / SSH tunnel 会制造连接风暴，主线程表现为
+      // "卡死"。改为先只预热 5 帧触发播放，剩余帧用串行小批次后台慢加载。
       uniqueFrames.forEach(f => { f.url = f.remoteUrl })
       loopFrameCache.value = uniqueFrames
       loopPlaybackFrame.value = uniqueFrames[0].url
-      
-      // Preload images
-      const FIRST_BATCH_SIZE = 30
-      const firstBatch = uniqueFrames.slice(0, FIRST_BATCH_SIZE)
-      await Promise.all(firstBatch.map(f => preloadImage(f.url)))
-      
+
+      const WARM_SIZE = 5
+      const BG_BATCH_SIZE = 4
+      const warmBatch = uniqueFrames.slice(0, WARM_SIZE)
+      await Promise.all(warmBatch.map(f => preloadImage(f.url)))
+
       if (backgroundLoadingAborted) return false
-      
-      console.log(`[LoopPlayback] First ${firstBatch.length} images preloaded (browser mode)`)
+
+      console.log(`[LoopPlayback] ${warmBatch.length} frames warmed (browser mode), ${uniqueFrames.length - warmBatch.length} to load in background`)
       loopCacheLoading.value = false
-      
-      // Background preload rest
-      if (uniqueFrames.length > FIRST_BATCH_SIZE) {
+
+      // Background preload rest with tiny concurrent pool
+      if (uniqueFrames.length > WARM_SIZE) {
         const loadRemaining = async () => {
-          const remaining = uniqueFrames.slice(FIRST_BATCH_SIZE)
-          for (let i = 0; i < remaining.length; i += 20) {
+          const remaining = uniqueFrames.slice(WARM_SIZE)
+          for (let i = 0; i < remaining.length; i += BG_BATCH_SIZE) {
             if (backgroundLoadingAborted) return
-            const batch = remaining.slice(i, i + 20)
+            const batch = remaining.slice(i, i + BG_BATCH_SIZE)
             await Promise.all(batch.map(f => preloadImage(f.url)))
+            // 让出主线程，避免长时间霸占
+            await new Promise(r => setTimeout(r, 16))
           }
           console.log(`[LoopPlayback] All ${uniqueFrames.length} images preloaded`)
         }
@@ -1018,6 +1022,9 @@ watch(() => props.isPlaying, (playing) => {
 
 // Fetch SAM3 segmented frame - uses streaming endpoint for efficiency
 // The backend continuously processes frames, we just fetch the latest cached result
+// [perf] 墙钟时间门限，供 fetchSam3Frame 与 watch(currentTime) 共享，
+// 避免 interval + watch 两条路径叠加成双倍请求
+let _lastSam3FetchTs = 0
 const fetchSam3Frame = async (timestamp, forceOnDemand = false) => {
   if (!props.session || !props.showSam3 || !props.sam3Available) return
   
@@ -1027,6 +1034,8 @@ const fetchSam3Frame = async (timestamp, forceOnDemand = false) => {
   // Debounce: only fetch if timestamp changed by more than 0.15 seconds (matches SAM3 update rate)
   if (Math.abs(timestamp - lastSam3Timestamp.value) < 0.15 && sam3Frame.value) return
   lastSam3Timestamp.value = timestamp
+  // [perf] 记录墙钟时间，watch(currentTime) 共享此门限，避免 interval + watch 双触发
+  _lastSam3FetchTs = Date.now()
   
   // Mark request as in progress
   sam3FetchInProgress.value = true
@@ -1184,15 +1193,18 @@ watch(() => props.showSam3, (enabled) => {
   }
 })
 
-// Also watch currentTime changes when SAM3 is enabled
+// Also watch currentTime changes when SAM3 is enabled.
+// [perf] 过去这里每次 currentTime 变化（直播 250ms / 本地 timeupdate）都触发 fetch，
+// 与下面的 setInterval(250ms) 叠加造成实际 ~2x 请求。现在共享 _lastSam3FetchTs
+// 墙钟门限 400ms，保证 watch + interval 合起来不会超过 ~2.5 Hz，
+// 同时跳过正在加载中的情况。
 watch(() => props.currentTime, (newTime) => {
-  if (props.showSam3 && props.sam3Available && props.session) {
-    fetchSam3Frame(newTime)
-  }
+  if (!(props.showSam3 && props.sam3Available && props.session)) return
+  if (sam3Loading.value) return
+  const now = Date.now()
+  if (now - _lastSam3FetchTs < 400) return
+  fetchSam3Frame(newTime)
 })
-
-// Cleanup on unmount
-import { onUnmounted } from 'vue'
 
 onUnmounted(() => {
   // Clear SAM3 timer
@@ -1217,9 +1229,9 @@ onUnmounted(() => {
   top: 1rem;
   right: 1rem;
   font-family: var(--font-mono);
-  font-size: 0.9rem;
-  background: rgba(0, 0, 0, 0.7);
-  padding: 0.35rem 0.75rem;
+  font-size: 1.05rem;
+  background: rgba(0, 0, 0, 0.72);
+  padding: 0.45rem 0.85rem;
   border-radius: var(--radius-sm);
   color: var(--accent-primary);
   display: flex;
@@ -1234,7 +1246,7 @@ onUnmounted(() => {
 }
 
 .sam3-time-label {
-  font-size: 0.8rem;
+  font-size: 0.92rem;
 }
 
 .live-indicator {
@@ -1245,11 +1257,11 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.5rem;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   font-weight: 600;
   background: rgba(255, 0, 0, 0.8);
   color: white;
-  padding: 0.35rem 0.75rem;
+  padding: 0.45rem 0.85rem;
   border-radius: var(--radius-sm);
 }
 
@@ -1280,13 +1292,7 @@ onUnmounted(() => {
   height: 100%;
   object-fit: contain;
   background: black;
-  /* GPU acceleration for smoother MJPEG stream rendering */
-  will-change: contents;
-  transform: translateZ(0);
-  backface-visibility: hidden;
-  /* Optimize image rendering */
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
+  display: block;
 }
 
 .stream-image.frozen {
@@ -1317,7 +1323,7 @@ onUnmounted(() => {
 }
 
 .pause-icon {
-  font-size: 3rem;
+  font-size: 3.4rem;
   color: white;
   opacity: 0.9;
   margin-bottom: 0.5rem;
@@ -1325,7 +1331,7 @@ onUnmounted(() => {
 
 .pause-text {
   color: white;
-  font-size: 0.9rem;
+  font-size: 1.05rem;
   opacity: 0.8;
 }
 
@@ -1376,7 +1382,7 @@ onUnmounted(() => {
 .sam3-loading-text {
   margin-top: 1rem;
   color: var(--accent-primary, #00d4aa);
-  font-size: 0.9rem;
+  font-size: 1.05rem;
   font-weight: 500;
 }
 
@@ -1401,7 +1407,7 @@ onUnmounted(() => {
 
 .sam3-error-text {
   color: var(--warning, #fdcb6e);
-  font-size: 0.9rem;
+  font-size: 1.05rem;
   text-align: center;
   max-width: 80%;
   margin-bottom: 1rem;
@@ -1447,28 +1453,28 @@ onUnmounted(() => {
 }
 
 .loop-indicator-bar .loop-icon {
-  font-size: 1rem;
+  font-size: 1.15rem;
 }
 
 .loop-indicator-bar .loop-text {
-  font-size: 0.85rem;
+  font-size: 1rem;
   font-weight: 600;
   color: white;
 }
 
 .loop-indicator-bar .loop-separator {
   color: rgba(255, 255, 255, 0.5);
-  font-size: 0.8rem;
+  font-size: 0.95rem;
 }
 
 .loop-indicator-bar .loop-time {
   font-family: var(--font-mono, monospace);
-  font-size: 0.85rem;
+  font-size: 1rem;
   color: rgba(255, 255, 255, 0.9);
 }
 
 .loop-indicator-bar .loop-hint {
-  font-size: 0.75rem;
+  font-size: 0.9rem;
   color: rgba(255, 255, 255, 0.7);
   cursor: pointer;
 }
@@ -1521,4 +1527,3 @@ onUnmounted(() => {
   font-weight: 500;
 }
 </style>
-

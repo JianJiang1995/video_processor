@@ -14,7 +14,7 @@ export default defineConfig({
   
   // 开发服务器配置
   server: {
-    port: 5174,
+    port: 5133,
     strictPort: false,  // 允许自动切换端口，但会打印警告
     proxy: {
       '/api': {

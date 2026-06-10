@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design F - Clean Minimal (Frost Blue)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    /* Frost Blue - 低饱和蓝灰，清爽冷静 */
+    --bg-base: #f4f6f9;
+    --bg-primary: #ffffff;
+    --bg-secondary: #f0f2f5;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f8f9fb;
+    --bg-elevated: #ebeef3;
+    --bg-video: #0d1117;
+    --border: #dfe2e8;
+    --border-subtle: #e8ebf0;
+
+    --accent: #2563eb;
+    --accent-light: #60a5fa;
+    --accent-dim: rgba(37, 99, 235, 0.06);
+    --accent-glow: rgba(37, 99, 235, 0.12);
+    --accent-text: #1d4ed8;
+
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --info: #3b82f6;
+
+    --text-primary: #111827;
+    --text-secondary: #6b7280;
+    --text-tertiary: #9ca3af;
+
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-xs: 6px;
+
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+    --shadow-lg: 0 8px 30px rgba(0,0,0,0.12);
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ===== LAYOUT: Side nav + Main area with bottom summary ===== */
+  .app {
+    height: 100vh;
+    display: grid;
+    grid-template-columns: 60px 1fr;
+  }
+
+  /* ===== LEFT NAV ===== */
+  .sidenav {
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 14px 0;
+    gap: 6px;
+  }
+
+  .sn-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 15px;
+    color: white;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px var(--accent-glow);
+  }
+
+  .sn-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    transition: all 0.15s;
+  }
+
+  .sn-btn:hover {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+
+  .sn-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .sn-btn.active::after {
+    content: '';
+    position: absolute;
+    left: -6px;
+    width: 3px;
+    height: 18px;
+    background: var(--accent);
+    border-radius: 0 3px 3px 0;
+  }
+
+  .sn-spacer { flex: 1; }
+
+  .sn-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+  }
+
+  /* ===== MAIN AREA ===== */
+  .main-area {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Top bar */
+  .topbar {
+    height: 52px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    gap: 16px;
+  }
+
+  .tb-title {
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .tb-sep { width: 1px; height: 18px; background: var(--border); }
+
+  .tb-crumb {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .tb-spacer { flex: 1; }
+
+  .tb-live {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border-radius: 100px;
+    background: rgba(239, 68, 68, 0.08);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--danger);
+  }
+
+  .tb-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+    animation: blink 1.5s infinite;
+  }
+
+  @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+  .tb-services {
+    display: flex;
+    gap: 4px;
+  }
+
+  .tb-svc {
+    padding: 3px 8px;
+    border-radius: 100px;
+    background: var(--bg-secondary);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .tb-dot { width: 5px; height: 5px; border-radius: 50%; }
+  .tb-dot.on { background: var(--success); }
+  .tb-dot.off { background: var(--danger); }
+
+  .tb-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .tb-btn:hover { background: var(--bg-secondary); color: var(--text-secondary); }
+
+  /* ===== CONTENT: Video + right sidebar ===== */
+  .content {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    overflow: hidden;
+  }
+
+  /* Video column */
+  .video-col {
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    gap: 12px;
+    background: var(--bg-base);
+  }
+
+  .video-frame {
+    flex: 1;
+    background: var(--bg-video);
+    border-radius: var(--radius);
+    overflow: hidden;
+    position: relative;
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .vf-ph { text-align: center; opacity: 0.3; }
+  .vf-ph-icon { font-size: 48px; margin-bottom: 8px; color: #666; }
+  .vf-ph-text { font-size: 12px; color: #555; letter-spacing: 2px; text-transform: uppercase; }
+
+  .vf-badge {
+    position: absolute;
+    padding: 4px 10px;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(8px);
+    border-radius: 6px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .vf-badge.tl { top: 12px; left: 12px; color: #ff6b6b; display: flex; align-items: center; gap: 5px; font-weight: 600; }
+  .vf-badge.tr { top: 12px; right: 12px; color: var(--accent-light); border: 1px solid rgba(37,99,235,0.3); }
+  .vf-badge.bl { bottom: 12px; left: 12px; color: #ccc; }
+
+  .vf-livedot { width: 6px; height: 6px; border-radius: 50%; background: #ff4757; animation: blink 1.5s infinite; }
+
+  /* Control card below video */
+  .ctrl-card {
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    padding: 14px 18px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .ctrl-progress {
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .ctrl-progress:hover { height: 6px; }
+
+  .ctrl-fill {
+    height: 100%;
+    width: 35%;
+    background: var(--accent);
+    border-radius: 2px;
+    position: relative;
+  }
+
+  .ctrl-head {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-shadow: 0 0 8px var(--accent-glow);
+  }
+
+  .ctrl-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .c-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .c-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+
+  .c-btn.play {
+    width: 40px;
+    height: 40px;
+    background: var(--accent);
+    color: white;
+    font-size: 16px;
+    box-shadow: 0 2px 8px var(--accent-glow);
+  }
+
+  .c-btn.play:hover { background: var(--accent-text); }
+
+  .c-time {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: 6px;
+  }
+
+  .c-spacer { flex: 1; }
+
+  .c-overview {
+    padding: 6px 14px;
+    border-radius: 100px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .c-overview:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ===== RIGHT SIDEBAR ===== */
+  .sidebar {
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sb-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .sb-title {
+    font-size: 14px;
+    font-weight: 600;
+    flex: 1;
+  }
+
+  .sb-count {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+  }
+
+  .sb-icon-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .sb-icon-btn:hover { background: var(--bg-secondary); }
+
+  /* Current card */
+  .sb-current {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--accent-dim);
+  }
+
+  .sbc-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .sbc-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .sbc-ring {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: blink 1.5s infinite;
+  }
+
+  .sbc-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .sbc-text {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-primary);
+  }
+
+  .sbc-meta {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .sbc-phase {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: var(--bg-primary);
+    border-radius: 100px;
+    font-size: 11px;
+    color: var(--accent-text);
+    border: 1px solid var(--border);
+  }
+
+  .sbc-phase-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .sbc-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  .sbc-btn {
+    padding: 5px 10px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .sbc-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* History list */
+  .sb-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+  }
+
+  .sb-list::-webkit-scrollbar { width: 3px; }
+  .sb-list::-webkit-scrollbar-track { background: transparent; }
+  .sb-list::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .sb-item {
+    display: flex;
+    gap: 12px;
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s;
+    border: 1px solid transparent;
+  }
+
+  .sb-item:hover {
+    background: var(--bg-secondary);
+    border-color: var(--border-subtle);
+  }
+
+  .sb-thumb {
+    width: 64px;
+    height: 40px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .sb-info { flex: 1; min-width: 0; }
+
+  .sb-item-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  .sb-win {
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .sb-time {
+    font-size: 9px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .sb-text {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .sb-tag {
+    margin-top: 4px;
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    color: var(--text-tertiary);
+    display: inline-block;
+  }
+
+  /* ===== LABEL ===== */
+  .design-label {
+    position: fixed;
+    top: 60px;
+    right: 16px;
+    padding: 6px 14px;
+    background: var(--accent);
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: var(--radius-sm);
+    z-index: 100;
+    box-shadow: var(--shadow-md);
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- SIDE NAV -->
+  <div class="sidenav">
+    <div class="sn-logo">V</div>
+    <button class="sn-btn active" title="Analysis">&#x1F4F9;</button>
+    <button class="sn-btn" title="Overview">&#x2B1A;</button>
+    <button class="sn-btn" title="Voice">&#x1F3A4;</button>
+    <button class="sn-btn" title="Notes">&#x1F4DD;</button>
+    <div class="sn-spacer"></div>
+    <button class="sn-btn" title="Settings">&#x2699;</button>
+    <div class="sn-avatar">JJ</div>
+  </div>
+
+  <!-- MAIN AREA -->
+  <div class="main-area">
+
+    <!-- TOP BAR -->
+    <div class="topbar">
+      <span class="tb-title">Laparoscopic Cholecystectomy</span>
+      <div class="tb-sep"></div>
+      <span class="tb-crumb">session_20260408</span>
+      <div class="tb-spacer"></div>
+      <div class="tb-live"><div class="tb-live-dot"></div> LIVE</div>
+      <div class="tb-services">
+        <div class="tb-svc"><span class="tb-dot on"></span>SurgR1</div>
+        <div class="tb-svc"><span class="tb-dot on"></span>GLM</div>
+        <div class="tb-svc"><span class="tb-dot on"></span>SAM3</div>
+        <div class="tb-svc"><span class="tb-dot on"></span>TTS</div>
+        <div class="tb-svc"><span class="tb-dot off"></span>ASR</div>
+      </div>
+      <button class="tb-btn">&#x2699;</button>
+    </div>
+
+    <!-- CONTENT -->
+    <div class="content">
+
+      <!-- VIDEO COLUMN -->
+      <div class="video-col">
+        <div class="video-frame">
+          <div class="vf-ph">
+            <div class="vf-ph-icon">&#x25B6;</div>
+            <div class="vf-ph-text">Surgical Video</div>
+          </div>
+          <div class="vf-badge tl"><div class="vf-livedot"></div> LIVE</div>
+          <div class="vf-badge tr">SAM3</div>
+          <div class="vf-badge bl">Window #7</div>
+        </div>
+
+        <!-- Control card -->
+        <div class="ctrl-card">
+          <div class="ctrl-progress">
+            <div class="ctrl-fill">
+              <div class="ctrl-head"></div>
+            </div>
+          </div>
+          <div class="ctrl-row">
+            <button class="c-btn">&#x23EE;</button>
+            <button class="c-btn">&#x23EA;</button>
+            <button class="c-btn play">&#x25B6;</button>
+            <button class="c-btn">&#x23E9;</button>
+            <button class="c-btn">&#x23ED;</button>
+            <span class="c-time">00:35:12 / 01:42:30</span>
+            <div class="c-spacer"></div>
+            <button class="c-overview">&#x2B1A; Overview</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT SIDEBAR -->
+      <div class="sidebar">
+        <div class="sb-header">
+          <span class="sb-title">Analysis</span>
+          <span class="sb-count">12 windows</span>
+          <button class="sb-icon-btn">&#x1F50D;</button>
+        </div>
+
+        <div class="sb-current">
+          <div class="sbc-top">
+            <div class="sbc-label"><span class="sbc-ring"></span> Window #7</div>
+            <span class="sbc-time">00:35 - 00:40</span>
+          </div>
+          <div class="sbc-text">
+            Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis.
+            Two graspers maintain tissue tension while the needle driver completes an interrupted stitch.
+          </div>
+          <div class="sbc-meta">
+            <span class="sbc-phase"><span class="sbc-phase-dot"></span> Reconstruction</span>
+          </div>
+          <div class="sbc-actions">
+            <button class="sbc-btn">&#128264; Read</button>
+            <button class="sbc-btn">&#128203; Copy</button>
+            <button class="sbc-btn">&#128269; Detail</button>
+          </div>
+        </div>
+
+        <div class="sb-list">
+          <div class="sb-item">
+            <div class="sb-thumb"></div>
+            <div class="sb-info">
+              <div class="sb-item-top"><span class="sb-win">W#6</span><span class="sb-time">00:30-00:35</span></div>
+              <div class="sb-text">Clipping of the cystic artery completed. Surgeon transitions to dissection of the hepatocystic triangle.</div>
+              <span class="sb-tag">Dissection</span>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-thumb"></div>
+            <div class="sb-info">
+              <div class="sb-item-top"><span class="sb-win">W#5</span><span class="sb-time">00:25-00:30</span></div>
+              <div class="sb-text">Initial exposure of the gallbladder fundus. Retraction achieved with atraumatic grasper.</div>
+              <span class="sb-tag">Exposure</span>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-thumb"></div>
+            <div class="sb-info">
+              <div class="sb-item-top"><span class="sb-win">W#4</span><span class="sb-time">00:20-00:25</span></div>
+              <div class="sb-text">Trocar placement completed. Four ports established in standard configuration.</div>
+              <span class="sb-tag">Access</span>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-thumb"></div>
+            <div class="sb-info">
+              <div class="sb-item-top"><span class="sb-win">W#3</span><span class="sb-time">00:15-00:20</span></div>
+              <div class="sb-text">Adhesiolysis of peritoneal adhesions near the gallbladder fossa.</div>
+              <span class="sb-tag">Adhesiolysis</span>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-thumb"></div>
+            <div class="sb-info">
+              <div class="sb-item-top"><span class="sb-win">W#2</span><span class="sb-time">00:10-00:15</span></div>
+              <div class="sb-text">Initial survey of abdominal cavity. Gallbladder distended.</div>
+              <span class="sb-tag">Survey</span>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-thumb"></div>
+            <div class="sb-info">
+              <div class="sb-item-top"><span class="sb-win">W#1</span><span class="sb-time">00:05-00:10</span></div>
+              <div class="sb-text">Patient positioning and equipment check completed.</div>
+              <span class="sb-tag">Preparation</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<div class="design-label">DESIGN F — Clean Minimal / Frost Blue (Light Theme)</div>
+
+</body>
+</html>

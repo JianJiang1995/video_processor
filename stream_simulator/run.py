@@ -19,9 +19,10 @@ import sys
 import subprocess
 from pathlib import Path
 
+from path_utils import require_video_path
+
 # Load config
 CONFIG_PATH = Path(__file__).parent / "config.json"
-DEFAULT_VIDEO = "/data2/jj/proj/video_processor/test_data/2024-12-24_225315_VID002.mp4"
 
 
 def load_config():
@@ -30,10 +31,10 @@ def load_config():
         with open(CONFIG_PATH) as f:
             return json.load(f)
     return {
-        "video_path": DEFAULT_VIDEO,
+        "video_path": "media/sample.mp4",
         "streams": {
-            "http": {"port": 8080},
-            "webrtc": {"port": 8088},
+            "http": {"port": 9001},
+            "webrtc": {"port": 9002},
             "rtsp": {"port": 8554}
         }
     }
@@ -45,7 +46,7 @@ def run_http(args):
     
     config = load_config()
     port = args.port or config["streams"]["http"]["port"]
-    video = args.video or config["video_path"]
+    video = str(require_video_path(args.video, config.get("video_path")))
     
     server = HTTPStreamServer(
         video_path=video,
@@ -61,13 +62,10 @@ def run_webrtc(args):
     
     config = load_config()
     port = args.port or config["streams"]["webrtc"]["port"]
-    video = args.video or config["video_path"]
+    video = str(require_video_path(args.video, config.get("video_path")))
     
     # Override sys.argv for webrtc_server
     sys.argv = ["webrtc_server.py", "--video", video, "--port", str(port)]
-    if args.no_loop:
-        sys.argv.append("--no-loop")
-    
     webrtc_main()
 
 
@@ -77,7 +75,7 @@ def run_rtsp(args):
     
     config = load_config()
     port = args.port or config["streams"]["rtsp"]["port"]
-    video = args.video or config["video_path"]
+    video = str(require_video_path(args.video, config.get("video_path")))
     
     sys.argv = ["rtsp_server.py", "--video", video, "--port", str(port)]
     if args.no_loop:
@@ -89,7 +87,7 @@ def run_rtsp(args):
 def run_all(args):
     """Run all servers"""
     config = load_config()
-    video = args.video or config["video_path"]
+    video = str(require_video_path(args.video, config.get("video_path")))
     
     script_dir = Path(__file__).parent
     
@@ -189,14 +187,18 @@ Examples:
     # Change to script directory
     os.chdir(Path(__file__).parent)
     
-    if args.command == "http":
-        run_http(args)
-    elif args.command == "webrtc":
-        run_webrtc(args)
-    elif args.command == "rtsp":
-        run_rtsp(args)
-    elif args.command == "all":
-        run_all(args)
+    try:
+        if args.command == "http":
+            run_http(args)
+        elif args.command == "webrtc":
+            run_webrtc(args)
+        elif args.command == "rtsp":
+            run_rtsp(args)
+        elif args.command == "all":
+            run_all(args)
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

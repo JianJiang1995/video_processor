@@ -4,7 +4,7 @@
 cd "$(dirname "$0")/frontend"
 
 # Default port
-PORT=5174
+PORT=5133
 
 # 处理 Ctrl+C 信号
 cleanup() {
@@ -29,8 +29,8 @@ kill_existing_process() {
     fi
 }
 
-# Kill processes on potential ports (5174-5177)
-for p in 5174; do
+# Kill processes on potential ports (5133)
+for p in 5133; do
     kill_existing_process $p
 done
 
@@ -47,6 +47,20 @@ echo "App: http://localhost:$PORT"
 echo "Press Ctrl+C to stop"
 echo ""
 
-npm run dev &
-NPM_PID=$!
+# Launch Electron + Vite together (via electron:dev script in package.json)
+# Electron requires X display for GUI - ensure $DISPLAY is set (X11 forwarding)
+if [ -z "$DISPLAY" ]; then
+    echo "⚠️  \$DISPLAY not set. Electron requires X display."
+    echo "   For MobaXterm: enable 'X11-Forwarding' in SSH session settings."
+    echo "   Falling back to browser-only mode (Vite only)..."
+    npm run dev &
+    NPM_PID=$!
+else
+    echo "✓ DISPLAY=$DISPLAY (X11 forwarding OK)"
+    # Electron needs --no-sandbox on some Linux envs without user namespaces
+    export ELECTRON_DISABLE_SANDBOX=1
+    npm run electron:dev &
+    NPM_PID=$!
+fi
+
 wait $NPM_PID

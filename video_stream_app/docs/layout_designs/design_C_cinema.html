@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design C - Cinema Mode</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-base: #050608;
+    --bg-primary: #0a0c10;
+    --bg-secondary: #10131a;
+    --bg-card: #161a24;
+    --bg-card-hover: #1c2030;
+    --bg-elevated: #222730;
+    --bg-glass: rgba(10, 12, 16, 0.85);
+    --border: #1a1e28;
+    --border-subtle: #141820;
+    --accent: #00d4aa;
+    --accent-dim: rgba(0, 212, 170, 0.10);
+    --accent-glow: rgba(0, 212, 170, 0.06);
+    --danger: #ff6b6b;
+    --warning: #ffd93d;
+    --success: #00d4aa;
+    --text-primary: #eef0f6;
+    --text-secondary: #8b95a8;
+    --text-tertiary: #5a6478;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ===== FULL SCREEN VIDEO LAYOUT ===== */
+  .cinema-layout {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+
+  /* Floating top bar */
+  .float-topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    background: linear-gradient(180deg, rgba(5,6,8,0.9) 0%, transparent 100%);
+    z-index: 20;
+  }
+
+  .ft-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .ft-logo {
+    width: 30px;
+    height: 30px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(135deg, var(--accent), #00b894);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--bg-base);
+  }
+
+  .ft-title {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .ft-sep {
+    width: 1px;
+    height: 14px;
+    background: rgba(255,255,255,0.1);
+  }
+
+  .ft-meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .ft-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .ft-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: all 0.15s;
+  }
+
+  .ft-btn:hover {
+    background: rgba(255,255,255,0.12);
+    color: var(--text-primary);
+  }
+
+  .ft-btn.active {
+    background: var(--accent-dim);
+    border-color: rgba(0,212,170,0.2);
+    color: var(--accent);
+  }
+
+  .ft-live {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 100px;
+    background: rgba(255,75,87,0.15);
+    border: 1px solid rgba(255,75,87,0.2);
+    font-size: 11px;
+    font-weight: 600;
+    color: #ff6b6b;
+  }
+
+  .ft-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ff4757;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ===== VIDEO FILLS ENTIRE BACKGROUND ===== */
+  .video-bg {
+    flex: 1;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .video-canvas {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #12151c 0%, #0a0c10 50%, #12151c 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .video-ph {
+    text-align: center;
+  }
+
+  .video-ph-icon {
+    font-size: 64px;
+    opacity: 0.15;
+    margin-bottom: 12px;
+  }
+
+  .video-ph-text {
+    font-size: 14px;
+    color: var(--text-tertiary);
+    letter-spacing: 1px;
+  }
+
+  /* ===== BOTTOM CONTROL DOCK ===== */
+  .bottom-dock {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(0deg, rgba(5,6,8,0.95) 0%, rgba(5,6,8,0.8) 70%, transparent 100%);
+    padding: 40px 24px 16px;
+    z-index: 20;
+  }
+
+  /* Current analysis toast */
+  .analysis-toast {
+    max-width: 600px;
+    margin: 0 auto 16px;
+    padding: 12px 18px;
+    background: var(--bg-glass);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .toast-accent {
+    width: 3px;
+    min-height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    flex-shrink: 0;
+    align-self: stretch;
+  }
+
+  .toast-body { flex: 1; min-width: 0; }
+
+  .toast-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .toast-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .toast-label .ring {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.5s infinite;
+  }
+
+  .toast-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .toast-text {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .toast-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+  }
+
+  .toast-btn {
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--text-tertiary);
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .toast-btn:hover {
+    background: rgba(255,255,255,0.1);
+    color: var(--text-secondary);
+  }
+
+  /* Progress */
+  .dock-progress {
+    margin-bottom: 10px;
+    position: relative;
+  }
+
+  .dock-track {
+    height: 3px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .dock-track:hover { height: 5px; }
+
+  .dock-fill {
+    height: 100%;
+    width: 35%;
+    background: var(--accent);
+    border-radius: 2px;
+    position: relative;
+  }
+
+  .dock-head {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    position: absolute;
+    right: -5px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-shadow: 0 0 12px rgba(0,212,170,0.5);
+  }
+
+  /* Window marks on progress */
+  .dock-marks {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+  }
+
+  .dock-mark {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 1px;
+    background: rgba(255,255,255,0.15);
+  }
+
+  /* Controls */
+  .dock-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .d-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: all 0.15s;
+  }
+
+  .d-btn:hover { color: var(--text-primary); }
+
+  .d-btn.play {
+    width: 44px;
+    height: 44px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 18px;
+    box-shadow: 0 0 20px rgba(0,212,170,0.3);
+  }
+
+  .d-btn.play:hover { transform: scale(1.06); }
+
+  .d-time {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: 4px;
+  }
+
+  .dock-spacer { flex: 1; }
+
+  .d-svc {
+    display: flex;
+    gap: 4px;
+  }
+
+  .d-svc-item {
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.04);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .d-svc-dot { width: 4px; height: 4px; border-radius: 50%; }
+  .d-svc-dot.on { background: var(--success); }
+  .d-svc-dot.off { background: var(--danger); }
+
+  /* ===== RIGHT DRAWER (slide-in panel) ===== */
+  .drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 380px;
+    background: var(--bg-glass);
+    backdrop-filter: blur(20px);
+    border-left: 1px solid var(--border);
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    box-shadow: -8px 0 40px rgba(0,0,0,0.5);
+  }
+
+  .drawer-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .drawer-title {
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1;
+  }
+
+  .drawer-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .drawer-close {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .drawer-close:hover { background: var(--bg-elevated); color: var(--text-primary); }
+
+  /* Drawer tabs */
+  .drawer-tabs {
+    display: flex;
+    padding: 8px 16px;
+    gap: 2px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .drawer-tab {
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+  }
+
+  .drawer-tab.active {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
+  /* Drawer content */
+  .drawer-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+  }
+
+  .drawer-content::-webkit-scrollbar { width: 3px; }
+  .drawer-content::-webkit-scrollbar-track { background: transparent; }
+  .drawer-content::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  /* Cards in drawer */
+  .draw-card {
+    padding: 14px;
+    background: rgba(22, 26, 36, 0.7);
+    border-radius: var(--radius-md);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+  }
+
+  .draw-card:hover {
+    background: rgba(28, 32, 48, 0.8);
+    border-color: var(--border);
+  }
+
+  .draw-card.highlight {
+    border-color: var(--accent);
+    background: rgba(0, 212, 170, 0.05);
+  }
+
+  .dc-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .dc-window {
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .dc-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .dc-text {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .dc-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .dc-thumb {
+    width: 64px;
+    height: 36px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .dc-phase-tag {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    color: var(--text-tertiary);
+  }
+
+  /* ===== Voice Chat drawer (alternative view) ===== */
+  .chat-messages {
+    flex: 1;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* ===== DESIGN LABEL ===== */
+  .design-label {
+    position: fixed;
+    bottom: 80px;
+    left: 20px;
+    padding: 8px 16px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: var(--radius-sm);
+    z-index: 100;
+    letter-spacing: 0.5px;
+  }
+
+  /* ===== Keyboard hint ===== */
+  .kbd-hint {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 16px;
+    z-index: 50;
+  }
+
+  .kbd {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+  }
+
+  .kbd-key {
+    padding: 2px 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+</style>
+</head>
+<body>
+
+<div class="cinema-layout">
+
+  <!-- FLOATING TOP BAR -->
+  <div class="float-topbar">
+    <div class="ft-left">
+      <div class="ft-logo">V</div>
+      <span class="ft-title">Video Analyzer</span>
+      <div class="ft-sep"></div>
+      <span class="ft-meta">Laparoscopic Cholecystectomy</span>
+    </div>
+    <div class="ft-right">
+      <div class="ft-live"><div class="ft-live-dot"></div> LIVE</div>
+      <button class="ft-btn" title="Overview">&#x2B1A;</button>
+      <button class="ft-btn active" title="Analysis Panel">&#x2630;</button>
+      <button class="ft-btn" title="Voice Chat">&#x1F3A4;</button>
+      <button class="ft-btn" title="Settings">&#x2699;</button>
+    </div>
+  </div>
+
+  <!-- FULL VIDEO AREA -->
+  <div class="video-bg">
+    <div class="video-canvas">
+      <div class="video-ph">
+        <div class="video-ph-icon">&#x25B6;</div>
+        <div class="video-ph-text">SURGICAL VIDEO FEED</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM DOCK -->
+  <div class="bottom-dock">
+    <!-- Analysis toast -->
+    <div class="analysis-toast">
+      <div class="toast-accent"></div>
+      <div class="toast-body">
+        <div class="toast-header">
+          <div class="toast-label"><span class="ring"></span> Window #7 - Reconstruction</div>
+          <span class="toast-time">00:35 - 00:40</span>
+        </div>
+        <div class="toast-text">
+          Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis.
+          Two graspers maintain tissue tension while the needle driver completes an interrupted stitch.
+        </div>
+        <div class="toast-actions">
+          <button class="toast-btn">&#128264; Read Aloud</button>
+          <button class="toast-btn">&#128203; Copy</button>
+          <button class="toast-btn">&#128269; Expand</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="dock-progress">
+      <div class="dock-track">
+        <div class="dock-marks">
+          <div class="dock-mark" style="left: 14.2%"></div>
+          <div class="dock-mark" style="left: 28.4%"></div>
+          <div class="dock-mark" style="left: 42.6%"></div>
+          <div class="dock-mark" style="left: 56.8%"></div>
+          <div class="dock-mark" style="left: 71%"></div>
+          <div class="dock-mark" style="left: 85.2%"></div>
+        </div>
+        <div class="dock-fill">
+          <div class="dock-head"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="dock-controls">
+      <button class="d-btn">&#x23EE;</button>
+      <button class="d-btn">&#x23EA;</button>
+      <button class="d-btn play">&#x25B6;</button>
+      <button class="d-btn">&#x23E9;</button>
+      <button class="d-btn">&#x23ED;</button>
+      <span class="d-time">00:35:12 / 01:42:30</span>
+      <div class="dock-spacer"></div>
+      <div class="d-svc">
+        <div class="d-svc-item"><span class="d-svc-dot on"></span>SurgR1</div>
+        <div class="d-svc-item"><span class="d-svc-dot on"></span>GLM</div>
+        <div class="d-svc-item"><span class="d-svc-dot on"></span>SAM3</div>
+        <div class="d-svc-item"><span class="d-svc-dot on"></span>TTS</div>
+        <div class="d-svc-item"><span class="d-svc-dot off"></span>ASR</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT DRAWER (glass panel overlay) -->
+  <div class="drawer">
+    <div class="drawer-header">
+      <span class="drawer-title">Analysis History</span>
+      <span class="drawer-badge">12</span>
+      <button class="drawer-close">&#x2715;</button>
+    </div>
+    <div class="drawer-tabs">
+      <button class="drawer-tab active">Timeline</button>
+      <button class="drawer-tab">Voice Chat</button>
+      <button class="drawer-tab">Notes</button>
+    </div>
+    <div class="drawer-content">
+
+      <div class="draw-card highlight">
+        <div class="dc-top">
+          <span class="dc-window">W#7 - Current</span>
+          <span class="dc-time">00:35 - 00:40</span>
+        </div>
+        <div class="dc-row">
+          <div class="dc-thumb"></div>
+          <div class="dc-text" style="-webkit-line-clamp:2">Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis. Two graspers maintain tension.</div>
+        </div>
+        <div class="dc-row">
+          <span class="dc-phase-tag">Reconstruction</span>
+        </div>
+      </div>
+
+      <div class="draw-card">
+        <div class="dc-top">
+          <span class="dc-window">W#6</span>
+          <span class="dc-time">00:30 - 00:35</span>
+        </div>
+        <div class="dc-row">
+          <div class="dc-thumb"></div>
+          <div class="dc-text" style="-webkit-line-clamp:2">Clipping of the cystic artery completed. Surgeon transitions to dissection of the hepatocystic triangle.</div>
+        </div>
+        <div class="dc-row">
+          <span class="dc-phase-tag">Dissection</span>
+        </div>
+      </div>
+
+      <div class="draw-card">
+        <div class="dc-top">
+          <span class="dc-window">W#5</span>
+          <span class="dc-time">00:25 - 00:30</span>
+        </div>
+        <div class="dc-row">
+          <div class="dc-thumb"></div>
+          <div class="dc-text" style="-webkit-line-clamp:2">Initial exposure of the gallbladder fundus. Retraction achieved with atraumatic grasper.</div>
+        </div>
+        <div class="dc-row">
+          <span class="dc-phase-tag">Exposure</span>
+        </div>
+      </div>
+
+      <div class="draw-card">
+        <div class="dc-top">
+          <span class="dc-window">W#4</span>
+          <span class="dc-time">00:20 - 00:25</span>
+        </div>
+        <div class="dc-row">
+          <div class="dc-thumb"></div>
+          <div class="dc-text" style="-webkit-line-clamp:2">Trocar placement completed. Four ports established in standard configuration.</div>
+        </div>
+        <div class="dc-row">
+          <span class="dc-phase-tag">Access</span>
+        </div>
+      </div>
+
+      <div class="draw-card">
+        <div class="dc-top">
+          <span class="dc-window">W#3</span>
+          <span class="dc-time">00:15 - 00:20</span>
+        </div>
+        <div class="dc-row">
+          <div class="dc-thumb"></div>
+          <div class="dc-text" style="-webkit-line-clamp:2">Adhesiolysis of peritoneal adhesions near the gallbladder fossa.</div>
+        </div>
+        <div class="dc-row">
+          <span class="dc-phase-tag">Adhesiolysis</span>
+        </div>
+      </div>
+
+      <div class="draw-card">
+        <div class="dc-top">
+          <span class="dc-window">W#2</span>
+          <span class="dc-time">00:10 - 00:15</span>
+        </div>
+        <div class="dc-row">
+          <div class="dc-thumb"></div>
+          <div class="dc-text" style="-webkit-line-clamp:2">Initial survey of the abdominal cavity. Gallbladder is distended and mildly inflamed.</div>
+        </div>
+        <div class="dc-row">
+          <span class="dc-phase-tag">Survey</span>
+        </div>
+      </div>
+
+      <div class="draw-card">
+        <div class="dc-top">
+          <span class="dc-window">W#1</span>
+          <span class="dc-time">00:05 - 00:10</span>
+        </div>
+        <div class="dc-row">
+          <div class="dc-thumb"></div>
+          <div class="dc-text" style="-webkit-line-clamp:2">Patient positioning confirmed. Draping and equipment check completed.</div>
+        </div>
+        <div class="dc-row">
+          <span class="dc-phase-tag">Preparation</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- Keyboard hints -->
+<div class="kbd-hint">
+  <div class="kbd"><span class="kbd-key">Space</span> Play/Pause</div>
+  <div class="kbd"><span class="kbd-key">Tab</span> Toggle Panel</div>
+  <div class="kbd"><span class="kbd-key">G</span> Overview</div>
+</div>
+
+<div class="design-label">DESIGN C - Cinema Mode</div>
+
+</body>
+</html>

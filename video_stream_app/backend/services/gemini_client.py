@@ -1251,6 +1251,84 @@ class GeminiClient:
             "error": result.get("error")
         }
     
+    async def integrate_experts_text_only(
+        self,
+        expert_context: str,
+        history_context: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 400,
+    ) -> Dict[str, Any]:
+        """Stage 1 快速摘要 — 仅用 3 个专家模型的文本结果（YOLO/Phase/Triplet），
+        不带图像，用于实时 UX。输出 1-2 句中文总结。
+
+        遵循全局 phase 约束（见 WindowHistoryManager 的 ALLOWED_TRANSITIONS /
+        _reached_phases）：通过 history_context 注入的"阶段约束提醒"禁止回退。
+        """
+        config = load_config()
+        max_chars = config.get("window_analysis", {}).get("max_output_chars", 200)
+
+        system_prompt = (
+            "你是腹腔镜手术分析系统的实时初稿生成器。输入只有三个专家模型的文本判断"
+            "（Phase Expert、YOLO 工具检测、LAM-Lite Triplet），无图像。"
+            "请在 1-2 句中文内总结当前窗口正在进行的手术动作。\n\n"
+            "【输出规则】\n"
+            "1. 严格遵守历史上下文里出现的「阶段约束提醒」——已经走过的阶段不能回退，"
+            "   必须按手术生理顺序推进。\n"
+            "2. 以 Phase Expert 判断为阶段主准则；其它专家信息用来补充器械与动作。\n"
+            "3. 禁止输出任何警告符号（⚠️、！、!、等）、英文、医生称谓。\n"
+            "4. 禁止描述光线/反射/水珠/阴影等视觉细节；只描述手术阶段 + 器械 + 动作。\n\n"
+            "【输出格式】\n"
+            "【阶段中文名】\n"
+            f"一段动作描述（{max_chars}字以内，不分段）\n\n"
+            "【阶段中文名】只能在：准备、肝胆三角解剖、夹闭切断、胆囊分离、"
+            "胆囊牵拉、清洁凝血、胆囊取出 中选一个。"
+        )
+
+        parts = []
+        if history_context:
+            parts.append("## 历史窗口分析（必须参考以判断阶段连续性）")
+            parts.append(history_context.strip())
+
+            # 继承 integrate_analysis_results 里的同一套 phase 约束逻辑
+            phase_constraints = []
+            if "胆囊取出" in history_context:
+                phase_constraints.append(
+                    "历史已出现「胆囊取出」，当前窗口仅允许标注为「清洁凝血」或「胆囊取出」，"
+                    "禁止回退到「胆囊分离」「胆囊牵拉」「夹闭切断」「肝胆三角解剖」「准备阶段」"
+                )
+            if any(p in history_context for p in [
+                "肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "胆囊取出", "清洁凝血"
+            ]):
+                phase_constraints.append(
+                    "手术已进入正式阶段，当前窗口禁止回退到「准备阶段」"
+                )
+            if phase_constraints:
+                parts.append("## 阶段约束（必须严格遵守）")
+                parts.extend(phase_constraints)
+
+        parts.append(expert_context.strip())
+        parts.append("基于上述专家文本输出当前窗口的初稿。")
+        prompt = "\n\n".join(parts)
+
+        result = await self.chat(
+            message=prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        raw = result.get("text", "")
+        cleaned, _others = self._extract_narrative_output(raw)
+        # 防御性过滤：万一模型还是吐了 ⚠️/! 也去掉
+        cleaned = (cleaned or raw or "").replace("⚠️", "").replace("⚠", "")
+        cleaned = cleaned.strip()
+        return {
+            "success": result.get("success", False),
+            "summary": cleaned,
+            "model": self.model_name,
+            "tokens_used": result.get("tokens_used", 0),
+            "error": result.get("error"),
+        }
+
     def _extract_phase_from_summary(self, summary: str) -> str:
         """从摘要文本中提取手术阶段"""
         phase_mapping = {
@@ -1382,6 +1460,73 @@ class GeminiClient:
         logger.info(f"[GeminiClient] Sequential summarization completed: {success_count}/{len(windows)} windows in {elapsed:.2f}s")
         
         return results
+
+    async def detect_bleeding_bboxes(self, image_path: str) -> List[Dict]:
+        """Detect bleeding areas in a surgical image using Gemini.
+        Returns list of normalized bbox dicts: {x_center, y_center, width, height, confidence_desc}
+        """
+        import json as _json
+
+        prompt = """Analyze this laparoscopic surgical image for active bleeding areas.
+
+For each distinct bleeding area you detect, provide the bounding box in NORMALIZED coordinates (0.0 to 1.0 relative to image width/height):
+- x_center: horizontal center of the bleeding area
+- y_center: vertical center of the bleeding area
+- width: width of the bounding box
+- height: height of the bounding box
+
+Return ONLY a JSON array. Each element: {"x_center": float, "y_center": float, "width": float, "height": float}
+If NO bleeding is detected, return exactly: []
+
+Rules:
+- Only mark ACTIVE bleeding (visible blood flow, pooling blood, oozing)
+- Do NOT mark: normal tissue color, cauterized tissue, surgical instruments, bile/fluid
+- Be conservative: only mark areas you are confident contain active bleeding
+- Bounding boxes should tightly fit the bleeding area"""
+
+        try:
+            with open(image_path, "rb") as f:
+                image_bytes = f.read()
+
+            img_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+
+            response = await asyncio.to_thread(
+                self._client.models.generate_content,
+                model="gemini-3.1-pro-preview",
+                contents=[prompt, img_part],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=512,
+                )
+            )
+
+            text = response.text.strip()
+            # Extract JSON from response (may have markdown code blocks)
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+                text = text.strip()
+
+            bboxes = _json.loads(text)
+            if not isinstance(bboxes, list):
+                return []
+
+            # Validate bbox values
+            valid = []
+            for bb in bboxes:
+                if all(k in bb for k in ("x_center", "y_center", "width", "height")):
+                    if all(0 <= bb[k] <= 1 for k in ("x_center", "y_center", "width", "height")):
+                        valid.append({
+                            "x_center": round(bb["x_center"], 6),
+                            "y_center": round(bb["y_center"], 6),
+                            "width": round(bb["width"], 6),
+                            "height": round(bb["height"], 6),
+                        })
+            return valid
+        except Exception as e:
+            logger.error(f"[Gemini] Bleeding detection failed for {image_path}: {e}")
+            return []
 
 
 # Global client instance

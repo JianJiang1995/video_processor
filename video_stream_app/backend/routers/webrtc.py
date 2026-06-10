@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webrtc", tags=["webrtc"])
 
 # External stream simulator URL
-STREAM_SIMULATOR_URL = "http://localhost:8088"
+STREAM_SIMULATOR_URL = "http://localhost:9002"
 
 # Store active peer connections
 active_pcs: Set["RTCPeerConnection"] = set()
@@ -77,7 +77,9 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
         self._start_time = None
         self._pts = 0
         self._frame_idx = 0
-        self._time_base = fractions.Fraction(1, int(self.fps * 1000))
+        self._time_base = fractions.Fraction(1, 90000)
+        self._frame_interval = 1.0 / self.fps
+        self._pts_step = int(90000 / self.fps)
         
         logger.info(f"VideoFileTrack created: {video_path} ({self.width}x{self.height} @ {self.fps}fps)")
     
@@ -104,7 +106,7 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
             self._start_time = time.time()
         
         # Calculate timing
-        frame_time = self._pts / (self.fps * 1000)
+        frame_time = self._frame_idx * self._frame_interval
         current_time = time.time() - self._start_time
         wait_time = frame_time - current_time
         if wait_time > 0:
@@ -123,7 +125,7 @@ class VideoFileTrack(VideoStreamTrack if AIORTC_AVAILABLE else object):
         frame.pts = self._pts
         frame.time_base = self._time_base
         
-        self._pts += int(1000 / self.fps) * 1000
+        self._pts += self._pts_step
         
         return frame
     
@@ -235,6 +237,33 @@ async def handle_offer(offer: WebRTCOffer):
         sdp=pc.localDescription.sdp,
         type=pc.localDescription.type
     )
+
+
+@router.post("/simulator-offer", response_model=WebRTCAnswer)
+async def handle_simulator_offer(offer: WebRTCOffer):
+    """Proxy WebRTC signaling to the local stream simulator.
+
+    The browser is usually opened from another machine, so calling
+    http://localhost:9002/offer from the browser would hit the user's laptop,
+    not this server. Proxying through the backend keeps signaling same-origin.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{STREAM_SIMULATOR_URL}/offer",
+                json={"sdp": offer.sdp, "type": offer.type},
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(503, f"WebRTC simulator unavailable: {exc}") from exc
+
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, resp.text)
+
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(503, data["error"])
+
+    return WebRTCAnswer(sdp=data["sdp"], type=data["type"])
 
 
 @router.post("/close/{connection_id}")
@@ -471,4 +500,3 @@ async def cleanup_connections():
     await asyncio.gather(*coros)
     active_pcs.clear()
     logger.info("All WebRTC connections closed")
-

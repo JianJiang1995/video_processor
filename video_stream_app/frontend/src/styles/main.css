@@ -3,43 +3,43 @@
    ============================================ */
 
 :root {
-  /* Dark surgical theme */
-  --bg-primary: #0a0c10;
-  --bg-secondary: #12151c;
-  --bg-tertiary: #1a1e28;
-  --bg-elevated: #222730;
-  
-  /* Accent colors - surgical green/teal */
-  --accent-primary: #00d4aa;
-  --accent-secondary: #00b894;
-  --accent-tertiary: #1dd1a1;
-  --accent-glow: rgba(0, 212, 170, 0.15);
-  
+  /* Warm Slate theme */
+  --bg-primary: #161616;
+  --bg-secondary: #1e1e1e;
+  --bg-tertiary: #2a2a2a;
+  --bg-elevated: #3a3a3a;
+
+  /* Accent colors - Warm Amber */
+  --accent-primary: #f0a030;
+  --accent-secondary: #e09020;
+  --accent-tertiary: #ffb848;
+  --accent-glow: rgba(240, 160, 48, 0.12);
+
   /* Status colors */
-  --success: #00d4aa;
-  --warning: #fdcb6e;
-  --error: #ff6b6b;
+  --success: #4ecdc4;
+  --warning: #f0a030;
+  --error: #e74c3c;
   --info: #74b9ff;
-  
+
   /* Text colors */
-  --text-primary: #f5f6fa;
-  --text-secondary: #a4b0be;
-  --text-tertiary: #636e72;
-  
+  --text-primary: #e8e6e3;
+  --text-secondary: #a8a5a0;
+  --text-tertiary: #6b6862;
+
   /* Borders */
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-medium: rgba(255, 255, 255, 0.12);
-  
+  --border-subtle: #2e2e2e;
+  --border-medium: #3a3a3a;
+
   /* Shadows */
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.5);
   --shadow-glow: 0 0 30px var(--accent-glow);
-  
+
   /* Typography */
-  --font-display: 'Outfit', system-ui, sans-serif;
+  --font-display: 'Inter', 'Outfit', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
-  
+
   /* Spacing */
   --radius-sm: 6px;
   --radius-md: 12px;
@@ -53,6 +53,11 @@
   box-sizing: border-box;
 }
 
+html {
+  /* 全局字号放大，适配 MobaXterm / 远程 Electron 的高分辨率显示。 */
+  font-size: 22px;
+}
+
 body {
   font-family: var(--font-display);
   background: var(--bg-primary);
@@ -60,6 +65,7 @@ body {
   min-height: 100vh;
   line-height: 1.6;
   overflow-x: hidden;
+  font-size: 1rem;
 }
 
 /* Scrollbar styling */
@@ -87,14 +93,14 @@ body {
 
 .app-container {
   display: flex;
-  flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .app-header {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-subtle);
-  padding: 0.75rem 1.5rem;
+  padding: 0.8rem 1.4rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -111,18 +117,18 @@ body {
 }
 
 .logo-icon {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.2rem;
+  font-size: 1.35rem;
 }
 
 .logo-text {
-  font-size: 1.25rem;
+  font-size: 1.38rem;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -133,17 +139,27 @@ body {
 
 .app-main {
   flex: 1;
-  display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 1px;
-  background: var(--border-subtle);
-  padding: 1px;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.app-main-center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
 }
 
 .video-section {
   background: var(--bg-primary);
   display: flex;
   flex-direction: column;
+  /* 占据剩余空间但允许 shrink，让底部历史条始终可见 */
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .summary-section {
@@ -158,17 +174,20 @@ body {
    ============================================ */
 
 .video-wrapper {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1.5rem;
+  padding: 0.5rem 1.25rem;
   position: relative;
 }
 
 .video-container {
   width: 100%;
-  max-width: 1200px;
+  /* 远程桌面下原 960px 偏小；扩大到尽量吃满中间工作区。 */
+  max-width: 1280px;
+  max-height: 100%;
   aspect-ratio: 16/9;
   background: var(--bg-tertiary);
   border-radius: var(--radius-lg);
@@ -232,7 +251,7 @@ body {
 .controls-bar {
   background: var(--bg-secondary);
   border-top: 1px solid var(--border-subtle);
-  padding: 1rem 1.5rem;
+  padding: 1.05rem 1.5rem;
 }
 
 .progress-container {
@@ -240,16 +259,16 @@ body {
 }
 
 .progress-bar {
-  height: 6px;
+  height: 8px;
   background: var(--bg-elevated);
-  border-radius: 3px;
+  border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
   position: relative;
 }
 
 .progress-bar:hover {
-  height: 8px;
+  height: 10px;
 }
 
 .progress-fill {
@@ -282,12 +301,13 @@ body {
 .controls-row {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 1.05rem;
+  min-height: 64px;
 }
 
 .control-btn {
-  width: 44px;
-  height: 44px;
+  width: 52px;
+  height: 52px;
   border: none;
   border-radius: var(--radius-md);
   background: var(--bg-elevated);
@@ -296,7 +316,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.25rem;
+  font-size: 1.35rem;
   transition: all 0.2s ease;
 }
 
@@ -307,11 +327,11 @@ body {
 }
 
 .control-btn.primary {
-  width: 56px;
-  height: 56px;
+  width: 66px;
+  height: 66px;
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
   color: var(--bg-primary);
-  font-size: 1.5rem;
+  font-size: 1.65rem;
 }
 
 .control-btn.primary:hover {
@@ -321,7 +341,7 @@ body {
 
 .time-display {
   font-family: var(--font-mono);
-  font-size: 0.9rem;
+  font-size: 1.02rem;
   color: var(--text-secondary);
   min-width: 120px;
 }
@@ -532,11 +552,11 @@ body {
    ============================================ */
 
 .btn {
-  padding: 0.75rem 1.5rem;
+  padding: 0.82rem 1.6rem;
   border: none;
   border-radius: var(--radius-md);
   font-family: var(--font-display);
-  font-size: 0.9rem;
+  font-size: 1rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -571,7 +591,7 @@ body {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   font-family: var(--font-display);
-  font-size: 0.9rem;
+  font-size: 1rem;
   outline: none;
   transition: all 0.2s ease;
 }
@@ -585,12 +605,226 @@ body {
    Responsive
    ============================================ */
 
+/* ============================================
+   Bottom Card Strip
+   ============================================ */
+
+.bottom-card-strip {
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  flex-grow: 0;
+  height: 236px;
+}
+
+.bcs-header {
+  padding: 12px 22px 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.bcs-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
+}
+
+.bcs-count {
+  font-size: 15px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  background: var(--bg-tertiary);
+  border-radius: 100px;
+}
+
+.bcs-overview-btn {
+  margin-left: auto;
+  padding: 7px 16px;
+  border-radius: 100px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 15px;
+  cursor: pointer;
+  font-family: var(--font-display);
+  transition: all 0.15s;
+}
+
+.bcs-overview-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bcs-overview-btn:hover:not(:disabled) {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.bcs-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.bcs-empty-hint {
+  font-size: 17px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.bcs-scroll {
+  flex: 1;
+  display: flex;
+  gap: 14px;
+  padding: 12px 22px 16px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+}
+
+.bcs-scroll::-webkit-scrollbar { height: 3px; }
+.bcs-scroll::-webkit-scrollbar-track { background: transparent; }
+.bcs-scroll::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+.bcs-card {
+  min-width: 300px;
+  max-width: 300px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  padding: 12px 14px;
+  cursor: pointer;
+  scroll-snap-align: start;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.bcs-card.stage-quick {
+  border-left: 3px solid rgba(253, 203, 110, 0.55);
+}
+.bcs-card.stage-refined {
+  border-left: 3px solid rgba(0, 212, 170, 0.55);
+}
+
+.bcs-card-time {
+  margin-left: auto;
+  font-size: 15px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+.bcs-card-stage.quick {
+  font-size: 15px;
+  margin-left: 4px;
+}
+
+.bcs-card:hover {
+  border-color: var(--border-medium);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.bcs-card.selected {
+  border-color: var(--accent-primary);
+  background: var(--accent-glow);
+}
+
+.bcs-card-thumb {
+  width: 100%;
+  height: 78px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  margin-bottom: 6px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.bcs-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.bcs-card-thumb-placeholder {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+}
+
+.bcs-card-thumb-placeholder.loading {
+  background:
+    linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent),
+    var(--bg-elevated);
+  background-size: 180% 100%, 100% 100%;
+  animation: bcs-thumb-loading 1.2s linear infinite;
+}
+
+@keyframes bcs-thumb-loading {
+  from { background-position: 180% 0, 0 0; }
+  to { background-position: -180% 0, 0 0; }
+}
+
+.bcs-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.bcs-card-win {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--accent-primary);
+  letter-spacing: 0.5px;
+}
+
+.bcs-card-text {
+  /* 底部 strip 定位 = 时间线浏览；只展示 2 行 snippet，
+     完整文本 + 专家/CoT 在右侧 Analysis 面板。 */
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex: 1;
+}
+
+/* ============================================
+   Header enhancements
+   ============================================ */
+
+.header-session-id {
+  font-size: 14px;
+  padding: 4px 12px;
+  border-radius: 100px;
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+
 @media (max-width: 1024px) {
   .app-main {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    flex-direction: column;
   }
-  
+
   .summary-section {
     max-height: 300px;
   }
@@ -600,26 +834,22 @@ body {
   .app-header {
     padding: 0.5rem 1rem;
   }
-  
+
   .controls-bar {
     padding: 0.75rem 1rem;
   }
-  
+
   .control-btn {
     width: 40px;
     height: 40px;
   }
-  
+
   .control-btn.primary {
     width: 48px;
     height: 48px;
   }
-  
+
   .volume-control {
     display: none;
   }
 }
-
-
-
-

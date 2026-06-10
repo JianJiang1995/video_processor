@@ -11,10 +11,13 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "dev:local": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview",
-    "preelectron:dev": "fuser -k 5174/tcp 2>/dev/null || true",
-    "electron:dev": "concurrently -k \"vite\" \"wait-on -t 30000 tcp:5174 && electron . --dev\"",
+    "preelectron:dev": "fuser -k 5133/tcp 2>/dev/null || true",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on -t 30000 tcp:5133 && electron . --dev --no-sandbox\"",
+    "preelectron:local": "fuser -k 5133/tcp 2>/dev/null || true",
+    "electron:local": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on -t 30000 tcp:5133 && VITE_DEV_SERVER_URL=http://127.0.0.1:5133 electron . --dev --no-sandbox\"",
     "electron:preview": "vite build && electron .",
 
     "electron:build": "vite build && electron-builder",
@@ -35,8 +38,8 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
     "vite": "^5.0.0",
-    "electron": "^28.0.0",
-    "electron-builder": "^24.9.1",
+    "electron": "^36.0.0",
+    "electron-builder": "^25.1.0",
     "concurrently": "^8.2.2",
     "wait-on": "^7.2.0"
   },

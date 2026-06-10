@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     OUTPUT_DIR: Path = Path("./output")
     
     # CORS
-    CORS_ORIGINS: list = ["http://localhost:5174", "http://127.0.0.1:5174", "http://localhost:3000", "http://localhost:5176"]
+    CORS_ORIGINS: list = ["http://localhost:5133", "http://127.0.0.1:5133", "http://localhost:3000", "http://localhost:5176"]
     
     class Config:
         env_file = ".env"

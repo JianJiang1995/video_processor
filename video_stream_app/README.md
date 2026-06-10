@@ -19,7 +19,7 @@ A real-time surgical video analysis application with local VLM model (vLLM), GPT
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │   Frontend      │────▶│    Backend      │────▶│  Model Service  │
 │   (Vue.js)      │     │   (FastAPI)     │     │  (Swift/vLLM)   │
-│   Port: 5174    │     │   Port: 8001    │     │   Port: 9000    │
+│   Port: 5133    │     │   Port: 8001    │     │   Port: 9000    │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
                               │
                               ▼
@@ -102,7 +102,7 @@ API Docs: http://localhost:8001/api/docs
 ./run_frontend.sh
 ```
 
-Frontend at **http://localhost:5174**
+Frontend at **http://localhost:5133**
 
 ## API Endpoints
 

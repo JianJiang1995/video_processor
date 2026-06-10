@@ -20,8 +20,29 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+CONFIG_PATH = Path(__file__).parent.parent.parent / "config.json"
+
+
+def get_sessions_storage_base() -> Path:
+    """Return the configured base directory for session frame storage."""
+    default_base = Path("/data2/jj/proj/video_processor/video_stream_app/sessions")
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            config = json.load(f)
+        configured = (
+            config.get("video_processing", {})
+            .get("frame_storage", {})
+            .get("storage_base")
+        )
+        if configured:
+            return Path(configured).expanduser()
+    except Exception as e:
+        logger.warning(f"[FrameStorage] Failed to load storage_base from config: {e}")
+    return default_base
+
+
 # Base directory for storing session frames
-SESSIONS_STORAGE_BASE = Path("/data2/jj/proj/video_processor/video_stream_app/sessions")
+SESSIONS_STORAGE_BASE = get_sessions_storage_base()
 
 # Index file name
 FRAMES_INDEX_FILE = "frames_index.json"
@@ -68,6 +89,44 @@ class FrameIndexCache:
             # Save index to file every 50 frames (5 seconds at 10fps) for durability
             if len(index) % 50 == 0:
                 self._save_index_to_file(storage_path, subfolder)
+
+    def prune_older_than(self, storage_path: str, subfolder: str, cutoff_timestamp: float) -> int:
+        """Delete cached frame files older than cutoff_timestamp and update index."""
+        key = (storage_path, subfolder)
+        folder = Path(storage_path) / subfolder
+
+        with self._lock:
+            if key not in self._cache:
+                self._build_index(storage_path, subfolder)
+
+            index = self._cache.get(key, [])
+            if not index:
+                return 0
+
+            keep = []
+            remove = []
+            for ts, filename in index:
+                if ts < cutoff_timestamp:
+                    remove.append(filename)
+                else:
+                    keep.append((ts, filename))
+
+            if not remove:
+                return 0
+
+            removed = 0
+            for filename in remove:
+                try:
+                    path = folder / filename
+                    if path.exists():
+                        path.unlink()
+                        removed += 1
+                except Exception as e:
+                    logger.debug(f"[FrameIndexCache] Failed to delete old frame {filename}: {e}")
+
+            self._cache[key] = keep
+            self._save_index_to_file(storage_path, subfolder)
+            return removed
     
     def invalidate(self, storage_path: str, subfolder: str = None):
         """Invalidate cache for a storage path"""
@@ -274,7 +333,8 @@ class FrameStorageService:
         frame_base64: str = None,
         frame_idx: int = None,
         subfolder: str = "frames",
-        save_preview: bool = True
+        save_preview: bool = True,
+        quality: Optional[int] = None
     ) -> Optional[str]:
         """
         Save a frame to the session folder.
@@ -326,7 +386,11 @@ class FrameStorageService:
                 return None
             
             # Save original frame
-            cv2.imwrite(str(filepath), img)
+            if quality is not None:
+                quality = max(40, min(95, int(quality)))
+                cv2.imwrite(str(filepath), img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            else:
+                cv2.imwrite(str(filepath), img)
             
             # Update cache with new frame
             self._cache.add_frame(storage_path, subfolder, timestamp, filename)
@@ -344,6 +408,16 @@ class FrameStorageService:
         except Exception as e:
             logger.error(f"[FrameStorage] Failed to save frame: {e}")
             return None
+
+    def prune_frames_older_than(self, storage_path: str, cutoff_timestamp: float) -> Dict[str, int]:
+        """Prune frames/preview images older than cutoff_timestamp."""
+        if not storage_path:
+            return {"frames": 0, "preview": 0}
+
+        return {
+            "frames": self._cache.prune_older_than(storage_path, "frames", cutoff_timestamp),
+            "preview": self._cache.prune_older_than(storage_path, "preview", cutoff_timestamp),
+        }
     
     def _save_preview_frame(
         self,
@@ -605,4 +679,3 @@ def get_frame_storage_service() -> FrameStorageService:
     if _frame_storage_service is None:
         _frame_storage_service = FrameStorageService()
     return _frame_storage_service
-

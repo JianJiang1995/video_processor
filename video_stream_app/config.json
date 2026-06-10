@@ -38,8 +38,8 @@
             "comment": "SurgR1 API - 手术图片分析（bbox定位、动作描述、阶段识别）[核心服务，必须开启]，支持动态batch_size"
         },
         "glm": {
-            "enabled": true,
-            "required": true,
+            "enabled": false,
+            "required": false,
             "port": 8000,
             "host": "localhost",
             "api_url": "http://localhost:8000/v1",
@@ -49,7 +49,7 @@
             "max_concurrent": 16,
             "retry_count": 2,
             "window_merge_count": 3,
-            "comment": "VLM用于多图像分析总结，当前使用Qwen3-VL-8B（可切换GLM-4.6V-Flash）"
+            "comment": "DISABLED - 使用Gemini代替。VLM用于多图像分析总结"
         },
         "sam3": {
             "enabled": true,
@@ -85,32 +85,63 @@
         },
         "gemini": {
             "enabled": true,
-            "required": false,
+            "required": true,
             "api_key_env": "GEMINI_API_KEY",
-            "model_name": "gemini-3-flash-preview",
-            "thinking_level": "none",
+            "model_name": "gemini-3.1-pro-preview",
+            "thinking_level": "low",
             "max_tokens": 2048,
             "max_concurrent": 8,
             "retry_count": 3,
             "retry_delay": 1.0,
             "comment": "Gemini 3.0 Flash API - Google多模态分析，需设置GEMINI_API_KEY环境变量 [可选服务]，max_tokens需足够大以避免中文输出被截断"
+        },
+        "yolo": {
+            "enabled": true,
+            "model_path": "/data4/jj/proj/surg_agent/detection_expert/runs/yolo26s_cholec_tool/weights/best.pt",
+            "device": "cuda:5",
+            "confidence_threshold": 0.25,
+            "comment": "YOLO26s tool detection - replaces SurgR1 tool_localization for real-time streams"
+        },
+        "phase": {
+            "enabled": true,
+            "model_path": "/data4/jj/proj/surg_agent/phase_expert/runs/cholec_phase/best.pt",
+            "device": "cuda:3",
+            "comment": "Phase Expert (ResNet-18, ~300MB) 共用 GPU0（目前空闲 80+ GB）"
+        },
+        "triplet": {
+            "enabled": true,
+            "model_path": "/data4/jj/proj/surg_agent/triplet_expert/LAM/weights/LAM/CholecTriplet2021/LAM_Lite/model_best.pth.tar",
+            "mappings_path": "/data4/jj/proj/surg_agent/triplet_expert/datasets/cholect50_triplet/class_mappings.json",
+            "device": "cuda:2",
+            "comment": "Triplet Expert (LAM-Lite, ~1GB) 共用 GPU0"
+        },
+        "embedding": {
+            "enabled": true,
+            "model": "gemini-embedding-2-preview",
+            "persist_to_disk": true,
+            "comment": "Gemini text embedding for semantic similarity search"
         }
     },
     "video_processing": {
-        "window_duration": 15.0,
-        "sample_interval": 3.0,
+        "window_duration": 10.0,
+        "sample_interval": 1.0,
         "frame_storage": {
-            "fps": 25,
-            "quality": 85,
-            "preview_fps": 10,
+            "storage_base": "/data5/jj/proj/video_processor/video_stream_app/sessions",
+            "fps": 10,
+            "quality": 78,
+            "preview_fps": 4,
             "preview_quality": 40,
-            "comment": "帧存储配置: fps=原始帧保存帧率(25fps); quality=JPEG质量; preview_fps=预览帧帧率(10fps); preview_quality=预览JPEG质量"
+            "live_fps": 5,
+            "live_quality": 68,
+            "live_preview_fps": 2,
+            "live_retention_seconds": 300,
+            "prune_every_frames": 50,
+            "comment": "帧存储配置: 本地视频按 fps 保存；实时流按 live_fps 保存并只保留 live_retention_seconds 秒，避免长时间测试打满磁盘"
         },
-        "comment": "N=15秒窗口，每秒采样1帧分析，帧存储25fps独立捕获"
+        "comment": "N=10秒窗口，1秒采样一帧 → 10 帧/窗口；Stage2 Gemini 取其中 3 帧做多模态精修"
     },
     "analysis": {
         "questions": {
-            "tool_localization": "Given the laparoscopic surgical image <image>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
             "surgical_action": "Given the laparoscopic surgical image <image>, describe the complete surgical action in terms of tool, action, and tissue.",
             "surgical_phase": "Given the laparoscopic surgical image <image>, which surgical phase does this frame belong to? Choose from: Preparation, CalotTriangleDissection, ClippingCutting, GallbladderDissection, GallbladderPackaging, CleaningCoagulation, GallbladderRetraction."
         },
@@ -121,7 +152,7 @@
         "mysql": {
             "host": "localhost",
             "port": 3306,
-            "user": "root",
+            "user": "jj",
             "password": "",
             "database": "video_analyzer",
             "comment": "MySQL用于存储所有数据（会话、分析结果、对话历史）"

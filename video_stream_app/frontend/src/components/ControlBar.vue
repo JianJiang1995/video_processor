@@ -232,12 +232,12 @@
       </button>
       
       <!-- Analyze Button -->
-      <button 
+      <button
         v-if="!isAnalyzing"
-        class="btn btn-primary analyze-btn" 
-        @click="$emit('analyze')" 
-        :disabled="(mode === 'local' && !duration) || !surgr1Status.available || !glmStatus.available"
-        :title="!surgr1Status.available || !glmStatus.available ? '需要 SurgR1 和 GLM 服务' : ''"
+        class="btn btn-primary analyze-btn"
+        @click="$emit('analyze')"
+        :disabled="(mode === 'local' && !duration) || !surgr1Status.available"
+        :title="!surgr1Status.available ? '需要 SurgR1 服务' : ''"
       >
         {{ isLive ? '开始分析' : '🔍 开始分析' }}
       </button>
@@ -663,13 +663,10 @@ const formatTimeOffset = (seconds) => {
 }
 
 .window-segment.highlighted {
-  background: rgba(0, 212, 170, 0.35);
-  animation: pulse-highlight 1s ease-in-out;
-}
-
-@keyframes pulse-highlight {
-  0%, 100% { background: rgba(0, 212, 170, 0.35); }
-  50% { background: rgba(0, 212, 170, 0.5); }
+  /* 稳态描边，替代之前的 pulse 动画，避免在循环回放时持续闪烁。 */
+  background: rgba(0, 212, 170, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(0, 212, 170, 0.6);
+  transition: background 0.3s ease;
 }
 
 .window-label {
@@ -677,11 +674,16 @@ const formatTimeOffset = (seconds) => {
   bottom: 100%;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 0.65rem;
-  color: var(--text-tertiary);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
   opacity: 0;
   transition: opacity 0.2s;
   white-space: nowrap;
+}
+
+.window-segment.analyzed .window-label {
+  opacity: 0.85;
 }
 
 .window-segment:hover .window-label,
@@ -731,7 +733,7 @@ const formatTimeOffset = (seconds) => {
   transform: translateX(-50%);
   background: var(--bg-elevated);
   color: var(--text-primary);
-  font-size: 0.75rem;
+  font-size: 0.88rem;
   font-family: var(--font-mono);
   padding: 0.25rem 0.5rem;
   border-radius: var(--radius-sm);
@@ -745,7 +747,7 @@ const formatTimeOffset = (seconds) => {
 /* Window Display in Time */
 .window-display {
   color: var(--accent-primary);
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   margin-left: 0.25rem;
 }
 
@@ -757,7 +759,7 @@ const formatTimeOffset = (seconds) => {
 
 .time-delay {
   color: var(--warning, #fdcb6e);
-  font-size: 0.7rem;
+  font-size: 0.82rem;
   margin-left: 0.35rem;
   opacity: 0.9;
 }
@@ -766,9 +768,9 @@ const formatTimeOffset = (seconds) => {
 .analysis-services {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.45rem;
   margin-right: 0.75rem;
-  padding: 0.25rem 0.5rem;
+  padding: 0.35rem 0.65rem;
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
 }
@@ -776,10 +778,10 @@ const formatTimeOffset = (seconds) => {
 .service-badge {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem 0.4rem;
+  gap: 0.3rem;
+  padding: 0.32rem 0.48rem;
   border-radius: var(--radius-sm);
-  font-size: 0.65rem;
+  font-size: 0.78rem;
   color: var(--text-tertiary);
   transition: all 0.2s;
   cursor: default;
@@ -824,7 +826,7 @@ const formatTimeOffset = (seconds) => {
 }
 
 .frame-count {
-  font-size: 0.55rem;
+  font-size: 0.68rem;
   font-weight: 600;
   background: var(--accent-primary, #00d4aa);
   color: #000;
@@ -836,13 +838,13 @@ const formatTimeOffset = (seconds) => {
 
 .service-label {
   font-weight: 500;
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   letter-spacing: 0.02em;
 }
 
 .service-icon {
-  width: 14px;
-  height: 14px;
+  width: 17px;
+  height: 17px;
   flex-shrink: 0;
   transition: all 0.2s;
 }
@@ -870,7 +872,7 @@ const formatTimeOffset = (seconds) => {
   background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
   border: none;
   color: white;
-  padding: 0.5rem 1rem;
+  padding: 0.72rem 1.35rem;
   border-radius: var(--radius-md, 6px);
   cursor: pointer;
   font-weight: 500;
@@ -906,7 +908,7 @@ const formatTimeOffset = (seconds) => {
   color: white;
   padding: 0.2rem 0.5rem;
   border-radius: var(--radius-sm);
-  font-size: 0.7rem;
+  font-size: 0.82rem;
   font-weight: 600;
   margin-right: 0.5rem;
   animation: pulse-live 2s ease-in-out infinite;
@@ -922,12 +924,12 @@ const formatTimeOffset = (seconds) => {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.5rem 0.9rem;
+  padding: 0.7rem 1rem;
   background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
   border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
   border-radius: var(--radius-md, 6px);
   color: var(--text-secondary, #a0a0a0);
-  font-size: 0.8rem;
+  font-size: 0.92rem;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.25s ease;
@@ -957,8 +959,8 @@ const formatTimeOffset = (seconds) => {
 }
 
 .sam3-icon {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
   transition: all 0.2s;
 }
@@ -1026,13 +1028,13 @@ const formatTimeOffset = (seconds) => {
 }
 
 .tooltip-window {
-  font-size: 0.875rem;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--accent-primary, #00d4aa);
 }
 
 .tooltip-time {
-  font-size: 0.75rem;
+  font-size: 0.88rem;
   font-family: var(--font-mono, monospace);
   color: var(--text-secondary, #8888aa);
   background: rgba(0, 0, 0, 0.2);
@@ -1042,7 +1044,7 @@ const formatTimeOffset = (seconds) => {
 
 .tooltip-content {
   padding: 0.875rem 1rem;
-  font-size: 0.875rem;
+  font-size: 1rem;
   line-height: 1.65;
   color: var(--text-primary, #e0e0e8);
   max-height: 180px;
@@ -1064,7 +1066,7 @@ const formatTimeOffset = (seconds) => {
 
 .tooltip-hint {
   padding: 0.5rem 1rem;
-  font-size: 0.7rem;
+  font-size: 0.82rem;
   color: var(--text-tertiary, #6666aa);
   text-align: center;
   background: rgba(0, 0, 0, 0.15);
@@ -1107,11 +1109,10 @@ const formatTimeOffset = (seconds) => {
 
 .tooltip-time-row {
   padding: 0.5rem 1rem;
-  font-size: 0.75rem;
+  font-size: 0.88rem;
   font-family: var(--font-mono, monospace);
   color: var(--text-secondary, #8888aa);
   background: rgba(0, 0, 0, 0.15);
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 </style>
-
