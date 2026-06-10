@@ -22,7 +22,7 @@ import uuid
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -44,11 +44,54 @@ GEMINI_SYSTEM_PROMPT = """你是腹腔镜手术分析系统。基于专家检测
 
 
 # ----------------------- Stage 1: frame extraction -----------------------
-def extract_frames(video_path: str, out_dir: str, target_fps: float) -> List[str]:
+def get_video_metadata(video_path: str) -> Dict[str, Any]:
+    """Return basic video metadata using OpenCV only.
+
+    The deployment machines do not consistently have ffprobe installed, while
+    OpenCV is already required by the offline pipeline.
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"cannot open video: {video_path}")
+    src_fps = float(cap.get(cv2.CAP_PROP_FPS) or 25.0)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    cap.release()
+    return {
+        "fps": src_fps,
+        "frame_count": frame_count,
+        "duration_sec": frame_count / src_fps if src_fps else 0.0,
+        "width": width,
+        "height": height,
+    }
+
+
+def _resize_for_offline(frame, max_width: int):
+    if not max_width or max_width <= 0:
+        return frame
+    h, w = frame.shape[:2]
+    if w <= max_width:
+        return frame
+    import cv2
+
+    scale = max_width / float(w)
+    return cv2.resize(frame, (max_width, max(1, int(round(h * scale)))),
+                      interpolation=cv2.INTER_AREA)
+
+
+def extract_frames(video_path: str, out_dir: str, target_fps: float,
+                   max_duration_sec: Optional[float] = None,
+                   start_time_sec: float = 0.0,
+                   jpeg_quality: int = 88,
+                   resize_max_width: int = 960,
+                   method: str = "grab") -> List[str]:
     """Extract frames at `target_fps` using OpenCV (ffmpeg-free).
 
-    Picks every Nth frame so the effective rate ≈ target_fps. Writes JPEGs
-    named frame_00000000.jpg.
+    Samples by target timestamps and uses grab/retrieve to avoid JPEG encoding
+    for skipped frames. Writes JPEGs named frame_00000000.jpg.
     """
     import cv2
     out = Path(out_dir)
@@ -59,24 +102,54 @@ def extract_frames(video_path: str, out_dir: str, target_fps: float) -> List[str
         raise RuntimeError(f"cannot open video: {video_path}")
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    stride = max(1, int(round(src_fps / target_fps)))
-    logger.info("[extract] src_fps=%.2f n_frames=%d → stride=%d (target %.2f fps)",
-                src_fps, n_frames, stride, target_fps)
+    if target_fps <= 0:
+        raise ValueError(f"target_fps must be > 0, got {target_fps}")
+    start_frame = max(0, int(round(start_time_sec * src_fps)))
+    end_frame = n_frames
+    if max_duration_sec and max_duration_sec > 0:
+        end_frame = min(end_frame, start_frame + int(round(max_duration_sec * src_fps)))
+    step = max(1, int(round(src_fps / target_fps)))
+    logger.info(
+        "[extract] src_fps=%.2f n_frames=%d start=%d end=%d step=%d target=%.3f fps",
+        src_fps, n_frames, start_frame, end_frame, step, target_fps,
+    )
 
     paths: List[str] = []
-    idx_in = 0
+    if start_frame:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    idx_in = start_frame
     idx_out = 0
-    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if idx_in % stride == 0:
+    next_sample = start_frame
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)]
+    sample_indices = list(range(start_frame, end_frame, step))
+    if method == "seek":
+        for src_idx in sample_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, src_idx)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            frame = _resize_for_offline(frame, resize_max_width)
             p = str(out / f"frame_{idx_out:08d}.jpg")
             cv2.imwrite(p, frame, encode_params)
             paths.append(p)
             idx_out += 1
-        idx_in += 1
+    else:
+        while idx_in < end_frame:
+            if idx_in < next_sample:
+                if not cap.grab():
+                    break
+                idx_in += 1
+                continue
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = _resize_for_offline(frame, resize_max_width)
+            p = str(out / f"frame_{idx_out:08d}.jpg")
+            cv2.imwrite(p, frame, encode_params)
+            paths.append(p)
+            idx_out += 1
+            idx_in += 1
+            next_sample += step
     cap.release()
     logger.info("[extract] wrote %d frames to %s", len(paths), out_dir)
     return paths
@@ -159,6 +232,59 @@ def run_experts(frame_paths: List[str], cfg: Dict,
 
 
 # ----------------------- Stage 3: window aggregation -----------------------
+_SHARPNESS_CACHE: Dict[str, float] = {}
+
+
+def _frame_sharpness(path: str) -> float:
+    cached = _SHARPNESS_CACHE.get(path)
+    if cached is not None:
+        return cached
+    try:
+        import cv2
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            val = 0.0
+        else:
+            val = float(cv2.Laplacian(img, cv2.CV_64F).var())
+    except Exception:
+        val = 0.0
+    _SHARPNESS_CACHE[path] = val
+    return val
+
+
+def _confidence_score(frame: FrameExpertResult) -> float:
+    tool_conf = max([float(d.get("confidence", 0.0)) for d in frame.tools] or [0.0])
+    tri_conf = max([float(d.get("confidence", 0.0)) for d in frame.triplets] or [0.0])
+    return max(tool_conf, tri_conf)
+
+
+def _select_representative_frames(frames: List[FrameExpertResult],
+                                  count: int,
+                                  strategy: str) -> List[str]:
+    if count >= len(frames):
+        return [f.frame_path for f in frames]
+    if strategy == "even":
+        idx = np.linspace(0, len(frames) - 1, count).astype(int)
+        return [frames[int(i)].frame_path for i in idx]
+
+    # Divide the window into segments, then pick the clearest/high-evidence
+    # frame from each segment. This keeps temporal coverage while avoiding
+    # blurry or low-information representative frames for Gemini.
+    selected: List[str] = []
+    boundaries = np.linspace(0, len(frames), count + 1).astype(int)
+    for left, right in zip(boundaries[:-1], boundaries[1:]):
+        segment = frames[left:max(left + 1, right)]
+        sharp_vals = [_frame_sharpness(f.frame_path) for f in segment]
+        sharp_p95 = max(float(np.percentile(sharp_vals, 95)), 1.0) if sharp_vals else 1.0
+        best = max(
+            segment,
+            key=lambda f: min(_frame_sharpness(f.frame_path) / sharp_p95, 1.5)
+            + 0.75 * _confidence_score(f),
+        )
+        selected.append(best.frame_path)
+    return selected
+
+
 def aggregate_windows(results: List[FrameExpertResult], cfg: Dict,
                       session_id: str) -> List[WindowContext]:
     window_dur = cfg["sampling"]["window_duration_sec"]
@@ -167,6 +293,10 @@ def aggregate_windows(results: List[FrameExpertResult], cfg: Dict,
         return []
     total_dur = results[-1].timestamp + 1e-3
     n_windows = max(1, int(np.ceil(total_dur / window_dur)))
+    max_windows = cfg.get("sampling", {}).get("max_windows")
+    if max_windows:
+        n_windows = min(n_windows, int(max_windows))
+    rep_strategy = cfg.get("sampling", {}).get("representative_strategy", "quality")
 
     windows: List[WindowContext] = []
     for wid in range(n_windows):
@@ -206,12 +336,7 @@ def aggregate_windows(results: List[FrameExpertResult], cfg: Dict,
             for lab, cnt in tri_counter.most_common(10)
         ]
 
-        # Representative frames — evenly spaced
-        if reps_per_window >= len(frames):
-            reps = [f.frame_path for f in frames]
-        else:
-            idx = np.linspace(0, len(frames) - 1, reps_per_window).astype(int)
-            reps = [frames[int(i)].frame_path for i in idx]
+        reps = _select_representative_frames(frames, reps_per_window, rep_strategy)
 
         phase_mean = None
         if any(f.phase_probs is not None for f in frames):
@@ -265,6 +390,38 @@ def build_batch_requests(windows: List[WindowContext],
     return reqs
 
 
+def build_expert_window_summaries(windows: List[WindowContext]) -> Dict[int, Dict[str, Any]]:
+    """Deterministic local summaries for fast offline iteration.
+
+    These are not a replacement for Gemini; they are a cheap QA artifact that
+    lets us tune sampling/windowing before paying batch latency.
+    """
+    summaries: Dict[int, Dict[str, Any]] = {}
+    for w in windows:
+        tools = ", ".join(
+            f"{name}({count})"
+            for name, count in sorted(w.tool_frequencies.items(), key=lambda x: -x[1])[:6]
+        ) or "未稳定检测到器械"
+        triplets = ", ".join(
+            f"{t['ivt_label']}({t['count']}x)"
+            for t in w.triplet_summary[:5]
+        ) or "未稳定检测到动作三元组"
+        transitions = "; ".join(
+            f"{t['t']:.1f}s {t['from']}->{t['to']}"
+            for t in w.phase_transitions[:5]
+        ) or "无明显阶段切换"
+        text = (
+            f"{w.start_time:.0f}-{w.end_time:.0f}s：阶段以 {w.dominant_phase} 为主；"
+            f"器械证据：{tools}；动作证据：{triplets}；阶段变化：{transitions}。"
+        )
+        summaries[w.window_id] = {
+            "text": text,
+            "source": "expert_local",
+            "representative_frames": w.representative_frames,
+        }
+    return summaries
+
+
 def run_gemini_batch(windows: List[WindowContext], cfg: Dict,
                      work_dir: str, session_id: str,
                      state_cb=None) -> Dict[int, Dict[str, Any]]:
@@ -297,6 +454,8 @@ def run_gemini_batch(windows: List[WindowContext], cfg: Dict,
 def run_pipeline(video_path: str, cfg: Dict,
                  job_state: Optional[JobState] = None,
                  persist_json: bool = True) -> Dict[str, Any]:
+    timings: Dict[str, float] = {}
+    pipeline_t0 = time.perf_counter()
     sid = uuid.uuid4().hex[:8]
     session_dir = Path(cfg["storage"]["sessions_root"]) / sid
     frames_dir = session_dir / "frames"
@@ -319,17 +478,37 @@ def run_pipeline(video_path: str, cfg: Dict,
     try:
         # Stage 1
         _touch(status="extracting")
+        metadata = get_video_metadata(video_path)
+        (session_dir / "video_metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2)
+        )
         target_fps = cfg["sampling"]["target_fps"]
-        frames = extract_frames(video_path, str(frames_dir), target_fps)
+        t0 = time.perf_counter()
+        extract_cfg = cfg.get("extraction", {})
+        frames = extract_frames(
+            video_path,
+            str(frames_dir),
+            target_fps,
+            max_duration_sec=extract_cfg.get("max_duration_sec"),
+            start_time_sec=float(extract_cfg.get("start_time_sec", 0.0) or 0.0),
+            jpeg_quality=int(extract_cfg.get("jpeg_quality", 88)),
+            resize_max_width=int(extract_cfg.get("resize_max_width", 960)),
+            method=str(extract_cfg.get("method", "grab")),
+        )
+        timings["extract_sec"] = time.perf_counter() - t0
         _touch(frames_extracted=len(frames), frames_total=len(frames))
 
         # Stage 2
         _touch(status="experts")
+        t0 = time.perf_counter()
         results = run_experts(frames, cfg,
                               progress_cb=lambda p: _touch(experts_done=p))
+        timings["experts_sec"] = time.perf_counter() - t0
 
         # Stage 3
+        t0 = time.perf_counter()
         windows = aggregate_windows(results, cfg, sid)
+        timings["aggregate_sec"] = time.perf_counter() - t0
         _touch(windows_total=len(windows))
 
         # persist per-frame + windows locally — useful for P2 / debugging
@@ -339,6 +518,9 @@ def run_pipeline(video_path: str, cfg: Dict,
             ensure_ascii=False))
         (session_dir / "windows.json").write_text(json.dumps(
             [asdict(w) for w in windows], ensure_ascii=False, indent=2, default=list))
+        expert_summaries = build_expert_window_summaries(windows)
+        (session_dir / "expert_window_summaries.json").write_text(json.dumps(
+            {str(k): v for k, v in expert_summaries.items()}, ensure_ascii=False, indent=2))
 
         # Stage 4
         if cfg.get("gemini", {}).get("skip_batch"):
@@ -346,11 +528,13 @@ def run_pipeline(video_path: str, cfg: Dict,
             summaries: Dict[int, Dict[str, Any]] = {}
         else:
             _touch(status="batch_pending")
+            t0 = time.perf_counter()
             summaries = run_gemini_batch(
                 windows, cfg, work_dir=str(session_dir / "batch"),
                 session_id=sid,
                 state_cb=lambda s: _touch(batch_state=s),
             )
+            timings["gemini_batch_sec"] = time.perf_counter() - t0
             for wid, _ in summaries.items():
                 job_state.windows_done += 1
             _touch()
@@ -374,9 +558,16 @@ def run_pipeline(video_path: str, cfg: Dict,
         # MySQL write — TODO: reuse existing analysis_results schema;
         # add columns (triplets, expert_source) per handoff §10(5).
 
+        timings["total_sec"] = time.perf_counter() - pipeline_t0
+        (session_dir / "timings.json").write_text(json.dumps(
+            timings, ensure_ascii=False, indent=2))
+
         _touch(status="done")
         return {"session_id": sid, "session_dir": str(session_dir),
-                "windows": len(windows), "summaries": len(summaries)}
+                "windows": len(windows), "summaries": len(summaries),
+                "expert_summaries": len(expert_summaries),
+                "frames": len(frames), "timings": timings,
+                "metadata": metadata}
     except Exception as e:
         logger.exception("[pipeline] failed")
         _touch(status="failed", error=str(e))

@@ -23,9 +23,18 @@
     }
   },
   "sampling": {
-    "target_fps": 1,
-    "window_duration_sec": 15.0,
-    "frames_per_window_for_gemini": 4
+    "target_fps": 0.5,
+    "window_duration_sec": 30.0,
+    "frames_per_window_for_gemini": 3,
+    "representative_strategy": "quality",
+    "max_windows": null
+  },
+  "extraction": {
+    "start_time_sec": 0.0,
+    "max_duration_sec": null,
+    "jpeg_quality": 88,
+    "resize_max_width": 960,
+    "method": "grab"
   },
   "gemini": {
     "api_key_env": "GEMINI_API_KEY",
