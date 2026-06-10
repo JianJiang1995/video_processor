@@ -55,9 +55,13 @@ _sessions_cache: dict = {}
 
 
 def init_db():
-    """Initialize database - tables already exist in MySQL"""
-    # Tables are managed by mysql_service.py or created manually
-    pass
+    """Initialize MySQL tables used by the analysis pipeline."""
+    from ..services.mysql_service import Base as MySQLBase
+    from ..services.mysql_service import get_mysql_service
+
+    mysql_svc = get_mysql_service()
+    MySQLBase.metadata.create_all(bind=mysql_svc.engine)
+    logger.info("[Database] MySQL tables are ready")
 
 
 def get_db():

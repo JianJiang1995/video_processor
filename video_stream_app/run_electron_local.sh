@@ -31,6 +31,8 @@ export ELECTRON_DISABLE_SANDBOX=1
 export VITE_DEV_SERVER_URL="${VITE_DEV_SERVER_URL:-http://127.0.0.1:5133}"
 export VITE_DEFAULT_SOURCE="${VITE_DEFAULT_SOURCE:-capture}"
 export VITE_DEFAULT_STREAM_URL="${VITE_DEFAULT_STREAM_URL:-http://127.0.0.1:9001/stream}"
+export VITE_AUTO_OPEN_STREAM="${VITE_AUTO_OPEN_STREAM:-1}"
+export VITE_AUTO_CONNECT_CAPTURE="${VITE_AUTO_CONNECT_CAPTURE:-1}"
 
 echo "=========================================="
 echo "  Surg-R1 Electron Local Mode"
@@ -38,6 +40,8 @@ echo "=========================================="
 echo "Backend:        $BACKEND_URL"
 echo "Frontend:       $VITE_DEV_SERVER_URL"
 echo "Default source: $VITE_DEFAULT_SOURCE"
+echo "Auto open:      $VITE_AUTO_OPEN_STREAM"
+echo "Auto connect:   $VITE_AUTO_CONNECT_CAPTURE"
 echo "DISPLAY:        $DISPLAY"
 echo ""
 

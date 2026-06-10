@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron')
 const Store = require('electron-store')
 const path = require('path')
 const fs = require('fs').promises
@@ -33,21 +33,32 @@ function loadAppConfig() {
 
 const appConfig = loadAppConfig()
 
-// ============= X11 Forwarding / Remote Display Compatibility =============
-// When DISPLAY points to a remote X server (SSH X11 forwarding / MobaXterm),
-// GPU acceleration causes:
-//   - Black/frozen regions on window resize
-//   - Extremely slow rendering
-//   - Occasional crashes
-// Detect remote display and force software rendering in that case.
+// ============= Display / GPU Compatibility =============
+// Keep GPU acceleration for the local desktop. Only force software rendering
+// when DISPLAY explicitly points at a remote X server or when manually disabled.
 const displayEnv = process.env.DISPLAY || ''
 const isRemoteDisplay = displayEnv.startsWith('localhost:') ||
                         displayEnv.includes(':') && !displayEnv.startsWith(':0') && !displayEnv.startsWith(':1')
 const forceSoftwareRender = isRemoteDisplay || process.env.ELECTRON_DISABLE_GPU === '1'
 
 if (forceSoftwareRender) {
-  console.log(`[GPU] Remote display detected (DISPLAY=${displayEnv}) - disabling hardware acceleration`)
+  console.log(`[GPU] Software rendering enabled (DISPLAY=${displayEnv})`)
   app.disableHardwareAcceleration()
+} else if (appConfig.electron?.gpu?.enabled !== false) {
+  const gpuConfig = appConfig.electron?.gpu || {}
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  if (gpuConfig.enable_gpu_rasterization !== false) {
+    app.commandLine.appendSwitch('enable-gpu-rasterization')
+  }
+  if (gpuConfig.enable_zero_copy !== false) {
+    app.commandLine.appendSwitch('enable-zero-copy')
+  }
+  if (gpuConfig.disable_frame_rate_limit) {
+    app.commandLine.appendSwitch('disable-frame-rate-limit')
+  }
+  if (gpuConfig.enable_vaapi) {
+    app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEncoder')
+  }
 }
 
 // Sandbox conflicts with many server environments
@@ -75,17 +86,32 @@ const frameCache = new FrameCache(cacheDir)
 
 let mainWindow = null
 
+function getInitialWindowBounds() {
+  const { workAreaSize } = screen.getPrimaryDisplay()
+  const width = Math.min(Math.max(Math.round(workAreaSize.width * 0.94), 1680), workAreaSize.width)
+  const height = Math.min(Math.max(Math.round(workAreaSize.height * 0.94), 980), workAreaSize.height)
+
+  return { width, height }
+}
+
 function createWindow() {
+  const initialBounds = getInitialWindowBounds()
+
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1000,
-    minHeight: 700,
+    width: initialBounds.width,
+    height: initialBounds.height,
+    minWidth: Math.min(1360, initialBounds.width),
+    minHeight: Math.min(860, initialBounds.height),
+    resizable: true,
+    maximizable: true,
+    backgroundColor: '#242424',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: true
+      webSecurity: true,
+      backgroundThrottling: appConfig.electron?.performance?.background_throttling !== false,
+      spellcheck: appConfig.electron?.performance?.spellcheck !== false
     },
     icon: path.join(__dirname, 'icon.png'),
     title: 'Video Analyzer',
@@ -94,9 +120,10 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
+    mainWindow.maximize()
   })
 
-  // Force repaint on resize (workaround for X11 forwarding black artifacts)
+  // Force repaint on resize to avoid compositor stale regions during live video playback.
   let resizeDebounce = null
   mainWindow.on('resize', () => {
     if (resizeDebounce) clearTimeout(resizeDebounce)
@@ -110,7 +137,9 @@ function createWindow() {
   if (process.env.NODE_ENV === 'development' || process.argv.includes('--dev')) {
     const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5133'
     mainWindow.loadURL(devServerUrl)
-    mainWindow.webContents.openDevTools()
+    if (process.env.ELECTRON_OPEN_DEVTOOLS === '1') {
+      mainWindow.webContents.openDevTools({ mode: 'detach' })
+    }
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }

@@ -24,8 +24,11 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+import platform
 
 from .frame_storage_service import get_frame_storage_service, FrameStorageService
+from .decklink_capture import DeckLinkCapture
+from .local_video_source import PacedVideoCapture, resolve_video_source
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +110,35 @@ def open_video_source(video_source: str) -> Optional[cv2.VideoCapture]:
     - /path/to/video.mp4 - 本地文件
     """
     try:
+        resolved = resolve_video_source(video_source)
+        if resolved.is_simulator and resolved.source != video_source:
+            cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=True)
+            if cap.isOpened():
+                logger.info(
+                    "[FrameCaptureService] Using paced simulator source: %s @ %.1ffps",
+                    resolved.source,
+                    cap.get(cv2.CAP_PROP_FPS),
+                )
+                return cap
+            logger.error(f"[FrameCaptureService] Failed to open simulator source: {resolved.source}")
+            return None
+
+        if video_source.startswith("decklink://"):
+            return DeckLinkCapture(video_source)
+
         if video_source.startswith("device://"):
-            device_id = int(video_source.replace("device://", ""))
-            cap = cv2.VideoCapture(device_id)
+            device_spec = video_source.replace("device://", "")
+            try:
+                device_id = int(device_spec)
+                if platform.system() == "Linux":
+                    cap = cv2.VideoCapture(f"/dev/video{device_id}", cv2.CAP_V4L2)
+                else:
+                    cap = cv2.VideoCapture(device_id, cv2.CAP_DSHOW if platform.system() == "Windows" else 0)
+            except ValueError:
+                if platform.system() == "Windows":
+                    cap = cv2.VideoCapture(f"video={device_spec}", cv2.CAP_DSHOW)
+                else:
+                    cap = cv2.VideoCapture(device_spec)
         elif video_source.startswith(("rtsp://", "http://", "https://")):
             # 网络流
             cap = cv2.VideoCapture(video_source)

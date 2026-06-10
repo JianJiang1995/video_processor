@@ -123,15 +123,15 @@
                 @seekToWindow="handleSeekToWindow"
                 @hoverWindow="handleWindowHover"
                 @dragSeek="handleDragSeek"
-                @toggleSam3="handleToggleSam3"
               />
             </section>
 
             <!-- 历史窗口分析 (always visible) -->
             <div
               class="video-resize-handle"
-              title="拖拽调整视频区高度"
+              title="拖拽调整历史区高度，双击复位"
               @pointerdown="startVideoResize"
+              @dblclick="resetBottomStripHeight"
             ></div>
 
             <div
@@ -151,15 +151,21 @@
                   &#x2B1A; 网格视图
                 </button>
               </div>
-              <div class="bcs-scroll" v-if="summaries.length > 0">
+              <div
+                class="bcs-scroll"
+                v-if="summaries.length > 0"
+                ref="bottomScrollRef"
+                :class="{ dragging: bottomScrollDragging }"
+                @pointerdown="startBottomScrollDrag"
+              >
                 <div
                   v-for="s in sortedSummaries"
                   :key="s.window_id"
                   class="bcs-card"
                   :class="{
                     selected: s.window_id === selectedWindowId,
-                    'stage-quick': s.stage === 1,
-                    'stage-refined': s.stage === 2,
+                    bleeding: isSevereBleedingSummary(s),
+                    resolved: isBleedingResolvedSummary(s),
                   }"
                   :title="s.summary"
                   @click="handleBottomCardClick(s)"
@@ -169,7 +175,6 @@
                     <span class="bcs-card-time">
                       {{ formatWindowTime(s.start_time) }}
                     </span>
-                    <span v-if="s.stage === 1" class="bcs-card-stage quick" title="快速初稿，SurgR1 精修中">⚡</span>
                   </div>
                   <div class="bcs-card-thumb">
                     <img
@@ -198,8 +203,9 @@
           <!-- Right Panel (Analysis/Chat tabs) -->
           <div
             class="right-panel-resize-handle"
-            title="拖拽调整右侧面板宽度"
+            title="拖拽调整右侧面板宽度，双击复位"
             @pointerdown="startRightPanelResize"
+            @dblclick="resetRightPanelWidth"
           ></div>
 
           <RightPanel
@@ -211,7 +217,6 @@
             :sessionId="currentSession?.session_id || ''"
             :isProcessing="isProcessing"
             @tts="handleTTS"
-            @sam3="handleSAM2"
             @seekToWindow="handleSeekToWindow"
             @chatMessage="handleVoiceMessage"
           />
@@ -294,8 +299,23 @@ const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime
 const rightPanelTab = ref('analysis')  // 'analysis' or 'chat'
 const selectedWindowId = ref(-1)  // Selected window in bottom card strip
 const navActiveView = ref('analysis')  // Nav rail active view
-const rightPanelWidth = ref(Math.max(500, Number(localStorage.getItem('surg_right_panel_width')) || 500))
-const bottomStripHeight = ref(Number(localStorage.getItem('surg_bottom_strip_height')) || 236)
+const viewportWidth = ref(window.innerWidth)
+const viewportHeight = ref(window.innerHeight)
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
+const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.32), 560, 760)
+const maxRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.46), 760, 1040)
+const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.36), 380, 470)
+const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.56), 520, 660)
+const rightPanelWidth = ref(clamp(
+  Number(localStorage.getItem('surg_right_panel_width')) || defaultRightPanelWidth(),
+  560,
+  maxRightPanelWidth()
+))
+const bottomStripHeight = ref(clamp(
+  Number(localStorage.getItem('surg_bottom_strip_height')) || defaultBottomStripHeight(),
+  380,
+  maxBottomStripHeight()
+))
 const frameAnalysisPopup = ref({
   visible: false,
   data: null,
@@ -351,6 +371,12 @@ const getSessionSignal = () => {
 const bottomThumbQueue = []
 const bottomThumbQueued = new Set()
 let bottomThumbActive = 0
+const bottomScrollRef = ref(null)
+const bottomScrollDragging = ref(false)
+const bottomScrollClickSuppressed = ref(false)
+let bottomScrollPointerId = null
+let bottomScrollMoveHandler = null
+let bottomScrollUpHandler = null
 
 const clearBottomThumbnails = () => {
   Object.keys(bottomThumbnails).forEach(key => delete bottomThumbnails[key])
@@ -457,6 +483,43 @@ const fetchConfig = async () => {
   }
 }
 
+const cleanUserSummaryText = (text) => {
+  return String(text || '')
+    .replace(/【专家实时快照[^】]*】/g, '')
+    .replace(/该段为实时快照，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
+    .replace(/已基于\s*\d+\s*帧快速更新手术进程，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
+    .replace(/R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
+    .replace(/精修(?:后|结果)?(?:将|会|稍后)?覆盖。?/g, '')
+    .replace(/YOLO\s*(?:暂定)?(?:检出|检测出)/gi, '检出')
+    .replace(/(?:暂定|暂时|稳定)?检出暂未稳定检出器械/g, '未见明确器械')
+    .replace(/暂未稳定检出器械/g, '未见明确器械')
+    .replace(/当前判断为/g, '当前处于')
+    .replace(/(?:动作三元组提示|主要动作)[:：]\s*\[[^\n。]*。?/g, '')
+    .replace(/(?:动作三元组提示|主要动作)[:：]\s*(?:\[[^\]]+\](?:-[^；。,\s]+)*[；,，、\s]*)+。?/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+const cleanSummaryPayload = (payload) => {
+  if (!payload || typeof payload !== 'object') return payload
+  return {
+    ...payload,
+    summary: cleanUserSummaryText(payload.summary),
+    stage1_summary: cleanUserSummaryText(payload.stage1_summary),
+  }
+}
+
+const isSevereBleedingSummary = (summary) => {
+  const text = `${summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
+  if (/(无(?:明显)?出血|未见(?:明显)?出血|没有(?:明显)?出血|无活动性出血|未见活动性出血|no bleeding|without bleeding)/i.test(text)) return false
+  return /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|active bleeding|heavy bleeding|massive bleeding|profuse bleeding)/i.test(text)
+}
+
+const isBleedingResolvedSummary = (summary) => {
+  const text = `${summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
+  return /(出血(?:已经|已)?(?:停止|控制|解决)|已(?:完成)?止血|止血(?:完成|成功|有效)|凝血后(?:未见|无)活动性出血|未见活动性出血|无活动性出血|bleeding (?:stopped|controlled|resolved)|hemostasis achieved)/i.test(text)
+}
+
 // Computed: current summary based on time
 // When in loop playback mode, always show the loop window's summary to avoid flickering
 const currentSummary = computed(() => {
@@ -465,12 +528,22 @@ const currentSummary = computed(() => {
   // If in loop playback mode, use the fixed loop window ID
   // This prevents flickering caused by currentTime constantly changing
   if (loopWindow.value) {
-    return summaries.value.find(s => s.window_id === loopWindow.value.window_id) || null
+    return cleanSummaryPayload(summaries.value.find(s => s.window_id === loopWindow.value.window_id)) || null
   }
   
   const windowId = Math.floor(currentTime.value / windowDuration.value)
-  return summaries.value.find(s => s.window_id === windowId) || null
+  return cleanSummaryPayload(summaries.value.find(s => s.window_id === windowId)
+    || [...summaries.value]
+      .filter(s => s.window_id <= windowId)
+      .sort((a, b) => b.window_id - a.window_id)[0]
+    || summaries.value[summaries.value.length - 1]
+    || null)
 })
+
+const isSimulatorSession = computed(() => (
+  mode.value === 'stream' &&
+  currentSession.value?.video_path?.startsWith('simulator://')
+))
 
 // Computed: list of analyzed window IDs
 const analyzedWindows = computed(() => {
@@ -497,7 +570,10 @@ const handleResumeSession = (session) => {
   const isStreamSession = session.video_path && (
     session.video_path.startsWith('http://') || 
     session.video_path.startsWith('https://') ||
-    session.video_path.startsWith('rtsp://')
+    session.video_path.startsWith('rtsp://') ||
+    session.video_path.startsWith('device://') ||
+    session.video_path.startsWith('decklink://') ||
+    session.video_path.startsWith('simulator://')
   )
   
   mode.value = isStreamSession ? 'stream' : 'local'
@@ -542,7 +618,6 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
     startAnalysis()
   }
   
-  // Start timer for live stream elapsed time
   startStreamTimer()
 }
 
@@ -618,8 +693,17 @@ const goHome = () => {
 }
 
 // Video handlers
+let lastAcceptedTimeUpdate = 0
 const handleTimeUpdate = (time) => {
+  const now = performance.now()
+  if (mode.value === 'stream' && now - lastAcceptedTimeUpdate < 250) {
+    return
+  }
+  lastAcceptedTimeUpdate = now
   currentTime.value = time
+  if (mode.value === 'stream') {
+    duration.value = Math.max(duration.value || 0, time)
+  }
   
   // Check if we need to loop within window
   // IMPORTANT: For stream mode with HTTP stream, VideoPlayer.vue handles looping internally
@@ -763,7 +847,7 @@ const handleLoad = async (path) => {
 const loadExistingSummaries = async (sessionId) => {
   try {
     const response = await axios.get(`/api/analysis/summaries/${sessionId}`)
-    summaries.value = response.data
+    summaries.value = (response.data || []).map(cleanSummaryPayload)
     summaries.value.forEach(enqueueBottomThumbnail)
   } catch (error) {
     console.error('Failed to load summaries:', error)
@@ -965,7 +1049,7 @@ const startAnalysis = async () => {
     )
     
     analysisEventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data)
+      const data = cleanSummaryPayload(JSON.parse(event.data))
       
       if (data.status === 'completed' || data.status === 'cancelled') {
         isProcessing.value = false
@@ -1089,23 +1173,22 @@ const enterOverview = () => {
 // 底部条需要最新的在前（window_id 降序 ≈ start_time 降序），直接 reverse 即可，
 // O(n) 代替 O(n log n) 的 sort。
 const sortedSummaries = computed(() => {
-  return summaries.value.slice().reverse()
+  return summaries.value.slice().reverse().map(cleanSummaryPayload)
 })
 
 const videoSectionMinHeight = computed(() => {
-  return Math.max(360, window.innerHeight - bottomStripHeight.value - 260)
+  return Math.max(320, viewportHeight.value - bottomStripHeight.value - 220)
 })
-
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 
 const startRightPanelResize = (event) => {
   event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
   const startX = event.clientX
   const startWidth = rightPanelWidth.value
   document.body.classList.add('is-resizing-panel')
 
   const onMove = (e) => {
-    rightPanelWidth.value = clamp(startWidth - (e.clientX - startX), 420, 860)
+    rightPanelWidth.value = clamp(startWidth - (e.clientX - startX), 560, maxRightPanelWidth())
   }
   const onUp = () => {
     localStorage.setItem('surg_right_panel_width', String(rightPanelWidth.value))
@@ -1120,12 +1203,13 @@ const startRightPanelResize = (event) => {
 
 const startVideoResize = (event) => {
   event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
   const startY = event.clientY
   const startHeight = bottomStripHeight.value
   document.body.classList.add('is-resizing-video')
 
   const onMove = (e) => {
-    bottomStripHeight.value = clamp(startHeight - (e.clientY - startY), 120, 440)
+    bottomStripHeight.value = clamp(startHeight - (e.clientY - startY), 380, maxBottomStripHeight())
   }
   const onUp = () => {
     localStorage.setItem('surg_bottom_strip_height', String(bottomStripHeight.value))
@@ -1136,6 +1220,23 @@ const startVideoResize = (event) => {
 
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerup', onUp, { once: true })
+}
+
+const resetRightPanelWidth = () => {
+  rightPanelWidth.value = defaultRightPanelWidth()
+  localStorage.setItem('surg_right_panel_width', String(rightPanelWidth.value))
+}
+
+const resetBottomStripHeight = () => {
+  bottomStripHeight.value = defaultBottomStripHeight()
+  localStorage.setItem('surg_bottom_strip_height', String(bottomStripHeight.value))
+}
+
+const handleViewportResize = () => {
+  viewportWidth.value = window.innerWidth
+  viewportHeight.value = window.innerHeight
+  rightPanelWidth.value = clamp(rightPanelWidth.value, 560, maxRightPanelWidth())
+  bottomStripHeight.value = clamp(bottomStripHeight.value, 380, maxBottomStripHeight())
 }
 
 const formatWindowTime = (seconds) => {
@@ -1183,10 +1284,58 @@ const toggleAnalysis = () => {
 }
 
 const handleBottomCardClick = (summary) => {
+  if (bottomScrollClickSuppressed.value) return
   selectedWindowId.value = summary.window_id
   rightPanelTab.value = 'analysis'
   // Also seek to this window
   handleSeekToWindow(summary.window_id)
+}
+
+const clearBottomScrollDragHandlers = () => {
+  if (bottomScrollMoveHandler) {
+    window.removeEventListener('pointermove', bottomScrollMoveHandler)
+    bottomScrollMoveHandler = null
+  }
+  if (bottomScrollUpHandler) {
+    window.removeEventListener('pointerup', bottomScrollUpHandler)
+    window.removeEventListener('pointercancel', bottomScrollUpHandler)
+    bottomScrollUpHandler = null
+  }
+}
+
+const startBottomScrollDrag = (event) => {
+  if (event.button !== undefined && event.button !== 0) return
+  const el = bottomScrollRef.value
+  if (!el) return
+
+  const startX = event.clientX
+  const startScrollLeft = el.scrollLeft
+  bottomScrollPointerId = event.pointerId
+  bottomScrollDragging.value = true
+  bottomScrollClickSuppressed.value = false
+  el.setPointerCapture?.(event.pointerId)
+
+  bottomScrollMoveHandler = (moveEvent) => {
+    const dx = moveEvent.clientX - startX
+    if (Math.abs(dx) > 4) {
+      bottomScrollClickSuppressed.value = true
+      moveEvent.preventDefault()
+    }
+    el.scrollLeft = startScrollLeft - dx
+  }
+
+  bottomScrollUpHandler = () => {
+    bottomScrollDragging.value = false
+    el.releasePointerCapture?.(bottomScrollPointerId)
+    clearBottomScrollDragHandlers()
+    setTimeout(() => {
+      bottomScrollClickSuppressed.value = false
+    }, 0)
+  }
+
+  window.addEventListener('pointermove', bottomScrollMoveHandler, { passive: false })
+  window.addEventListener('pointerup', bottomScrollUpHandler)
+  window.addEventListener('pointercancel', bottomScrollUpHandler)
 }
 
 const handleOverviewBack = () => {
@@ -1204,7 +1353,6 @@ const startStreamTimer = () => {
   
   // Clear any existing timer
   stopStreamTimer()
-  
   // Reset stream ended state
   streamEnded.value = false
   streamWasActive.value = false
@@ -1675,11 +1823,6 @@ const checkAnalysisServices = async () => {
     // GLM
     refreshGlmStatus(),
     
-    // SAM3
-    axios.get('/api/analysis/sam3/status', { timeout: 5000 })
-      .then(res => { sam3Status.value = { available: res.data.available, checking: false } })
-      .catch(() => { sam3Status.value = { available: false, checking: false } }),
-    
     // ASR
     axios.get('/api/voice/asr/status', { timeout: 5000 })
       .then(res => { asrStatus.value = { available: res.data.available, checking: false } })
@@ -1690,6 +1833,7 @@ const checkAnalysisServices = async () => {
       .then(res => { ttsStatus.value = { available: res.data.available, checking: false } })
       .catch(() => { ttsStatus.value = { available: false, checking: false } })
   ]
+  sam3Status.value = { available: false, checking: false }
   
   await Promise.allSettled(checks)
 }
@@ -1728,6 +1872,7 @@ onMounted(async () => {
   
   // Add beforeunload handler for reliable cleanup
   window.addEventListener('beforeunload', handleBeforeUnload)
+  window.addEventListener('resize', handleViewportResize)
 })
 
 onUnmounted(() => {
@@ -1763,9 +1908,11 @@ onUnmounted(() => {
   if (overviewToastTimer) {
     clearTimeout(overviewToastTimer)
   }
+  clearBottomScrollDragHandlers()
   
   // Remove beforeunload handler
   window.removeEventListener('beforeunload', handleBeforeUnload)
+  window.removeEventListener('resize', handleViewportResize)
 })
 </script>
 
@@ -1787,13 +1934,14 @@ onUnmounted(() => {
 }
 
 .video-resize-handle {
-  height: 10px;
-  flex: 0 0 10px;
+  height: 14px;
+  flex: 0 0 14px;
   cursor: row-resize;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
   position: relative;
+  transition: background 0.12s ease;
 }
 
 .video-resize-handle::before {
@@ -1801,25 +1949,32 @@ onUnmounted(() => {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 72px;
-  height: 3px;
+  width: 108px;
+  height: 4px;
   border-radius: 999px;
   background: var(--bg-elevated);
   transform: translate(-50%, -50%);
+  box-shadow: 0 -4px 0 var(--bg-elevated), 0 4px 0 var(--bg-elevated);
+}
+
+.video-resize-handle:hover {
+  background: rgba(240, 160, 48, 0.08);
 }
 
 .video-resize-handle:hover::before {
   background: var(--accent-primary);
+  box-shadow: 0 -4px 0 var(--accent-primary), 0 4px 0 var(--accent-primary);
 }
 
 .right-panel-resize-handle {
-  width: 10px;
-  flex: 0 0 10px;
+  width: 14px;
+  flex: 0 0 14px;
   cursor: col-resize;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border-subtle);
   border-right: 1px solid var(--border-subtle);
   position: relative;
+  transition: background 0.12s ease;
 }
 
 .right-panel-resize-handle::before {
@@ -1827,15 +1982,21 @@ onUnmounted(() => {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 3px;
-  height: 72px;
+  width: 4px;
+  height: 108px;
   border-radius: 999px;
   background: var(--bg-elevated);
   transform: translate(-50%, -50%);
+  box-shadow: -4px 0 0 var(--bg-elevated), 4px 0 0 var(--bg-elevated);
+}
+
+.right-panel-resize-handle:hover {
+  background: rgba(240, 160, 48, 0.08);
 }
 
 .right-panel-resize-handle:hover::before {
   background: var(--accent-primary);
+  box-shadow: -4px 0 0 var(--accent-primary), 4px 0 0 var(--accent-primary);
 }
 
 :global(body.is-resizing-panel),
@@ -1857,7 +2018,10 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 260px),
+    #202020;
+  padding: 2rem;
 }
 
 .header-center {

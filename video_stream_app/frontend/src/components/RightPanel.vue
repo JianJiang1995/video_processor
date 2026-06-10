@@ -28,6 +28,20 @@
           </span>
         </div>
 
+        <div
+          v-if="bleedingStatus"
+          class="bleeding-status"
+          :class="bleedingStatus.status"
+        >
+          <div class="bleeding-status-head">
+            <span class="bleeding-status-title">{{ bleedingStatus.title }}</span>
+            <span class="bleeding-status-time">
+              窗口 {{ bleedingStatus.windowId + 1 }} · {{ formatTime(bleedingStatus.startTime) }} – {{ formatTime(bleedingStatus.endTime) }}
+            </span>
+          </div>
+          <div class="bleeding-status-text">{{ bleedingStatus.text }}</div>
+        </div>
+
         <!-- 相邻同阶段合并后的章节 -->
         <div
           v-for="ch in chapters"
@@ -41,53 +55,9 @@
               {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
             </span>
             <span class="chapter-count">{{ ch.windows.length }} 个窗口</span>
-            <span
-              v-if="ch.hasQuickOnly"
-              class="chapter-stage-dot quick"
-              title="此段仍在精修中"
-            ></span>
           </div>
           <div class="chapter-text">{{ ch.mergedSummary }}</div>
         </div>
-
-        <!-- 可折叠：当前播放窗口的专家/CoT 详细信息 -->
-        <details v-if="displaySummary" class="window-detail">
-          <summary>
-            <span>当前窗口 #{{ displaySummary.window_id + 1 }} 的模型判断细节</span>
-            <span v-if="displaySummary.stage === 1" class="an-stage-badge quick">⚡ Quick</span>
-            <span v-else-if="displaySummary.stage === 2" class="an-stage-badge refined">✓ Refined</span>
-          </summary>
-
-          <div v-if="hasExperts" class="an-experts">
-            <div class="an-section-title">专家判断</div>
-            <div v-if="experts.phase && experts.phase.label" class="an-expert-row">
-              <span class="an-expert-tag phase">Phase</span>
-              <span class="an-expert-val">{{ experts.phase.label }}</span>
-              <span class="an-expert-conf">{{ (experts.phase.confidence * 100).toFixed(0) }}%</span>
-            </div>
-            <div v-if="experts.triplet && experts.triplet.triplet && experts.triplet.triplet.length" class="an-expert-row">
-              <span class="an-expert-tag triplet">Triplet</span>
-              <span class="an-expert-val">{{ topTriplet }}</span>
-            </div>
-            <div v-if="yoloTools.length" class="an-expert-row">
-              <span class="an-expert-tag yolo">YOLO</span>
-              <span class="an-expert-val">{{ yoloTools.join(', ') }}</span>
-            </div>
-          </div>
-
-          <div v-if="displaySummary.surgr1_reasoning" class="an-cot">
-            <button class="an-cot-toggle" @click.prevent="cotOpen = !cotOpen">
-              <span>{{ cotOpen ? '▾' : '▸' }}</span>
-              <span>SurgR1 思维链</span>
-            </button>
-            <pre v-if="cotOpen" class="an-cot-body">{{ displaySummary.surgr1_reasoning }}</pre>
-          </div>
-
-          <div v-if="displaySummary.stage === 2 && displaySummary.stage1_summary" class="an-stage1-block">
-            <div class="an-stage1-label">⚡ Quick 初稿</div>
-            <div class="an-stage1-body">{{ displaySummary.stage1_summary }}</div>
-          </div>
-        </details>
       </div>
 
       <!-- Empty state -->
@@ -98,15 +68,16 @@
       </div>
 
       <!-- Actions：基于当前显示的章节（通常是正在播放的那段）-->
-      <div v-if="currentChapter" class="an-actions">
-        <button class="an-btn primary" @click="$emit('tts', currentChapterAsSummary)">
+      <div class="an-actions" :class="{ disabled: !currentChapter }">
+        <button
+          class="an-btn primary"
+          :disabled="!currentChapter"
+          @click="$emit('tts', currentChapterAsSummary)"
+        >
           &#128264; 朗读本段
         </button>
-        <button class="an-btn" @click="copyChapter">
+        <button class="an-btn" :disabled="!currentChapter" @click="copyChapter">
           &#128203; 复制
-        </button>
-        <button v-if="displaySummary" class="an-btn" @click="$emit('sam3', displaySummary)">
-          &#127917; SAM3
         </button>
       </div>
     </div>
@@ -124,7 +95,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import ChatPanel from './ChatPanel.vue'
 
 const props = defineProps({
@@ -137,36 +108,8 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
-  'update:activeTab', 'tts', 'sam3', 'seekToWindow', 'chatMessage'
+  'update:activeTab', 'tts', 'seekToWindow', 'chatMessage'
 ])
-
-const cotOpen = ref(false)
-
-const displaySummary = computed(() => {
-  if (props.selectedWindowId >= 0) {
-    return props.summaries.find(s => s.window_id === props.selectedWindowId) || props.currentSummary
-  }
-  return props.currentSummary
-})
-
-const experts = computed(() => displaySummary.value?.experts || {})
-const hasExperts = computed(() => {
-  const e = experts.value
-  if (!e) return false
-  const hasPhase = e.phase && e.phase.label
-  const hasTriplet = e.triplet && e.triplet.triplet && e.triplet.triplet.length > 0
-  const hasYolo = e.yolo && e.yolo.tools && e.yolo.tools.length > 0
-  return hasPhase || hasTriplet || hasYolo
-})
-const topTriplet = computed(() => {
-  const t = experts.value?.triplet?.triplet?.[0]
-  if (!t) return ''
-  return `${t.label} (${(t.confidence * 100).toFixed(0)}%)`
-})
-const yoloTools = computed(() => {
-  const tools = experts.value?.yolo?.tools || []
-  return tools.slice(0, 6).map(t => `${t.label} ×${t.frames_seen}`)
-})
 
 const formatTime = (seconds) => {
   if (seconds == null) return '0:00'
@@ -201,7 +144,36 @@ function jaccard(a, b) {
 }
 
 function stripPhaseHeader(t) {
-  return String(t || '').replace(/^【[^】]*】\s*/, '').trim()
+  return String(t || '')
+    .replace(/^【[^】]*】\s*/, '')
+    .replace(/【专家实时快照[^】]*】/g, '')
+    .replace(/该段为实时快照，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
+    .replace(/已基于\s*\d+\s*帧快速更新手术进程，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
+    .replace(/R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
+    .replace(/精修(?:后|结果)?(?:将|会|稍后)?覆盖。?/g, '')
+    .replace(/YOLO\s*(?:暂定)?(?:检出|检测出)/gi, '检出')
+    .replace(/暂未稳定检出器械/g, '未见明确器械')
+    .replace(/当前判断为/g, '当前处于')
+    .replace(/(?:动作三元组提示|主要动作)[:：]\s*\[[^\n。]*。?/g, '')
+    .replace(/(?:动作三元组提示|主要动作)[:：]\s*(?:\[[^\]]+\](?:-[^；。,\s]+)*[；,，、\s]*)+。?/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function hasSevereBleedingText(text) {
+  const t = String(text || '').toLowerCase()
+  if (/(无(?:明显)?出血|未见(?:明显)?出血|没有(?:明显)?出血|无活动性出血|未见活动性出血|no bleeding|without bleeding)/i.test(t)) return false
+  return /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|active bleeding|heavy bleeding|massive bleeding|profuse bleeding)/i.test(t)
+}
+
+function hasBleedingResolvedText(text) {
+  const t = String(text || '').toLowerCase()
+  return /(出血(?:已经|已)?(?:停止|控制|解决)|已(?:完成)?止血|止血(?:完成|成功|有效)|凝血后(?:未见|无)活动性出血|未见活动性出血|无活动性出血|bleeding (?:stopped|controlled|resolved)|hemostasis achieved)/i.test(t)
+}
+
+function bleedingText(text, fallback) {
+  const cleaned = stripPhaseHeader(text)
+  return cleaned || fallback
 }
 
 // 章节文本只保留"关键节点"——窗口级 + 句子级双层去重，并对总长度设上限。
@@ -303,8 +275,8 @@ const chapters = computed(() => {
   }
   const currentId = props.currentSummary?.window_id ?? -1
   for (const ch of out) {
-    const refined = ch.windows.filter(w => w.stage === 2)
-    const src = refined.length > 0 ? refined : ch.windows
+    const updatedWindows = ch.windows.filter(w => w.stage === 2)
+    const src = updatedWindows.length > 0 ? updatedWindows : ch.windows
     // 指纹：窗口 id+stage 序列；只要没新加/升级窗口就直接用缓存
     const sig = src.map(w => `${w.window_id}:${w.stage || 0}`).join(',')
     const cached = _chapterCache.get(ch.key)
@@ -315,12 +287,50 @@ const chapters = computed(() => {
       _chapterCache.set(ch.key, { sig, merged: ch.mergedSummary })
     }
     ch.containsCurrent = ch.windows.some(w => w.window_id === currentId)
-    ch.hasQuickOnly = refined.length === 0
   }
   return out
 })
 
 const totalWindows = computed(() => (props.summaries || []).length)
+
+const bleedingStatus = computed(() => {
+  const sorted = [...(props.summaries || [])].sort((a, b) => (a.window_id ?? 0) - (b.window_id ?? 0))
+  let lastActive = null
+  let lastResolved = null
+
+  for (const w of sorted) {
+    if (hasSevereBleedingText(w.summary)) {
+      lastActive = w
+      lastResolved = null
+    } else if (lastActive && hasBleedingResolvedText(w.summary)) {
+      lastResolved = w
+    }
+  }
+
+  if (lastResolved) {
+    return {
+      status: 'resolved',
+      title: '出血已控制',
+      windowId: lastResolved.window_id,
+      startTime: lastResolved.start_time,
+      endTime: lastResolved.end_time,
+      text: bleedingText(lastResolved.summary, '活动性出血已控制，继续观察术野。')
+    }
+  }
+
+  if (lastActive) {
+    return {
+      status: 'active',
+      title: '活动性出血',
+      windowId: lastActive.window_id,
+      startTime: lastActive.start_time,
+      endTime: lastActive.end_time,
+      text: bleedingText(lastActive.summary, '当前窗口出现大量活动性出血，需要重点关注。')
+    }
+  }
+
+  return null
+})
 
 const currentChapter = computed(() =>
   chapters.value.find(c => c.containsCurrent) || chapters.value[chapters.value.length - 1]
@@ -489,6 +499,59 @@ const copyChapter = () => {
   font-family: var(--font-mono);
 }
 
+.bleeding-status {
+  margin: 0 0 18px;
+  padding: 18px 20px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+}
+
+.bleeding-status.active {
+  background: rgba(255, 72, 72, 0.16);
+  border-color: rgba(255, 72, 72, 0.8);
+  box-shadow: inset 5px 0 0 #ff4d4d;
+}
+
+.bleeding-status.resolved {
+  background: rgba(0, 190, 120, 0.15);
+  border-color: rgba(0, 190, 120, 0.75);
+  box-shadow: inset 5px 0 0 #20c878;
+}
+
+.bleeding-status-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.bleeding-status-title {
+  font-size: 30px;
+  font-weight: 900;
+}
+
+.bleeding-status.active .bleeding-status-title {
+  color: #ff6868;
+}
+
+.bleeding-status.resolved .bleeding-status-title {
+  color: #37d98b;
+}
+
+.bleeding-status-time {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 21px;
+  white-space: nowrap;
+}
+
+.bleeding-status-text {
+  color: var(--text-primary);
+  font-size: 26px;
+  line-height: 1.65;
+}
+
 .chapter {
   padding: 16px 0 18px;
   border-bottom: 1px dashed var(--border-subtle);
@@ -528,15 +591,6 @@ const copyChapter = () => {
   color: var(--text-secondary);
   font-family: var(--font-mono);
 }
-.chapter-stage-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-.chapter-stage-dot.quick {
-  background: #fdcb6e;
-  box-shadow: 0 0 5px rgba(253, 203, 110, 0.7);
-}
 .chapter-text {
   font-size: 24px;
   line-height: 1.9;
@@ -545,200 +599,6 @@ const copyChapter = () => {
   word-break: break-word;
 }
 
-/* ===== 当前窗口详情（可折叠） ===== */
-.window-detail {
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border-subtle);
-}
-.window-detail summary {
-  cursor: pointer;
-  padding: 6px 0;
-  font-size: 20px;
-  color: var(--text-secondary);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  list-style: none;
-  user-select: none;
-}
-.window-detail summary::-webkit-details-marker { display: none; }
-.window-detail summary::before {
-  content: '▸';
-  color: var(--text-tertiary);
-  font-size: 16px;
-  transition: transform 0.15s;
-}
-.window-detail[open] summary::before {
-  content: '▾';
-}
-.window-detail summary:hover {
-  color: var(--accent-primary);
-}
-.an-stage1-block {
-  margin-top: 10px;
-  padding: 8px 10px;
-  background: rgba(253, 203, 110, 0.05);
-  border-left: 2px solid rgba(253, 203, 110, 0.4);
-  font-size: 20px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-}
-.an-stage1-label {
-  font-size: 18px;
-  color: #fdcb6e;
-  margin-bottom: 4px;
-  font-weight: 600;
-}
-.an-stage1-body {
-  color: var(--text-secondary);
-}
-
-/* Stage badge */
-.an-stage-badge {
-  font-size: 17px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 4px;
-  margin-left: auto;
-  letter-spacing: 0.3px;
-}
-.an-stage-badge.quick {
-  background: rgba(253, 203, 110, 0.18);
-  color: #fdcb6e;
-  border: 1px solid rgba(253, 203, 110, 0.4);
-}
-.an-stage-badge.refined {
-  background: rgba(0, 212, 170, 0.15);
-  color: var(--accent-primary);
-  border: 1px solid rgba(0, 212, 170, 0.4);
-}
-
-/* Experts */
-.an-experts {
-  margin-top: 16px;
-  padding: 12px;
-  background: var(--bg-tertiary);
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-}
-.an-section-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  margin-bottom: 8px;
-}
-.an-expert-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 20px;
-  margin-bottom: 6px;
-  line-height: 1.4;
-}
-.an-expert-row:last-child { margin-bottom: 0; }
-.an-expert-tag {
-  flex-shrink: 0;
-  font-size: 17px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  width: 72px;
-  text-align: center;
-}
-.an-expert-tag.phase   { background: rgba(0, 212, 170, 0.15); color: var(--accent-primary); }
-.an-expert-tag.triplet { background: rgba(138, 43, 226, 0.18); color: #b388ff; }
-.an-expert-tag.yolo    { background: rgba(255, 128, 0, 0.18); color: #ffab6b; }
-.an-expert-val {
-  flex: 1;
-  color: var(--text-primary);
-  word-break: break-all;
-}
-.an-expert-conf {
-  font-family: var(--font-mono);
-  color: var(--text-tertiary);
-  font-size: 18px;
-}
-
-/* CoT */
-.an-cot {
-  margin-top: 14px;
-  border-top: 1px dashed var(--border-subtle);
-  padding-top: 12px;
-}
-.an-cot-toggle {
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 19px;
-  cursor: pointer;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-display);
-}
-.an-cot-toggle:hover { color: var(--accent-primary); }
-.an-cot-body {
-  margin-top: 8px;
-  padding: 10px 12px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  font-family: var(--font-mono);
-  font-size: 19px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-/* Stage 1 diff */
-.an-stage1 {
-  margin-top: 12px;
-  font-size: 19px;
-  color: var(--text-tertiary);
-}
-.an-stage1 summary {
-  cursor: pointer;
-  padding: 4px 0;
-}
-.an-stage1 summary:hover { color: var(--accent-primary); }
-.an-stage1-body {
-  margin-top: 6px;
-  padding: 8px 10px;
-  background: rgba(253, 203, 110, 0.05);
-  border-left: 2px solid rgba(253, 203, 110, 0.4);
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-
-.an-divider {
-  height: 1px;
-  background: var(--border-subtle);
-  margin: 16px 0;
-}
-
-.an-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.an-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 19px;
-}
-
-.an-meta-label { color: var(--text-tertiary); }
-.an-meta-value { color: var(--text-secondary); font-family: var(--font-mono); }
-
 /* Actions */
 .an-actions {
   padding: 16px 22px;
@@ -746,6 +606,7 @@ const copyChapter = () => {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  min-height: 74px;
 }
 
 .an-btn {
@@ -758,8 +619,19 @@ const copyChapter = () => {
   font-size: 19px;
   cursor: pointer;
   text-align: center;
-  transition: all 0.15s;
+  transition: border-color 0.15s, color 0.15s, background-color 0.15s;
   font-family: var(--font-display);
+}
+
+.an-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.an-btn:disabled:hover {
+  border-color: var(--border-subtle);
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
 }
 
 .an-btn:hover {
@@ -797,5 +669,45 @@ const copyChapter = () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.rp-tab,
+.narrative-meta,
+.chapter-count,
+.chapter-time {
+  font-size: 24px;
+}
+
+.narrative-title {
+  font-size: 34px;
+}
+
+.chapter-text,
+.an-full-text {
+  font-size: 30px;
+  line-height: 1.75;
+}
+
+.an-btn {
+  font-size: 26px;
+}
+
+.chapter {
+  padding: 22px 0 24px;
+}
+
+.chapter.active {
+  margin: 0 -24px;
+  padding: 24px 28px 28px;
+  border-left-width: 6px;
+}
+
+.an-actions {
+  min-height: 92px;
+  padding: 20px 24px;
+}
+
+.an-btn {
+  padding: 16px 0;
 }
 </style>

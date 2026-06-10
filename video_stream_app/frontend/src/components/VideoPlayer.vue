@@ -5,7 +5,7 @@
       <template v-if="session">
         <!-- Loop Playback Frame (when in loop mode for streams) -->
         <img
-          v-if="isLoopPlaybackMode && loopPlaybackFrame"
+          v-if="isLoopPlaybackMode && !isSimulatorStream && loopPlaybackFrame"
           :src="loopPlaybackFrame"
           class="stream-image loop-playback"
           :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
@@ -13,7 +13,7 @@
         />
         <!-- Loop Playback Loading (when loading frames) -->
         <div 
-          v-else-if="isLoopPlaybackMode && !loopPlaybackFrame"
+          v-else-if="isLoopPlaybackMode && !isSimulatorStream && !loopPlaybackFrame"
           class="loop-loading-overlay"
           @click="togglePlay"
         >
@@ -21,11 +21,54 @@
           <div class="loop-loading-text">加载回放帧...</div>
         </div>
         
+        <div
+          v-else-if="useCanvasStream"
+          class="stream-image stream-buffer"
+          :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
+          @click="togglePlay"
+        >
+          <img
+            v-if="streamBufferA"
+            :src="streamBufferA"
+            class="stream-buffer-frame"
+            :class="{ active: activeStreamBuffer === 'a' }"
+            draggable="false"
+          />
+          <img
+            v-if="streamBufferB"
+            :src="streamBufferB"
+            class="stream-buffer-frame"
+            :class="{ active: activeStreamBuffer === 'b' }"
+            draggable="false"
+          />
+        </div>
+
+        <!-- Native playback for the local capture-card simulator. Analysis still
+             runs through the live simulator pipeline; preview should use the
+             browser decoder instead of an MJPEG image stream. -->
+        <video
+          v-else-if="mode === 'stream' && isSimulatorStream"
+          ref="videoRef"
+          :src="`${backendUrl}/api/video/stream/${session.session_id}`"
+          class="stream-image simulator-video"
+          :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
+          autoplay
+          muted
+          loop
+          playsinline
+          @timeupdate="onTimeUpdate"
+          @loadedmetadata="onLoadedMetadata"
+          @loadeddata="onStreamLoad"
+          @play="$emit('play')"
+          @pause="$emit('pause')"
+          @click="togglePlay"
+        ></video>
+
         <!-- MJPEG Stream (for live streams, hidden when in loop playback mode) -->
         <!-- When paused with a frozen frame, hide this and show frozen frame -->
         <!-- When paused without frozen frame, keep showing this (stream will just not update) -->
         <img
-          v-else-if="mode === 'stream' && isHttpStream"
+          v-else-if="mode === 'stream' && isLiveStream"
           ref="streamImgRef"
           :src="streamUrl"
           class="stream-image"
@@ -38,14 +81,14 @@
         />
         <!-- Frozen frame when paused (captured from stream or from backend) -->
         <img
-          v-if="mode === 'stream' && isHttpStream && !isLoopPlaybackMode && isPaused && frozenFrame"
+          v-if="mode === 'stream' && isLiveStream && !isLoopPlaybackMode && isPaused && frozenFrame"
           :src="frozenFrame"
           class="stream-image frozen"
           :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
         />
         <!-- Pause overlay when stream is paused but no frozen frame available -->
         <div 
-          v-if="mode === 'stream' && isHttpStream && !isLoopPlaybackMode && isPaused && !frozenFrame"
+          v-if="mode === 'stream' && isLiveStream && !isLoopPlaybackMode && isPaused && !frozenFrame"
           class="pause-overlay"
         >
           <div class="pause-icon">⏸</div>
@@ -217,6 +260,9 @@ const sam3Error = ref(null)  // Track SAM3 errors
 const sam3Loading = ref(false)  // Track SAM3 loading state
 const sam3FrameTime = ref(null)  // Actual timestamp of the SAM3 frame being displayed
 const sam3FetchInProgress = ref(false)  // Prevent concurrent SAM3 requests
+const streamBufferA = ref('')
+const streamBufferB = ref('')
+const activeStreamBuffer = ref('a')
 
 // Loop playback state for stream mode
 const loopPlaybackFrame = ref(null)  // Current frame being displayed during loop playback
@@ -238,27 +284,34 @@ const isRtspStream = computed(() => {
   return props.session.video_path.startsWith('rtsp://')
 })
 
-// Combined: is any type of live stream (HTTP/HTTPS/RTSP)
-const isHttpStream = computed(() => isHttpMjpegStream.value || isRtspStream.value)
+// Computed: check if it's a local capture card device
+const isCaptureDevice = computed(() => {
+  if (!props.session?.video_path) return false
+  return props.session.video_path.startsWith('device://') ||
+    props.session.video_path.startsWith('decklink://') ||
+    props.session.video_path.startsWith('simulator://')
+})
+
+const isSimulatorStream = computed(() => {
+  return props.session?.video_path?.startsWith('simulator://') || false
+})
+
+// Combined: is any type of live source (HTTP/HTTPS/RTSP/capture card)
+const isLiveStream = computed(() => isHttpMjpegStream.value || isRtspStream.value || isCaptureDevice.value)
+
+const useCanvasStream = computed(() => {
+  return props.mode === 'stream' && isLiveStream.value && !props.loopWindow
+})
 
 // Computed: get the stream URL
-// - HTTP/HTTPS streams (like stream_simulator) are already MJPEG, use directly
-// - RTSP streams need our proxy for MJPEG conversion
+// Use the backend latest-frame display endpoint for every live source. It keeps
+// only the newest JPEG per source, so a brief renderer stall drops old frames
+// instead of building a playback backlog.
 const streamUrl = computed(() => {
   if (!props.session?.session_id) return ''
+  if (!isLiveStream.value) return ''
 
-  if (isRtspStream.value) {
-    // RTSP needs proxy for MJPEG conversion with frame pacing
-    return `${backendUrl.value}/api/video/mjpeg-proxy/${props.session.session_id}?fps=25&quality=85`
-  }
-
-  if (isHttpMjpegStream.value) {
-    // HTTP streams (like stream_simulator) are already MJPEG with frame pacing.
-    // Electron should connect to the source stream directly.
-    return props.session.video_path
-  }
-
-  return ''
+  return `${backendUrl.value}/api/video/display-mjpeg/${props.session.session_id}?fps=20&quality=68&max_width=1280`
 })
 
 const onStreamLoad = () => {
@@ -290,6 +343,93 @@ const captureFrame = () => {
     // CORS error is expected for cross-origin streams
     console.warn('Failed to capture frame (CORS restriction):', e.message)
     return null
+  }
+}
+
+let streamWs = null
+let pendingFrameDecode = false
+let lastObjectUrls = []
+
+const stopCanvasStream = () => {
+  if (streamWs) {
+    streamWs.onopen = null
+    streamWs.onmessage = null
+    streamWs.onerror = null
+    streamWs.onclose = null
+    try {
+      streamWs.close()
+    } catch (_) {}
+    streamWs = null
+  }
+  lastObjectUrls.forEach(url => URL.revokeObjectURL(url))
+  lastObjectUrls = []
+  streamBufferA.value = ''
+  streamBufferB.value = ''
+  activeStreamBuffer.value = 'a'
+  pendingFrameDecode = false
+}
+
+const canvasStreamUrl = () => {
+  if (!props.session?.session_id) return null
+  const base = backendUrl.value || window.location.origin
+  const url = new URL(`/api/video/ws-display/${props.session.session_id}`, base)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  url.searchParams.set('fps', '30')
+  url.searchParams.set('quality', '82')
+  url.searchParams.set('max_width', '1920')
+  return url.toString()
+}
+
+const startCanvasStream = async () => {
+  if (!useCanvasStream.value || !props.session?.session_id || !backendUrl.value && !window.location.origin) {
+    stopCanvasStream()
+    return
+  }
+
+  stopCanvasStream()
+  isLoading.value = true
+
+  const url = canvasStreamUrl()
+  if (!url) return
+  streamWs = new WebSocket(url)
+  streamWs.binaryType = 'arraybuffer'
+  streamWs.onopen = () => {
+    console.log('[CanvasStream] connected')
+  }
+  streamWs.onerror = () => {
+    console.warn('[CanvasStream] websocket error')
+    isLoading.value = false
+  }
+  streamWs.onclose = () => {
+    console.log('[CanvasStream] closed')
+  }
+  streamWs.onmessage = async (event) => {
+    if (pendingFrameDecode) return
+    pendingFrameDecode = true
+    const nextSlot = activeStreamBuffer.value === 'a' ? 'b' : 'a'
+    const url = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }))
+    const img = new Image()
+    img.onload = () => {
+      const previousUrl = nextSlot === 'a' ? streamBufferA.value : streamBufferB.value
+      if (nextSlot === 'a') {
+        streamBufferA.value = url
+      } else {
+        streamBufferB.value = url
+      }
+      activeStreamBuffer.value = nextSlot
+      isLoading.value = false
+      if (previousUrl) {
+        setTimeout(() => URL.revokeObjectURL(previousUrl), 250)
+      }
+      lastObjectUrls = lastObjectUrls.filter(item => item !== previousUrl)
+      lastObjectUrls.push(url)
+      pendingFrameDecode = false
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      pendingFrameDecode = false
+    }
+    img.src = url
   }
 }
 
@@ -358,6 +498,9 @@ watch(() => props.isPaused, async (paused) => {
 // Use a small threshold (0.1s) to avoid unnecessary seeks during normal playback
 // but still allow precise seeking for loop playback and user interactions
 watch(() => props.currentTime, (newTime) => {
+  if (isSimulatorStream.value && props.isPlaying && !props.loopWindow) {
+    return
+  }
   if (videoRef.value && Math.abs(videoRef.value.currentTime - newTime) > 0.1) {
     console.log(`[VideoPlayer] Seeking from ${videoRef.value.currentTime.toFixed(2)}s to ${newTime.toFixed(2)}s`)
     videoRef.value.currentTime = newTime
@@ -366,6 +509,14 @@ watch(() => props.currentTime, (newTime) => {
 
 // Watch for play/pause state
 watch(() => props.isPlaying, (playing) => {
+  if (useCanvasStream.value) {
+    if (playing) {
+      startCanvasStream()
+    } else {
+      stopCanvasStream()
+    }
+    return
+  }
   if (videoRef.value) {
     if (playing) {
       videoRef.value.play()
@@ -375,8 +526,43 @@ watch(() => props.isPlaying, (playing) => {
   }
 })
 
+watch(
+  () => [backendUrl.value, props.session?.session_id, props.mode, props.loopWindow, useCanvasStream.value],
+  () => {
+    if (useCanvasStream.value && props.isPlaying) {
+      startCanvasStream()
+    } else if (!useCanvasStream.value) {
+      stopCanvasStream()
+    }
+  }
+)
+
+let lastNativeTimeEmit = 0
 const onTimeUpdate = () => {
   if (videoRef.value) {
+    if (isSimulatorStream.value && !props.loopWindow) {
+      return
+    }
+    if (isSimulatorStream.value && props.loopWindow) {
+      const windowStart = props.loopWindow.start_time || 0
+      const windowEnd = props.loopWindow.end_time || windowStart
+      if (videoRef.value.currentTime < windowStart - 0.08) {
+        videoRef.value.currentTime = windowStart
+        return
+      }
+      if (windowEnd > windowStart && videoRef.value.currentTime >= windowEnd - 0.04) {
+        videoRef.value.currentTime = windowStart
+        loopPlaybackTime.value = windowStart
+        emit('timeupdate', windowStart)
+        return
+      }
+      loopPlaybackTime.value = videoRef.value.currentTime
+    }
+    const now = performance.now()
+    if (props.mode === 'stream' && now - lastNativeTimeEmit < 250) {
+      return
+    }
+    lastNativeTimeEmit = now
     emit('timeupdate', videoRef.value.currentTime)
   }
 }
@@ -443,7 +629,7 @@ const formatTime = (seconds) => {
 
 // Check if we're in loop playback mode (stream mode with loopWindow)
 const isLoopPlaybackMode = computed(() => {
-  return props.mode === 'stream' && isHttpStream.value && props.loopWindow !== null
+  return props.mode === 'stream' && isLiveStream.value && props.loopWindow !== null
 })
 
 // Background loading state
@@ -985,7 +1171,23 @@ const stopLoopPlayback = () => {
 
 // Watch for loopWindow changes to start/stop loop playback
 watch(() => props.loopWindow, async (newVal, oldVal) => {
-  if (props.mode === 'stream' && isHttpStream.value) {
+  if (props.mode === 'stream' && isLiveStream.value) {
+    if (isSimulatorStream.value) {
+      stopLoopPlayback()
+      if (newVal) {
+        const seekToLoopStart = () => {
+          if (!videoRef.value) return
+          videoRef.value.currentTime = newVal.start_time || 0
+          loopPlaybackTime.value = newVal.start_time || 0
+          emit('timeupdate', loopPlaybackTime.value)
+          if (props.isPlaying) {
+            videoRef.value.play().catch(() => {})
+          }
+        }
+        requestAnimationFrame(seekToLoopStart)
+      }
+      return
+    }
     if (newVal) {
       console.log('[LoopPlayback] Loop window set for', newVal.window_id)
       // Always start playback (it will handle loading frames)
@@ -1000,6 +1202,16 @@ watch(() => props.loopWindow, async (newVal, oldVal) => {
 // Watch for isPlaying changes during loop playback
 watch(() => props.isPlaying, (playing) => {
   if (isLoopPlaybackMode.value) {
+    if (isSimulatorStream.value) {
+      if (videoRef.value) {
+        if (playing) {
+          videoRef.value.play().catch(() => {})
+        } else {
+          videoRef.value.pause()
+        }
+      }
+      return
+    }
     if (playing) {
       // If we have cached frames, just restart the timer (don't reload)
       if (loopFrameCache.value.length > 0) {
@@ -1214,6 +1426,7 @@ onUnmounted(() => {
   
   // Stop loop playback
   stopLoopPlayback()
+  stopCanvasStream()
   
   // IMPORTANT: Clear MJPEG stream img src to stop loading
   // This helps free up the HTTP connection to the stream
@@ -1293,6 +1506,32 @@ onUnmounted(() => {
   object-fit: contain;
   background: black;
   display: block;
+}
+
+.stream-image.simulator-video {
+  object-fit: cover;
+  object-position: center center;
+}
+
+.stream-image.stream-buffer {
+  position: relative;
+  overflow: hidden;
+  background: #000;
+}
+
+.stream-buffer-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+  opacity: 0;
+  display: block;
+}
+
+.stream-buffer-frame.active {
+  opacity: 1;
 }
 
 .stream-image.frozen {

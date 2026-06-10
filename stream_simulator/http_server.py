@@ -1045,8 +1045,8 @@ def main():
     parser.add_argument(
         "--fps",
         type=float,
-        default=None,
-        help="Override FPS for streaming (default: use video FPS)"
+        default=float(os.getenv("STREAM_SIMULATOR_FPS", "30")),
+        help="Override FPS for streaming (default: 30, matching 1080p30 capture cards)"
     )
     
     args = parser.parse_args()
@@ -1074,5 +1074,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

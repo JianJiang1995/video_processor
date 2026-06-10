@@ -252,22 +252,30 @@ class MySQLService:
         total_frames: int = None,
         storage_path: str = None
     ) -> Dict[str, Any]:
-        """创建视频会话"""
+        """创建视频会话；如果 session_id 已存在则更新。"""
         with self.get_session() as session:
-            video_session = VideoSession(
-                session_id=session_id,
-                video_name=video_name,
-                video_path=video_path,
-                video_type=video_type,
-                duration=duration,
-                fps=fps,
-                width=width,
-                height=height,
-                total_frames=total_frames,
-                storage_path=storage_path,
-                status="active"
-            )
-            session.add(video_session)
+            video_session = session.query(VideoSession).filter(
+                VideoSession.session_id == session_id
+            ).first()
+            if video_session is None:
+                video_session = VideoSession(session_id=session_id, status="active")
+                session.add(video_session)
+
+            updates = {
+                "video_name": video_name,
+                "video_path": video_path,
+                "video_type": video_type,
+                "duration": duration,
+                "fps": fps,
+                "width": width,
+                "height": height,
+                "total_frames": total_frames,
+                "storage_path": storage_path,
+            }
+            for key, value in updates.items():
+                if value is not None:
+                    setattr(video_session, key, value)
+            video_session.status = "active"
             session.flush()
             return {
                 "id": video_session.id,

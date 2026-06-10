@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('backend-status', listener)
     return () => ipcRenderer.removeListener('backend-status', listener)
   },
-  
+
   // ============= 帧缓存操作 =============
   cacheFrame: (sessionId, filename, data) => 
     ipcRenderer.invoke('cache-frame', sessionId, filename, data),

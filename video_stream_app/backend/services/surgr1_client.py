@@ -22,6 +22,7 @@ import base64
 from io import BytesIO
 import tempfile
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -143,10 +144,28 @@ class SurgR1Client:
     async def check_health(self) -> bool:
         """Check if SurgR1 service is available"""
         try:
-            response = await self.client.get(f"{self.api_url}/health")
+            response = await self.client.get(f"{self.api_url}/health", timeout=2.0)
             return response.status_code == 200
         except Exception as e:
             logger.warning(f"[SurgR1Client] Health check failed: {e}")
+
+        # SurgR1/vLLM can delay /health while a large batch is running.  If the
+        # API port is still accepting TCP connections, keep the UI from marking
+        # the model as unavailable during active inference.
+        try:
+            parsed = urlparse(self.api_url)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=1.0,
+            )
+            writer.close()
+            await writer.wait_closed()
+            logger.info("[SurgR1Client] Health endpoint delayed, but API port is reachable")
+            return True
+        except Exception as tcp_error:
+            logger.warning(f"[SurgR1Client] TCP health fallback failed: {tcp_error}")
             return False
     
     def _save_temp_image(self, image: Union[Image.Image, bytes]) -> str:
@@ -747,4 +766,3 @@ async def ensure_surgr1_available() -> SurgR1Client:
         logger.warning("[SurgR1Client] SurgR1 service may not be available")
     
     return client
-

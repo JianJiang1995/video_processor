@@ -11,10 +11,10 @@
         @mouseup="stopDragging"
         @mouseleave="handleMouseLeave"
       >
-        <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
+        <div class="progress-fill" :class="{ live: isLive }" :style="{ width: progressPercent + '%' }"></div>
         
         <!-- Window segments (clickable) -->
-        <div class="window-segments">
+        <div v-if="!isLive" class="window-segments">
           <div
             v-for="i in windowCount"
             :key="i"
@@ -62,13 +62,13 @@
         </div>
         
         <!-- Playhead -->
-        <div class="playhead" :style="{ left: progressPercent + '%' }">
+        <div v-if="!isLive" class="playhead" :style="{ left: progressPercent + '%' }">
           <div class="playhead-handle"></div>
         </div>
         
         <!-- Hover tooltip -->
         <div 
-          v-if="hoverTime !== null" 
+          v-if="!isLive && hoverTime !== null" 
           class="hover-tooltip"
           :style="{ left: hoverPercent + '%' }"
         >
@@ -103,14 +103,7 @@
       <!-- Time Display -->
       <div class="time-display">
         <span v-if="isLive" class="live-badge">🔴 LIVE</span>
-        <!-- Show SAM3 frame time when in SAM3 mode with different timestamp -->
-        <template v-if="showSam3 && sam3Time !== null && Math.abs(sam3Time - currentTime) > 0.5">
-          <span class="time-current sam3-time" title="器械分割帧时间">{{ formatTime(sam3Time) }}</span>
-          <span class="time-delay">(延迟 {{ formatTimeOffset(currentTime - sam3Time) }})</span>
-        </template>
-        <template v-else>
-          <span class="time-current">{{ formatTime(currentTime) }}</span>
-        </template>
+        <span class="time-current">{{ formatTime(currentTime) }}</span>
         <span v-if="!isLive"> / </span>
         <span v-if="!isLive">{{ formatTime(duration) }}</span>
         <span class="window-display" v-if="currentWindowId >= 0">
@@ -169,22 +162,6 @@
           <span class="service-label">LLM</span>
         </div>
         
-        <!-- SAM3: 放大镜+手术刀图标 -->
-        <div class="service-badge" :class="{ available: sam3Status.available }" title="SAM3 器械分割">
-          <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <!-- 放大镜 -->
-            <circle cx="10" cy="10" r="5" />
-            <line x1="14" y1="14" x2="18" y2="18" stroke-width="2" stroke-linecap="round" />
-            <!-- 手术刀在放大镜内 -->
-            <path d="M8 8L12 12" stroke-width="1.8" stroke-linecap="round" />
-            <path d="M7 7L8.5 8.5" stroke-width="2.5" stroke-linecap="round" />
-            <!-- 分割虚线 -->
-            <path d="M19 6L21 8" stroke-dasharray="1 1" />
-            <path d="M17 4L19 6" stroke-dasharray="1 1" />
-          </svg>
-          <span class="service-label">SAM3</span>
-        </div>
-        
         <!-- ASR: 麦克风图标 -->
         <div class="service-badge" :class="{ available: asrStatus.available }" title="ASR 语音识别">
           <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -214,22 +191,6 @@
           <span class="service-label">TTS</span>
         </div>
       </div>
-      
-      <!-- SAM3 Toggle Button -->
-      <button 
-        class="btn sam3-toggle-btn"
-        :class="{ active: showSam3, disabled: !sam3Status.available }"
-        @click="$emit('toggleSam3')"
-        :disabled="!sam3Status.available"
-        :title="sam3Status.available ? (showSam3 ? '切换到原始视频' : '显示器械分割视图') : 'SAM3 服务不可用'"
-      >
-        <svg class="sam3-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="10" cy="10" r="5" />
-          <line x1="14" y1="14" x2="18" y2="18" stroke-width="2" stroke-linecap="round" />
-          <path d="M8 8L12 12" stroke-width="1.8" stroke-linecap="round" />
-        </svg>
-        {{ showSam3 ? '原始视频' : '器械分割' }}
-      </button>
       
       <!-- Analyze Button -->
       <button
@@ -393,6 +354,7 @@ const hoveredWindowSummary = computed(() => {
 const isTooltipLocked = computed(() => lockedWindowId.value >= 0)
 
 const progressPercent = computed(() => {
+  if (props.isLive) return 100
   if (!props.duration) return 0
   // Clamp values to ensure valid percentage
   const safeTime = Math.max(0, Math.min(props.currentTime, props.duration))
@@ -402,6 +364,7 @@ const progressPercent = computed(() => {
 })
 
 const windowCount = computed(() => {
+  if (props.isLive) return 0
   // Ensure duration is positive to avoid negative window count
   const safeDuration = Math.max(0, props.duration || 0)
   return Math.max(0, Math.ceil(safeDuration / props.windowDuration))
@@ -420,6 +383,7 @@ const togglePlay = () => {
 }
 
 const getTimeFromEvent = (event) => {
+  if (props.isLive) return null
   if (!progressRef.value || !props.duration) return null
   const rect = progressRef.value.getBoundingClientRect()
   const percent = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
@@ -427,6 +391,7 @@ const getTimeFromEvent = (event) => {
 }
 
 const handleProgressClick = (event) => {
+  if (props.isLive) return
   const time = getTimeFromEvent(event)
   if (time !== null) {
     emit('seek', time)
@@ -434,6 +399,7 @@ const handleProgressClick = (event) => {
 }
 
 const startDragging = (event) => {
+  if (props.isLive) return
   event.preventDefault()  // Prevent text selection while dragging
   isDragging.value = true
   const time = getTimeFromEvent(event)
@@ -445,6 +411,7 @@ const startDragging = (event) => {
 
 // Global mousemove handler for dragging (works even outside progress bar)
 const handleGlobalMouseMove = (event) => {
+  if (props.isLive) return
   if (!isDragging.value) return
   const time = getTimeFromEvent(event)
   if (time !== null) {
@@ -458,6 +425,7 @@ const handleGlobalMouseMove = (event) => {
 
 // Global mouseup handler for dragging (works even outside progress bar)
 const handleGlobalMouseUp = (event) => {
+  if (props.isLive) return
   if (!isDragging.value) return
   isDragging.value = false
   const time = getTimeFromEvent(event)
@@ -469,6 +437,7 @@ const handleGlobalMouseUp = (event) => {
 }
 
 const handleDragging = (event) => {
+  if (props.isLive) return
   const time = getTimeFromEvent(event)
   if (time !== null) {
     // Update hover tooltip
@@ -572,6 +541,7 @@ const skipBack = () => {
 }
 
 const skipForward = () => {
+  if (props.isLive) return
   const newTime = Math.min(props.duration, props.currentTime + props.windowDuration)
   emit('seek', newTime)
 }
@@ -751,26 +721,13 @@ const formatTimeOffset = (seconds) => {
   margin-left: 0.25rem;
 }
 
-/* SAM3 Time Display */
-.time-current.sam3-time {
-  color: var(--accent-tertiary, #00bcd4);
-  text-shadow: 0 0 4px rgba(0, 188, 212, 0.5);
-}
-
-.time-delay {
-  color: var(--warning, #fdcb6e);
-  font-size: 0.82rem;
-  margin-left: 0.35rem;
-  opacity: 0.9;
-}
-
 /* Analysis Services Status */
 .analysis-services {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin-right: 0.75rem;
-  padding: 0.35rem 0.65rem;
+  gap: 0.65rem;
+  margin-right: 0.9rem;
+  padding: 0.55rem 0.8rem;
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
 }
@@ -778,10 +735,10 @@ const formatTimeOffset = (seconds) => {
 .service-badge {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.32rem 0.48rem;
+  gap: 0.45rem;
+  padding: 0.48rem 0.72rem;
   border-radius: var(--radius-sm);
-  font-size: 0.78rem;
+  font-size: 1.08rem;
   color: var(--text-tertiary);
   transition: all 0.2s;
   cursor: default;
@@ -826,25 +783,25 @@ const formatTimeOffset = (seconds) => {
 }
 
 .frame-count {
-  font-size: 0.68rem;
+  font-size: 1rem;
   font-weight: 600;
   background: var(--accent-primary, #00d4aa);
   color: #000;
-  padding: 0.1rem 0.3rem;
+  padding: 0.12rem 0.42rem;
   border-radius: 4px;
   min-width: 18px;
   text-align: center;
 }
 
 .service-label {
-  font-weight: 500;
-  font-size: 0.72rem;
+  font-weight: 700;
+  font-size: 1.08rem;
   letter-spacing: 0.02em;
 }
 
 .service-icon {
-  width: 17px;
-  height: 17px;
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
   transition: all 0.2s;
 }
@@ -872,7 +829,7 @@ const formatTimeOffset = (seconds) => {
   background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
   border: none;
   color: white;
-  padding: 0.72rem 1.35rem;
+  padding: 0.9rem 1.55rem;
   border-radius: var(--radius-md, 6px);
   cursor: pointer;
   font-weight: 500;
@@ -906,63 +863,11 @@ const formatTimeOffset = (seconds) => {
 .live-badge {
   background: rgba(255, 0, 0, 0.8);
   color: white;
-  padding: 0.2rem 0.5rem;
+  padding: 0.28rem 0.65rem;
   border-radius: var(--radius-sm);
-  font-size: 0.82rem;
+  font-size: 1.05rem;
   font-weight: 600;
   margin-right: 0.5rem;
-  animation: pulse-live 2s ease-in-out infinite;
-}
-
-@keyframes pulse-live {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
-}
-
-/* SAM3 Toggle Button */
-.sam3-toggle-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.7rem 1rem;
-  background: var(--bg-tertiary, rgba(255, 255, 255, 0.05));
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
-  border-radius: var(--radius-md, 6px);
-  color: var(--text-secondary, #a0a0a0);
-  font-size: 0.92rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.25s ease;
-  margin-right: 0.5rem;
-}
-
-.sam3-toggle-btn:hover:not(.disabled) {
-  background: rgba(0, 212, 170, 0.1);
-  border-color: rgba(0, 212, 170, 0.3);
-  color: var(--text-primary, #fff);
-}
-
-.sam3-toggle-btn.active {
-  background: linear-gradient(135deg, rgba(0, 212, 170, 0.2) 0%, rgba(0, 180, 150, 0.15) 100%);
-  border-color: var(--accent-primary, #00d4aa);
-  color: var(--accent-primary, #00d4aa);
-  box-shadow: 0 0 12px rgba(0, 212, 170, 0.3);
-}
-
-.sam3-toggle-btn.active .sam3-icon {
-  filter: drop-shadow(0 0 4px rgba(0, 212, 170, 0.6));
-}
-
-.sam3-toggle-btn.disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.sam3-icon {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  transition: all 0.2s;
 }
 
 /* Window Summary Tooltip */

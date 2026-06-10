@@ -14,6 +14,7 @@ from PIL import Image
 from io import BytesIO
 import base64
 import httpx
+from urllib.parse import urlparse
 
 from ..database import (
     get_db, get_video_session, get_video_session_by_id,
@@ -35,6 +36,8 @@ from ..services.tts_cosyvoice_client import get_tts_client, ensure_tts_available
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
 from ..services.frame_capture_service import get_frame_capture_service
+from ..services.decklink_capture import DeckLinkCapture
+from ..services.local_video_source import PacedVideoCapture, resolve_video_source
 from ..services.video_export_service import get_video_export_service, export_tasks
 from ..config import settings, ANALYSIS_SYSTEM_PROMPT
 
@@ -140,15 +143,10 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
         name = TOOL_LABEL_CN.get(label, label)
         if name:
             tool_names.append(name)
-    tool_text = "、".join(tool_names) if tool_names else "暂未稳定检出器械"
-
-    triplets = (expert_pack.get("triplet") or {}).get("triplet", [])[:2]
-    triplet_text = "；".join(t.get("label", "") for t in triplets if t.get("label"))
+    tool_text = "、".join(tool_names) if tool_names else "未见明确器械"
 
     time_text = f"{start_time:.0f}-{end_time:.0f}s"
-    if triplet_text:
-        return f"【专家实时快照 {time_text}】当前判断为{phase_cn}，YOLO 检出{tool_text}。动作三元组提示：{triplet_text}。该段为实时快照，R1/Gemini 精修结果稍后覆盖。"
-    return f"【专家实时快照 {time_text}】当前判断为{phase_cn}，YOLO 检出{tool_text}。已基于 {frame_count} 帧快速更新手术进程，R1/Gemini 精修结果稍后覆盖。"
+    return f"{time_text}：当前处于{phase_cn}，可见{tool_text}。"
 
 
 def _queue_embedding(session_id: str, window_id: int, summary_text: str,
@@ -183,7 +181,20 @@ def open_video_source(video_path: str):
     """
     import cv2
     import platform
+
+    resolved = resolve_video_source(video_path)
+    if resolved.is_simulator and resolved.source != video_path:
+        cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=True)
+        logger.info(
+            "[SurgR1] Using paced simulator source: %s @ %.1ffps",
+            resolved.source,
+            cap.get(cv2.CAP_PROP_FPS),
+        )
+        return cap
     
+    if video_path.startswith("decklink://"):
+        return DeckLinkCapture(video_path)
+
     if video_path.startswith("device://"):
         # Local capture device
         device_spec = video_path.replace("device://", "")
@@ -1265,7 +1276,7 @@ async def start_surgr1_continuous(
         
         # Determine if this is a real-time stream (HTTP/RTSP) or capture device
         video_path = session["video_path"]
-        is_realtime_stream = video_path.startswith(("http://", "https://", "rtsp://", "device://"))
+        is_realtime_stream = video_path.startswith(("http://", "https://", "rtsp://", "device://", "decklink://", "simulator://"))
         
         # Create background task using asyncio.create_task so it can be cancelled
         # (FastAPI background_tasks cannot be cancelled)
@@ -1675,7 +1686,7 @@ async def surgr1_continuous_task(
             return
         
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        is_realtime_stream = video_path.startswith('http')
+        is_realtime_stream = video_path.startswith(("http://", "https://", "rtsp://", "device://", "decklink://", "simulator://"))
         
         # For realtime streams, use wall clock time instead of frame-based time
         # This ensures timestamps match the frontend's elapsed time
@@ -1709,7 +1720,7 @@ async def surgr1_continuous_task(
         
         # ========== 【优化】并行异步 R1 处理任务 ==========
         # 支持多个并行 R1 任务，充分利用 GPU 和 vLLM 的并发能力
-        MAX_PARALLEL_R1_TASKS = 3  # 最大并行 R1 任务数（从2提升到3，充分利用A100 GPU）
+        MAX_PARALLEL_R1_TASKS = 1  # 实时预览优先：避免后台 R1 批任务抢占 CPU/解码
         pending_r1_tasks = []  # 正在执行的 R1 批处理任务列表
         r1_processing_buffer = []  # 正在被 R1 处理的帧（用于追踪）
         
@@ -1802,14 +1813,20 @@ async def surgr1_continuous_task(
             else:
                 current_time = frame_idx / fps
             
-            # Convert to PIL Image (colorspace + PIL 构造是 CPU 密集，放 executor)
-            pil_image = await loop.run_in_executor(None, _bgr_to_pil, bgr_frame)
-            
             # 【解耦】帧保存已移至独立的 frame_capture_service（25fps固定存储）
             # 分析服务只负责处理帧，不再保存帧
             
             # Determine if this is a SurgR1 key frame (采样间隔1秒)
             is_surgr1_frame = (current_time - last_surgr1_time >= surgr1_interval)
+            sam3_due = bool(
+                sam3_client
+                and sam3_session_id
+                and (current_time - last_sam3_time >= sam3_interval)
+            )
+            pil_image = None
+            if is_surgr1_frame or sam3_due:
+                # colorspace + PIL 构造是 CPU 密集，只有真正需要分析/传播时才做
+                pil_image = await loop.run_in_executor(None, _bgr_to_pil, bgr_frame)
             
             if is_surgr1_frame:
                 last_surgr1_time = current_time
@@ -1953,8 +1970,10 @@ async def surgr1_continuous_task(
             
             # SAM3 streaming: process frame with masks
             # Key insight: Only reinit SAM3 when instruments change, otherwise just propagate
-            if sam3_client and sam3_session_id and (current_time - last_sam3_time >= sam3_interval):
+            if sam3_due:
                 last_sam3_time = current_time
+                if pil_image is None:
+                    pil_image = await loop.run_in_executor(None, _bgr_to_pil, bgr_frame)
                 
                 try:
                     need_reinit = False
@@ -2306,9 +2325,10 @@ async def glm_summarization_task(
     
     try:
         vlm_client = await ensure_vlm_available()
+        processor_source = resolve_video_source(video_path).source
         
         processor = VideoProcessor(
-            video_path=video_path,
+            video_path=processor_source,
             window_duration=settings.WINDOW_DURATION,
             sample_interval=settings.SAMPLE_INTERVAL
         )
@@ -4027,6 +4047,29 @@ async def surgr1_status():
                 "cached": True,
                 "warning": f"health check delayed; using last success {int(now - last_success)}s ago",
             }
+        try:
+            parsed = urlparse(surgr1_client.api_url)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=1.0,
+            )
+            writer.close()
+            await writer.wait_closed()
+            surgr1_status_cache.update({
+                "available": True,
+                "last_success": now,
+                "last_checked": now,
+            })
+            return {
+                "available": True,
+                "api_url": surgr1_client.api_url,
+                "cached": True,
+                "warning": "health endpoint delayed; API port is reachable",
+            }
+        except Exception:
+            pass
         return {
             "available": False,
             "api_url": surgr1_client.api_url,

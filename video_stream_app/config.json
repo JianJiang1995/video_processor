@@ -97,22 +97,22 @@
         },
         "yolo": {
             "enabled": true,
-            "model_path": "/data4/jj/proj/surg_agent/detection_expert/runs/yolo26s_cholec_tool/weights/best.pt",
-            "device": "cuda:5",
+            "model_path": "/home/user/proj/surg_agent/detection_expert/runs/yolo26s_cholec_tool/weights/best.pt",
+            "device": "cuda:1",
             "confidence_threshold": 0.25,
             "comment": "YOLO26s tool detection - replaces SurgR1 tool_localization for real-time streams"
         },
         "phase": {
             "enabled": true,
-            "model_path": "/data4/jj/proj/surg_agent/phase_expert/runs/cholec_phase/best.pt",
-            "device": "cuda:3",
+            "model_path": "/home/user/proj/surg_agent/phase_expert/runs/cholec_phase/best.pt",
+            "device": "cuda:0",
             "comment": "Phase Expert (ResNet-18, ~300MB) 共用 GPU0（目前空闲 80+ GB）"
         },
         "triplet": {
             "enabled": true,
-            "model_path": "/data4/jj/proj/surg_agent/triplet_expert/LAM/weights/LAM/CholecTriplet2021/LAM_Lite/model_best.pth.tar",
-            "mappings_path": "/data4/jj/proj/surg_agent/triplet_expert/datasets/cholect50_triplet/class_mappings.json",
-            "device": "cuda:2",
+            "model_path": "/home/user/proj/surg_agent/triplet_expert/LAM/weights/LAM/CholecTriplet2021/LAM_Lite/model_best.pth.tar",
+            "mappings_path": "/home/user/proj/surg_agent/triplet_expert/datasets/cholect50_triplet/class_mappings.json",
+            "device": "cuda:0",
             "comment": "Triplet Expert (LAM-Lite, ~1GB) 共用 GPU0"
         },
         "embedding": {
@@ -126,7 +126,7 @@
         "window_duration": 10.0,
         "sample_interval": 1.0,
         "frame_storage": {
-            "storage_base": "/data5/jj/proj/video_processor/video_stream_app/sessions",
+            "storage_base": "/home/user/proj/video_processor/video_stream_app/sessions",
             "fps": 10,
             "quality": 78,
             "preview_fps": 4,
@@ -166,8 +166,8 @@
             "enabled": true,
             "device_id": 0,
             "enable_gpu_rasterization": true,
-            "enable_zero_copy": true,
-            "disable_frame_rate_limit": true,
+            "enable_zero_copy": false,
+            "disable_frame_rate_limit": false,
             "enable_vaapi": true,
             "comment": "GPU加速配置: device_id指定使用的GPU编号（0=第一块GPU）"
         },

@@ -77,9 +77,9 @@
         <div v-else class="device-list">
           <div 
             v-for="device in captureDevices" 
-            :key="device.device_id"
+            :key="`${device.backend || 'default'}-${device.device_id}`"
             class="device-card"
-            :class="{ selected: selectedDevice?.device_id === device.device_id }"
+            :class="{ selected: isSelectedDevice(device) }"
             @click="selectDevice(device)"
           >
             <div class="device-icon">📹</div>
@@ -89,8 +89,21 @@
                 {{ device.width }}×{{ device.height }} @ {{ device.fps?.toFixed(0) || '?' }}fps
               </div>
             </div>
-            <div v-if="selectedDevice?.device_id === device.device_id" class="device-check">✓</div>
+            <div v-if="isSelectedDevice(device)" class="device-check">✓</div>
           </div>
+        </div>
+
+        <div v-if="selectedDevice?.supported_modes?.length" class="input-group mode-select-group">
+          <label>输入模式</label>
+          <select v-model="selectedMode" class="input">
+            <option
+              v-for="mode in selectedDevice.supported_modes"
+              :key="mode"
+              :value="mode"
+            >
+              {{ mode }}
+            </option>
+          </select>
         </div>
         
         <div class="capture-hint">
@@ -155,6 +168,7 @@ const emit = defineEmits(['connect', 'back'])
 const defaultSourceType = import.meta.env.VITE_DEFAULT_SOURCE === 'capture' ? 'capture' : 'stream'
 const defaultStreamUrl = import.meta.env.VITE_DEFAULT_STREAM_URL || 'http://localhost:9001/stream'
 const sourceType = ref(defaultSourceType)
+const autoConnectCapture = import.meta.env.VITE_AUTO_CONNECT_CAPTURE === '1'
 
 // Stream mode state
 const streamUrl = ref(defaultStreamUrl)
@@ -168,12 +182,15 @@ const presets = [
 // Capture mode state
 const captureDevices = ref([])
 const selectedDevice = ref(null)
+const selectedMode = ref('1080p30')
 const isLoadingDevices = ref(false)
 
 // Common state
-const autoAnalyze = ref(true)
+const autoAnalyze = ref(import.meta.env.VITE_AUTO_ANALYZE_DEFAULT !== '0')
 const isConnecting = ref(false)
 const error = ref('')
+const didAutoConnect = ref(false)
+const AUTO_CONNECT_FLAG = 'surgr1_capture_auto_connect_started'
 
 // AbortController for cancelling requests
 let abortController = null
@@ -184,6 +201,13 @@ const selectPreset = (preset) => {
 
 const selectDevice = (device) => {
   selectedDevice.value = device
+  selectedMode.value = device.default_mode || device.supported_modes?.[0] || '1080p30'
+}
+
+const isSelectedDevice = (device) => {
+  return selectedDevice.value
+    && selectedDevice.value.device_id === device.device_id
+    && (selectedDevice.value.backend || 'default') === (device.backend || 'default')
 }
 
 // Load available capture devices
@@ -197,7 +221,21 @@ const loadCaptureDevices = async () => {
     
     // Auto-select first device if none selected
     if (captureDevices.value.length > 0 && !selectedDevice.value) {
-      selectedDevice.value = captureDevices.value[0]
+      selectDevice(captureDevices.value[0])
+    }
+
+    if (
+      autoConnectCapture &&
+      sourceType.value === 'capture' &&
+      selectedDevice.value &&
+      !didAutoConnect.value &&
+      sessionStorage.getItem(AUTO_CONNECT_FLAG) !== '1'
+    ) {
+      didAutoConnect.value = true
+      sessionStorage.setItem(AUTO_CONNECT_FLAG, '1')
+      setTimeout(() => {
+        connectCapture()
+      }, 250)
     }
   } catch (err) {
     console.error('Failed to load capture devices:', err)
@@ -300,6 +338,8 @@ const connectCapture = async () => {
     const response = await axios.post('/api/video/connect-capture', {
       device_id: selectedDevice.value.device_id,
       device_name: selectedDevice.value.device_name || '',
+      backend: selectedDevice.value.backend || 'auto',
+      mode: selectedMode.value || selectedDevice.value.default_mode || '1080p30',
       auto_analyze: autoAnalyze.value
     }, {
       signal: abortController.signal,
@@ -330,10 +370,12 @@ const connectCapture = async () => {
 <style scoped>
 .stream-input-panel {
   background: var(--bg-secondary);
-  border-radius: var(--radius-xl);
-  padding: 2rem;
-  max-width: 550px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1.8rem 2rem;
+  max-width: 760px;
   width: 100%;
+  box-shadow: var(--shadow-md);
 }
 
 .stream-input-panel h3 {
@@ -562,6 +604,11 @@ const connectCapture = async () => {
   color: white;
   font-size: 0.8rem;
   font-weight: bold;
+}
+
+.mode-select-group {
+  margin-top: 1rem;
+  margin-bottom: 0;
 }
 
 .capture-hint {

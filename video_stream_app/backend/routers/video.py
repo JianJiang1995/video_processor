@@ -7,6 +7,8 @@ import time
 import logging
 import threading
 import urllib.request
+import subprocess
+import glob
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional
@@ -23,12 +25,54 @@ from ..database import get_db, create_video_session, get_video_session, get_all_
 from ..services.video_processor import VideoProcessor, ProcessingState
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
+from ..services.decklink_capture import DeckLinkCapture
+from ..services.local_video_source import (
+    SIMULATOR_URI,
+    get_simulator_source,
+    resolve_video_source,
+)
 from ..config import settings
 
 router = APIRouter(prefix="/api/video", tags=["video"])
 
 # Store active processors
 active_processors = {}
+
+SIMULATED_CAPTURE_URL = os.getenv("SURGR1_SIMULATOR_STREAM_URL", "http://127.0.0.1:9001/stream")
+SIMULATED_CAPTURE_NAME = "手术室采集卡模拟源"
+
+
+def _get_simulator_info(stream_url: str = SIMULATED_CAPTURE_URL, timeout: float = 1.0) -> Optional[dict]:
+    parsed = urlparse(stream_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+
+    try:
+        info_url = f"{parsed.scheme}://{parsed.netloc}/info"
+        with urllib.request.urlopen(info_url, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as e:
+        logger.debug(f"[CaptureSimulator] /info unavailable: {e}")
+        return None
+
+
+def _simulator_capture_device() -> Optional[dict]:
+    source = get_simulator_source(SIMULATED_CAPTURE_URL)
+    if not source:
+        return None
+
+    return {
+        "device_id": -1,
+        "device_name": SIMULATED_CAPTURE_NAME,
+        "device_path": SIMULATOR_URI,
+        "width": int(source.width or 1920),
+        "height": int(source.height or 1080),
+        "fps": float(source.fps or 30.0),
+        "backend": "simulator",
+        "default_mode": "1080p30",
+        "supported_modes": ["1080p30"],
+        "is_simulated": True,
+    }
 
 
 class DisplayStreamState:
@@ -54,30 +98,11 @@ class DisplayStreamState:
         self._local_file_mode = False
 
     def _resolve_source(self):
-        """Use the simulator backing file directly when possible.
-
-        The local stream simulator exposes 1080p MJPEG on /stream. Pulling that
-        for UI display forces an unnecessary JPEG decode/re-encode loop. For
-        localhost simulator streams we can open the source mp4 directly and
-        simulate realtime playback with much lower CPU and no socket buffering.
-        """
-        parsed = urlparse(self.video_path)
-        if parsed.scheme in ("http", "https") and parsed.hostname in {"localhost", "127.0.0.1"}:
-            try:
-                info_url = f"{parsed.scheme}://{parsed.netloc}/info"
-                with urllib.request.urlopen(info_url, timeout=1.0) as response:
-                    info = json.loads(response.read().decode("utf-8"))
-                source_path = info.get("video_path")
-                source_fps = float(info.get("fps") or self.fps)
-                if source_path and os.path.exists(source_path):
-                    logger.info(
-                        f"[DisplayStream] Using simulator source file directly: {source_path}"
-                    )
-                    return source_path, True, source_fps
-            except Exception as e:
-                logger.debug(f"[DisplayStream] Simulator source resolve skipped: {e}")
-
-        return self.video_path, False, self.fps
+        resolved = resolve_video_source(self.video_path)
+        if resolved.is_simulator and resolved.source != self.video_path:
+            logger.info("[DisplayStream] Using simulator source file directly: %s", resolved.source)
+            return resolved.source, True, float(resolved.fps or self.fps)
+        return resolved.source, False, self.fps
 
     def start(self):
         with self.lock:
@@ -118,8 +143,7 @@ class DisplayStreamState:
         cap = None
         try:
             source_path, self._local_file_mode, source_fps = self._resolve_source()
-            cap = cv2.VideoCapture(source_path, cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap = _open_live_video_source(source_path)
             if not cap.isOpened():
                 logger.error(f"[DisplayStream] Cannot open video: {source_path}")
                 return
@@ -148,7 +172,10 @@ class DisplayStreamState:
                     if now_perf < next_frame_time:
                         time.sleep(min(0.01, next_frame_time - now_perf))
                         continue
-                    next_frame_time += min_interval
+                elif last_publish:
+                    wait_time = min_interval - (time.time() - last_publish)
+                    if wait_time > 0:
+                        time.sleep(min(wait_time, 0.02))
 
                 ret, frame = cap.read()
                 if not ret:
@@ -159,19 +186,10 @@ class DisplayStreamState:
                         time.sleep(0.02)
                     continue
 
-                now = time.time()
-                if not self._local_file_mode and now - last_publish < min_interval:
-                    time.sleep(0.001)
-                    continue
-                last_publish = now
+                last_publish = time.time()
 
                 if self._local_file_mode:
-                    lag = time.perf_counter() - next_frame_time
-                    if lag > min_interval:
-                        skip_count = min(int(lag / min_interval), 10)
-                        for _ in range(skip_count):
-                            cap.grab()
-                        next_frame_time += skip_count * min_interval
+                    next_frame_time = max(next_frame_time + min_interval, time.perf_counter())
 
                 frame = self._prepare_frame(frame)
                 ok, jpeg = cv2.imencode(".jpg", frame, encode_params)
@@ -192,6 +210,39 @@ class DisplayStreamState:
 
 
 display_streams = {}
+
+
+def _open_live_video_source(video_path: str):
+    """Open a live display source, including local capture-card device URIs."""
+    import platform
+
+    resolved = resolve_video_source(video_path)
+    if resolved.is_simulator and resolved.source != video_path:
+        cap = cv2.VideoCapture(resolved.source, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    if video_path.startswith("decklink://"):
+        return DeckLinkCapture(video_path)
+
+    if video_path.startswith("device://"):
+        device_spec = video_path.replace("device://", "")
+        try:
+            device_id = int(device_spec)
+            if platform.system() == "Linux":
+                cap = cv2.VideoCapture(f"/dev/video{device_id}", cv2.CAP_V4L2)
+            else:
+                cap = cv2.VideoCapture(device_id, cv2.CAP_DSHOW if platform.system() == "Windows" else 0)
+        except ValueError:
+            if platform.system() == "Windows":
+                cap = cv2.VideoCapture(f"video={device_spec}", cv2.CAP_DSHOW)
+            else:
+                cap = cv2.VideoCapture(device_spec)
+    else:
+        cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
 
 
 class VideoUploadResponse(BaseModel):
@@ -228,6 +279,8 @@ class CaptureDeviceConnectRequest(BaseModel):
     """Request to connect to a local capture card device"""
     device_id: int = 0  # Device index (0, 1, 2, ...)
     device_name: str = ""  # Optional device name for Windows DirectShow
+    backend: str = "auto"  # auto, decklink, v4l2, default
+    mode: str = "1080p30"  # DeckLink display mode
     auto_analyze: bool = True
 
 
@@ -237,6 +290,40 @@ def _list_capture_devices():
     Returns a list of device info dicts.
     """
     devices = []
+
+    simulated_device = _simulator_capture_device()
+    if simulated_device:
+        devices.append(simulated_device)
+
+    decklink_modes = [
+        "1080p30", "1080p2997", "1080p25", "1080p24", "1080p50", "1080p60", "1080p5994",
+        "720p60", "720p5994", "720p50",
+        "2160p30", "2160p2997", "2160p25", "2160p24",
+    ]
+
+    try:
+        if glob.glob("/dev/blackmagic/io*"):
+            monitor = subprocess.run(
+                ["gst-device-monitor-1.0", "Video/Source"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = monitor.stdout + monitor.stderr
+            if "DeckLink" in output or "decklink" in output.lower():
+                devices.append({
+                    "device_id": 0,
+                    "device_name": "DeckLink Mini Recorder 4K",
+                    "device_path": "/dev/blackmagic/io0",
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 30.0,
+                    "backend": "decklink",
+                    "default_mode": "1080p30",
+                    "supported_modes": decklink_modes,
+                })
+    except Exception as e:
+        logger.debug(f"[Capture] DeckLink detection skipped: {e}")
     
     # Try to detect devices by index (works on Linux and Windows)
     for i in range(10):  # Check first 10 indices
@@ -267,7 +354,6 @@ def _list_capture_devices():
     # On Linux, also check /dev/video* devices
     import platform
     if platform.system() == "Linux":
-        import glob
         v4l2_devices = glob.glob("/dev/video*")
         for dev_path in v4l2_devices:
             try:
@@ -299,6 +385,25 @@ def _list_capture_devices():
     return devices
 
 
+def _open_simulator_capture():
+    source = get_simulator_source(SIMULATED_CAPTURE_URL)
+    if not source:
+        return None, "本地手术室采集卡模拟视频不可用，请检查 SURGR1_SIMULATOR_VIDEO 或 stream_simulator/media"
+
+    cap = cv2.VideoCapture(source.source, cv2.CAP_FFMPEG)
+    if not cap.isOpened():
+        return None, f"无法打开本地手术室采集卡模拟源: {source.source}"
+
+    ret, _ = cap.read()
+    if not ret:
+        cap.release()
+        return None, f"无法读取本地手术室采集卡模拟源: {source.source}"
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    return cap, None
+
+
 def _open_capture_device(device_id: int, device_name: str = ""):
     """
     Open a capture device by ID or name.
@@ -310,6 +415,17 @@ def _open_capture_device(device_id: int, device_name: str = ""):
     error = None
     
     try:
+        if device_name.startswith("decklink:"):
+            mode = device_name.split(":", 1)[1] or "1080p30"
+            cap = DeckLinkCapture(f"decklink://{device_id}?mode={mode}")
+            if not cap.isOpened():
+                return None, f"无法打开 DeckLink 采集设备 {device_id} ({mode})"
+            ret, _ = cap.read()
+            if not ret:
+                cap.release()
+                return None, f"无法从 DeckLink 采集设备读取帧，请确认输入源模式为 {mode}"
+            return cap, None
+
         if platform.system() == "Windows" and device_name:
             # Windows DirectShow with device name
             cap = cv2.VideoCapture(f"video={device_name}", cv2.CAP_DSHOW)
@@ -380,17 +496,27 @@ async def connect_to_capture_device(
         auto_analyze: Whether to start analysis automatically
     """
     loop = asyncio.get_event_loop()
-    
+    backend = (request.backend or "auto").lower()
+    probe_name = request.device_name
+    if backend == "decklink":
+        probe_name = f"decklink:{request.mode or '1080p30'}"
+
     try:
-        cap, error = await asyncio.wait_for(
-            loop.run_in_executor(
-                None, 
-                _open_capture_device, 
-                request.device_id, 
-                request.device_name
-            ),
-            timeout=10.0
-        )
+        if backend == "simulator":
+            cap, error = await asyncio.wait_for(
+                loop.run_in_executor(None, _open_simulator_capture),
+                timeout=10.0,
+            )
+        else:
+            cap, error = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    _open_capture_device,
+                    request.device_id,
+                    probe_name,
+                ),
+                timeout=10.0,
+            )
     except asyncio.TimeoutError:
         raise HTTPException(408, f"连接采集设备超时 (10秒)")
     
@@ -402,14 +528,29 @@ async def connect_to_capture_device(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
+    if backend == "simulator":
+        simulator_source = get_simulator_source(SIMULATED_CAPTURE_URL)
+        fps = float((simulator_source.fps if simulator_source else None) or fps or 30.0)
+        width = int((simulator_source.width if simulator_source else None) or width or 1920)
+        height = int((simulator_source.height if simulator_source else None) or height or 1080)
     
     # Create a device URL for internal use
     # Format: device://{device_id} or device://{device_name}
-    device_url = f"device://{request.device_id}"
-    if request.device_name:
+    if backend == "simulator":
+        device_url = SIMULATOR_URI
+    elif backend == "decklink":
+        mode = request.mode or "1080p30"
+        device_url = f"decklink://{request.device_id}?mode={mode}"
+    else:
+        device_url = f"device://{request.device_id}"
+    if request.device_name and backend not in {"decklink", "simulator"}:
         device_url = f"device://{request.device_name}"
     
     device_display_name = request.device_name or f"Capture Device {request.device_id}"
+    if backend == "simulator":
+        device_display_name = SIMULATED_CAPTURE_NAME
+    elif backend == "decklink":
+        device_display_name = f"{device_display_name} ({request.mode or '1080p30'})"
     
     # Create database session
     session = create_video_session(
@@ -807,7 +948,9 @@ async def stream_video(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    video_path = Path(session.get("video_path", ""))
+    raw_video_path = session.get("video_path", "")
+    resolved = resolve_video_source(raw_video_path)
+    video_path = Path(resolved.source)
     if not video_path.exists():
         raise HTTPException(404, "Video file not found")
     
@@ -851,29 +994,6 @@ async def mjpeg_proxy_stream(
     
     # Get source FPS for reference
     source_fps = session.get("fps", 25.0) or 25.0
-    
-    def _open_video_for_mjpeg(path: str):
-        """Open video source for MJPEG proxy, supporting device:// URLs"""
-        import platform
-        
-        if path.startswith("device://"):
-            device_spec = path.replace("device://", "")
-            try:
-                device_id = int(device_spec)
-                if platform.system() == "Linux":
-                    cap = cv2.VideoCapture(f"/dev/video{device_id}", cv2.CAP_V4L2)
-                else:
-                    cap = cv2.VideoCapture(device_id)
-            except ValueError:
-                # Device name (Windows DirectShow)
-                if platform.system() == "Windows":
-                    cap = cv2.VideoCapture(f"video={device_spec}", cv2.CAP_DSHOW)
-                else:
-                    cap = cv2.VideoCapture(0)
-        else:
-            cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
-        
-        return cap
     
     # ============================================================
     # Fast path：HTTP/HTTPS MJPEG 源（如 stream_simulator）可以"字节透传"，
@@ -919,7 +1039,7 @@ async def mjpeg_proxy_stream(
         yolo_svc = None
         try:
             # Open video source (works for files, RTSP, HTTP streams, device://)
-            cap = _open_video_for_mjpeg(video_path)
+            cap = _open_live_video_source(video_path)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)  # Minimize buffer for lower latency
             
             if not cap.isOpened():

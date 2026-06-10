@@ -1222,4 +1222,79 @@ onUnmounted(() => {
 .modal-leave-to .modal-content {
   transform: scale(0.95) translateY(10px);
 }
+
+/* Larger review surface for OR monitoring. */
+.overview-container {
+  font-size: 1.18rem;
+}
+
+.overview-title {
+  font-size: 1.8rem;
+}
+
+.back-btn,
+.total-duration,
+.search-input,
+.chat-toggle-btn,
+.filter-chip {
+  font-size: 1.12rem;
+}
+
+.count-num {
+  font-size: 1.28rem;
+}
+
+.window-grid {
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 1.1rem;
+}
+
+.window-card {
+  min-height: 320px;
+}
+
+.card-summary {
+  font-size: 1.22rem;
+  line-height: 1.75;
+}
+
+.card-index-overlay {
+  font-size: 1.22rem;
+}
+
+.card-time-overlay,
+.card-phase {
+  font-size: 1.08rem;
+}
+
+.modal-content {
+  max-width: 1120px;
+}
+
+.modal-index {
+  font-size: 1.35rem;
+}
+
+.modal-time-range,
+.modal-summary-label {
+  font-size: 1.12rem;
+}
+
+.modal-summary-text {
+  font-size: 1.35rem;
+  line-height: 1.75;
+}
+
+.chat-panel-title,
+.chat-input,
+.chat-message,
+.message-content {
+  font-size: 1.16rem;
+}
+
+.chat-empty-text,
+.chat-empty-hint,
+.message-time {
+  font-size: 1rem;
+}
 </style>

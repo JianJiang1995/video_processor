@@ -99,6 +99,7 @@ import { ref, onMounted } from 'vue'
 import axios from 'axios'
 
 const emit = defineEmits(['select-mode', 'resume-session'])
+const autoOpenStream = import.meta.env.VITE_AUTO_OPEN_STREAM === '1'
 
 const recentSessions = ref([])
 
@@ -174,23 +175,36 @@ const confirmDelete = async () => {
   }
 }
 
-onMounted(loadSessions)
+onMounted(() => {
+  loadSessions()
+  if (autoOpenStream) {
+    setTimeout(() => {
+      selectMode('stream')
+    }, 250)
+  }
+})
 </script>
 
 <style scoped>
 .mode-selector {
+  flex: 1;
+  width: 100%;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+  justify-content: flex-start;
+  padding: 3.2rem 3rem 2.4rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 240px),
+    #202020;
+  overflow-y: auto;
 }
 
 .mode-header {
   text-align: center;
-  margin-bottom: 3rem;
+  margin-bottom: 2.2rem;
+  width: 100%;
 }
 
 .logo-large {
@@ -201,10 +215,10 @@ onMounted(loadSessions)
 }
 
 .logo-icon-lg {
-  width: 80px;
-  height: 80px;
+  width: 72px;
+  height: 72px;
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -214,7 +228,7 @@ onMounted(loadSessions)
 }
 
 .logo-large h1 {
-  font-size: 2.5rem;
+  font-size: 2.2rem;
   font-weight: 700;
   letter-spacing: -0.03em;
   margin: 0;
@@ -233,19 +247,22 @@ onMounted(loadSessions)
 .mode-cards {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 2rem;
-  max-width: 800px;
+  gap: 1.4rem;
+  max-width: 980px;
   width: 100%;
 }
 
 .mode-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xl);
-  padding: 2rem;
+  border-radius: var(--radius-md);
+  padding: 1.55rem 1.7rem;
   cursor: pointer;
   transition: all 0.3s ease;
   text-align: center;
+  min-height: 330px;
+  display: flex;
+  flex-direction: column;
 }
 
 .mode-card:hover {
@@ -255,8 +272,8 @@ onMounted(loadSessions)
 }
 
 .mode-icon {
-  font-size: 3.5rem;
-  margin-bottom: 1rem;
+  font-size: 3rem;
+  margin-bottom: 0.8rem;
 }
 
 .mode-card h2 {
@@ -274,8 +291,9 @@ onMounted(loadSessions)
 .mode-features {
   list-style: none;
   padding: 0;
-  margin: 0 0 1.5rem 0;
+  margin: 0 0 1.25rem 0;
   text-align: left;
+  flex: 1;
 }
 
 .mode-features li {
@@ -304,9 +322,9 @@ onMounted(loadSessions)
 }
 
 .recent-sessions {
-  margin-top: 3rem;
+  margin-top: 2rem;
   width: 100%;
-  max-width: 600px;
+  max-width: 980px;
 }
 
 .sessions-header {
@@ -344,8 +362,8 @@ onMounted(loadSessions)
 }
 
 .session-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 0.5rem;
 }
 
@@ -534,7 +552,4 @@ onMounted(loadSessions)
   }
 }
 </style>
-
-
-
 

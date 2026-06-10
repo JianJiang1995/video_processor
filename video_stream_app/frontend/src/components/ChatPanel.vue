@@ -119,6 +119,22 @@ const sendQuickMessage = (text) => {
   sendMessage()
 }
 
+const formatError = (error) => {
+  const detail = error?.response?.data?.detail ?? error?.response?.data?.error ?? error?.response?.data
+  if (Array.isArray(detail)) {
+    return detail.map(item => {
+      if (typeof item === 'string') return item
+      const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
+      const msg = item?.msg || item?.message || JSON.stringify(item)
+      return loc ? `${loc}: ${msg}` : msg
+    }).join('; ')
+  }
+  if (detail && typeof detail === 'object') {
+    return detail.message || detail.msg || detail.error || JSON.stringify(detail)
+  }
+  return detail || error?.message || '网络错误'
+}
+
 const sendMessage = async () => {
   const text = inputText.value.trim()
   if (!text || !props.sessionId) return
@@ -139,16 +155,22 @@ const sendMessage = async () => {
 
     // Send to chat API
     const response = await axios.post(`/api/voice/chat/${props.sessionId}/send`, {
-      text: text,
-      context: buildContext(),
+      role: 'user',
+      content: text,
+      timestamp: Date.now() / 1000,
     })
+
+    const assistantContent = response.data?.response?.content
+      || response.data?.response_text
+      || response.data?.error
+      || 'No response'
 
     const reply = {
       role: 'assistant',
-      content: response.data?.response?.content || 'No response',
+      content: assistantContent,
       time: formatTime(),
       similarWindows: null,
-      context: null,
+      context: buildContext() ? '已结合当前分析窗口上下文' : null,
     }
 
     // If similarity-related, also run semantic search
@@ -177,7 +199,7 @@ const sendMessage = async () => {
   } catch (error) {
     messages.value.push({
       role: 'assistant',
-      content: `Error: ${error.response?.data?.detail || error.message}`,
+      content: `Error: ${formatError(error)}`,
       time: formatTime(),
     })
   } finally {
@@ -502,4 +524,30 @@ watch(messages, scrollToBottom, { deep: true })
 
 .chat-send-btn:hover { filter: brightness(1.1); }
 .chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.chat-empty-icon { font-size: 48px; }
+.chat-empty-text { font-size: 22px; }
+.chat-empty-hint { font-size: 18px; }
+.chat-hint-chip { font-size: 18px; padding: 10px 18px; }
+.chat-msg {
+  font-size: 22px;
+  line-height: 1.7;
+  padding: 14px 18px;
+  max-width: 94%;
+}
+.chat-msg-time { font-size: 15px; }
+.chat-msg-context,
+.chat-similar-item {
+  font-size: 18px;
+}
+.chat-input {
+  font-size: 22px;
+  padding: 14px 18px;
+}
+.chat-voice-btn,
+.chat-send-btn {
+  width: 50px;
+  height: 50px;
+  font-size: 22px;
+}
 </style>
