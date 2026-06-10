@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design E3 - Main View (Final)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-base: #161616;
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252525;
+    --bg-card: #2a2a2a;
+    --bg-card-hover: #333;
+    --bg-elevated: #3a3a3a;
+    --border: #383838;
+    --border-subtle: #2e2e2e;
+    --accent: #f0a030;
+    --accent-light: #ffc870;
+    --accent-dim: rgba(240, 160, 48, 0.10);
+    --accent-glow: rgba(240, 160, 48, 0.15);
+    --success: #4ecdc4;
+    --warning: #f0a030;
+    --danger: #e74c3c;
+    --info: #74b9ff;
+    --text-primary: #e8e6e3;
+    --text-secondary: #a8a5a0;
+    --text-tertiary: #6b6862;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-xs: 5px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .app {
+    height: 100vh;
+    display: grid;
+    grid-template-columns: 56px 1fr;
+  }
+
+  /* ===== LEFT NAV RAIL ===== */
+  .nav-rail {
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+  }
+
+  .nav-logo {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), #e67e22);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 14px; color: var(--bg-base);
+    margin-bottom: 12px; cursor: pointer;
+  }
+
+  .nav-btn {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    background: transparent; border: none;
+    color: var(--text-tertiary);
+    cursor: pointer; font-size: 17px;
+    display: flex; align-items: center; justify-content: center;
+    position: relative; transition: all 0.15s;
+  }
+
+  .nav-btn:hover { background: var(--bg-secondary); color: var(--text-secondary); }
+
+  .nav-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .nav-btn.active::after {
+    content: ''; position: absolute; left: -4px;
+    width: 3px; height: 18px;
+    background: var(--accent); border-radius: 0 3px 3px 0;
+  }
+
+  .nav-tooltip {
+    display: none; position: absolute; left: 52px;
+    padding: 4px 10px; background: var(--bg-elevated);
+    border-radius: 6px; font-size: 11px; color: var(--text-primary);
+    white-space: nowrap; z-index: 100; pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+
+  .nav-btn:hover .nav-tooltip { display: block; }
+
+  /* Analyze button - special */
+  .nav-btn.analyze {
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 15px;
+    margin-top: 4px;
+    box-shadow: 0 2px 8px var(--accent-glow);
+  }
+
+  .nav-btn.analyze:hover {
+    background: var(--accent-light);
+  }
+
+  .nav-btn.analyze.running {
+    animation: analyze-pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes analyze-pulse {
+    0%, 100% { box-shadow: 0 2px 8px var(--accent-glow); }
+    50% { box-shadow: 0 2px 16px rgba(240,160,48,0.4); }
+  }
+
+  .nav-divider {
+    width: 24px; height: 1px;
+    background: var(--border-subtle);
+    margin: 6px 0;
+  }
+
+  .nav-spacer { flex: 1; }
+
+  .nav-avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--bg-elevated); border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; color: var(--text-tertiary);
+    cursor: pointer;
+  }
+
+  /* ===== MAIN AREA ===== */
+  .main-area {
+    display: grid;
+    grid-template-rows: 44px 1fr auto 220px;
+    overflow: hidden;
+  }
+
+  /* ===== HEADER ===== */
+  .header {
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center;
+    padding: 0 20px; gap: 12px;
+  }
+
+  .h-title { font-size: 13px; font-weight: 600; }
+  .h-sep { width: 1px; height: 16px; background: var(--border); }
+
+  .h-session {
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .h-session-label { color: var(--text-tertiary); }
+  .h-session-id { color: var(--text-secondary); }
+
+  .h-video-name {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .h-spacer { flex: 1; }
+
+  .h-badge {
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .h-badge.live {
+    background: rgba(231, 76, 60, 0.12);
+    border: 1px solid rgba(231, 76, 60, 0.2);
+    color: var(--danger); font-weight: 600;
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--danger); animation: blink 1.5s infinite;
+  }
+
+  @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+  .h-btn {
+    width: 30px; height: 30px;
+    border-radius: var(--radius-sm);
+    background: transparent; border: none;
+    color: var(--text-tertiary); cursor: pointer;
+    font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .h-btn:hover { background: var(--bg-card); color: var(--text-secondary); }
+
+  /* ===== CONTENT: Video + Right Panel ===== */
+  .content-row {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    overflow: hidden;
+  }
+
+  /* VIDEO */
+  .video-area {
+    background: #0a0a0a;
+    display: flex; align-items: center; justify-content: center;
+    position: relative; overflow: hidden;
+  }
+
+  .video-canvas {
+    width: 100%; height: 100%;
+    background: linear-gradient(135deg, #1a1a1a, #0e0e0e, #1a1a1a);
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .v-ph { text-align: center; opacity: 0.25; }
+  .v-ph-icon { font-size: 52px; margin-bottom: 8px; }
+  .v-ph-text { font-size: 14px; color: var(--text-tertiary); letter-spacing: 3px; text-transform: uppercase; }
+
+  .v-overlay {
+    position: absolute; padding: 5px 12px;
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+    border-radius: 8px; font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .v-overlay.tl { top: 16px; left: 16px; color: var(--danger); display: flex; align-items: center; gap: 5px; font-weight: 600; }
+  .v-overlay.tr { top: 16px; right: 16px; color: var(--accent); border: 1px solid var(--accent-dim); }
+  .v-overlay.bl { bottom: 16px; left: 16px; color: var(--text-secondary); }
+
+  /* ===== RIGHT PANEL (Analysis + Chat tabs) ===== */
+  .right-panel {
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border-subtle);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  .rp-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .rp-tab {
+    flex: 1;
+    padding: 10px 0;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .rp-tab:hover { color: var(--text-secondary); }
+
+  .rp-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  .rp-tab-icon { margin-right: 5px; }
+
+  /* ===== TAB 1: Analysis ===== */
+  .tab-analysis {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .tab-chat { display: none; } /* hidden by default in static mockup */
+
+  .an-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px;
+  }
+
+  .an-content::-webkit-scrollbar { width: 3px; }
+  .an-content::-webkit-scrollbar-track { background: transparent; }
+  .an-content::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .an-window-label {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  .an-window-num {
+    font-size: 20px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .an-window-tag {
+    font-size: 9px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--bg-base); background: var(--accent);
+    padding: 2px 7px; border-radius: 4px;
+  }
+
+  .an-time {
+    font-size: 11px; color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 14px;
+  }
+
+  .an-phase {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px;
+    background: var(--bg-card); border-radius: 100px;
+    font-size: 11px; color: var(--accent);
+    margin-bottom: 16px;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .an-phase-dot {
+    width: 5px; height: 5px; border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .an-full-text {
+    font-size: 13.5px; line-height: 1.85;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .an-divider {
+    height: 1px; background: var(--border-subtle);
+    margin: 16px 0;
+  }
+
+  .an-meta {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+
+  .an-meta-row {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+  }
+
+  .an-meta-label { color: var(--text-tertiary); }
+  .an-meta-value { color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; }
+
+  /* Analysis actions */
+  .an-actions {
+    padding: 12px 18px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex; gap: 6px;
+  }
+
+  .an-btn {
+    flex: 1; padding: 7px 0;
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px; cursor: pointer;
+    text-align: center; transition: all 0.15s;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .an-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+  .an-btn.primary {
+    background: var(--accent); border-color: var(--accent);
+    color: var(--bg-base); font-weight: 500;
+  }
+
+  .an-btn.primary:hover { background: var(--accent-light); }
+
+  /* ===== TAB 2: Chat (shown below as separate section) ===== */
+  .tab-chat-demo {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .chat-messages::-webkit-scrollbar { width: 3px; }
+  .chat-messages::-webkit-scrollbar-track { background: transparent; }
+  .chat-messages::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .chat-msg {
+    max-width: 85%;
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .chat-msg.user {
+    align-self: flex-end;
+    background: var(--accent-dim);
+    border: 1px solid rgba(240,160,48,0.2);
+    color: var(--text-primary);
+    border-bottom-right-radius: 4px;
+  }
+
+  .chat-msg.assistant {
+    align-self: flex-start;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border-bottom-left-radius: 4px;
+  }
+
+  .chat-msg .msg-time {
+    font-size: 9px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .chat-msg .msg-context {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 6px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    border-left: 2px solid var(--accent);
+  }
+
+  /* Similarity result in chat */
+  .chat-similar {
+    margin-top: 8px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .chat-similar-item {
+    padding: 4px 8px;
+    background: var(--bg-elevated);
+    border-radius: 6px;
+    font-size: 10px;
+    color: var(--accent);
+    cursor: pointer;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .chat-similar-item:hover {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .chat-similar-item .sim-score {
+    color: var(--text-tertiary);
+    margin-left: 4px;
+  }
+
+  /* Chat input */
+  .chat-input-bar {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chat-input {
+    flex: 1;
+    padding: 8px 14px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: 12px;
+    outline: none;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .chat-input:focus { border-color: var(--accent); }
+  .chat-input::placeholder { color: var(--text-tertiary); }
+
+  .chat-voice-btn {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+
+  .chat-voice-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .chat-voice-btn.recording {
+    background: rgba(231,76,60,0.15);
+    border-color: var(--danger);
+    color: var(--danger);
+    animation: voice-pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes voice-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(231,76,60,0.2); }
+    50% { box-shadow: 0 0 0 6px rgba(231,76,60,0); }
+  }
+
+  .chat-send-btn {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    color: var(--bg-base);
+    cursor: pointer;
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .chat-send-btn:hover { background: var(--accent-light); }
+
+  /* ===== CONTROL STRIP ===== */
+  .ctrl-strip {
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-subtle);
+    padding: 10px 20px 12px;
+  }
+
+  .ctrl-progress {
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .ctrl-progress:hover { height: 6px; }
+
+  .ctrl-fill {
+    height: 100%; width: 35%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light));
+    border-radius: 2px; position: relative;
+  }
+
+  .ctrl-head {
+    width: 12px; height: 12px;
+    border-radius: 50%; background: var(--accent-light);
+    position: absolute; right: -6px; top: 50%;
+    transform: translateY(-50%);
+    box-shadow: 0 0 10px var(--accent-glow);
+  }
+
+  .ctrl-segments {
+    position: absolute; inset: 0; display: flex;
+  }
+
+  .ctrl-seg {
+    flex: 1;
+    border-right: 1px solid var(--bg-primary);
+  }
+
+  .ctrl-seg.analyzed { background: var(--accent-dim); }
+  .ctrl-seg.current { background: rgba(240,160,48,0.25); }
+
+  .ctrl-row {
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .cb {
+    width: 32px; height: 32px;
+    border-radius: 50%; background: transparent;
+    border: none; color: var(--text-secondary);
+    cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .cb:hover { color: var(--text-primary); }
+
+  .cb.play {
+    width: 40px; height: 40px;
+    background: var(--accent);
+    color: var(--bg-base); font-size: 16px;
+  }
+
+  .cb.play:hover { background: var(--accent-light); }
+
+  .ctrl-time {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: 4px;
+  }
+
+  .ctrl-spacer { flex: 1; }
+
+  .svc-row { display: flex; gap: 4px; }
+
+  .svc-tag {
+    padding: 3px 8px; border-radius: 5px;
+    background: var(--bg-card);
+    font-size: 10px; font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    display: flex; align-items: center; gap: 4px;
+  }
+
+  .svc-d { width: 4px; height: 4px; border-radius: 50%; }
+  .svc-d.on { background: var(--success); }
+  .svc-d.off { background: var(--danger); }
+
+  /* ===== BOTTOM: Horizontal Scroll ===== */
+  .bottom-panel {
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-subtle);
+    display: flex; flex-direction: column;
+  }
+
+  .bp-header {
+    padding: 8px 20px 0;
+    display: flex; align-items: center;
+    justify-content: space-between;
+  }
+
+  .bp-tabs { display: flex; gap: 2px; }
+
+  .bp-tab {
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 11px; color: var(--text-tertiary);
+    cursor: pointer; border: none;
+    background: transparent; font-family: 'Inter', sans-serif;
+  }
+
+  .bp-tab.active { background: var(--bg-card); color: var(--text-primary); }
+
+  .bp-right { display: flex; align-items: center; gap: 8px; }
+
+  .bp-overview {
+    padding: 4px 12px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px; cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .bp-overview:hover { border-color: var(--accent); color: var(--accent); }
+
+  .card-scroll {
+    flex: 1;
+    display: flex; gap: 8px;
+    padding: 8px 20px 12px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .card-scroll::-webkit-scrollbar { height: 3px; }
+  .card-scroll::-webkit-scrollbar-track { background: transparent; }
+  .card-scroll::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .scroll-card {
+    min-width: 200px; max-width: 200px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-subtle);
+    padding: 10px; cursor: pointer;
+    scroll-snap-align: start;
+    transition: all 0.2s;
+    display: flex; flex-direction: column;
+    flex-shrink: 0;
+  }
+
+  .scroll-card:hover {
+    border-color: var(--border);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+  }
+
+  .scroll-card.selected {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .sc-thumb {
+    width: 100%; height: 64px;
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    margin-bottom: 6px;
+    position: relative;
+  }
+
+  .sc-thumb-time {
+    position: absolute; bottom: 3px; left: 3px;
+    padding: 1px 5px; background: rgba(0,0,0,0.7);
+    border-radius: 3px; font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+  }
+
+  .sc-top {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    margin-bottom: 3px;
+  }
+
+  .sc-win {
+    font-size: 11px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .sc-phase {
+    font-size: 9px; padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    color: var(--text-tertiary);
+  }
+
+  .sc-text {
+    font-size: 10px; line-height: 1.4;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden; flex: 1;
+  }
+
+  /* DESIGN LABEL */
+  .design-label {
+    position: fixed; top: 52px; right: 12px;
+    padding: 6px 14px; background: var(--accent);
+    color: var(--bg-base); font-size: 11px; font-weight: 700;
+    border-radius: var(--radius-sm); z-index: 100;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- LEFT NAV RAIL -->
+  <div class="nav-rail">
+    <div class="nav-logo">SR</div>
+
+    <button class="nav-btn active">
+      &#x1F4F9;
+      <span class="nav-tooltip">Analysis</span>
+    </button>
+    <button class="nav-btn">
+      &#x1F4AC;
+      <span class="nav-tooltip">Chat</span>
+    </button>
+    <button class="nav-btn">
+      &#x2B1A;
+      <span class="nav-tooltip">Grid Overview</span>
+    </button>
+
+    <div class="nav-divider"></div>
+
+    <!-- Analyze Button -->
+    <button class="nav-btn analyze running">
+      &#x25B6;
+      <span class="nav-tooltip">Start / Stop Analysis</span>
+    </button>
+
+    <div class="nav-spacer"></div>
+
+    <button class="nav-btn">
+      &#x2699;
+      <span class="nav-tooltip">Settings</span>
+    </button>
+    <div class="nav-avatar">JJ</div>
+  </div>
+
+  <!-- MAIN AREA -->
+  <div class="main-area">
+
+    <!-- HEADER -->
+    <div class="header">
+      <span class="h-title">Surg-R1 手术助手</span>
+      <div class="h-sep"></div>
+      <div class="h-session">
+        <span class="h-session-label">Session</span>
+        <span class="h-session-id">a3f8c2d1</span>
+      </div>
+      <span class="h-video-name">Laparoscopic Cholecystectomy - Patient #0412</span>
+      <div class="h-spacer"></div>
+      <div class="h-badge live"><div class="live-dot"></div> LIVE</div>
+      <button class="h-btn">&#x2699;</button>
+    </div>
+
+    <!-- VIDEO + RIGHT PANEL -->
+    <div class="content-row">
+
+      <!-- VIDEO -->
+      <div class="video-area">
+        <div class="video-canvas">
+          <div class="v-ph">
+            <div class="v-ph-icon">&#x25B6;</div>
+            <div class="v-ph-text">Surgical Video Feed</div>
+          </div>
+        </div>
+        <div class="v-overlay tl"><div class="live-dot"></div> LIVE</div>
+        <div class="v-overlay tr">SAM3 Overlay</div>
+        <div class="v-overlay bl">Window #7 &middot; 1920x1080</div>
+      </div>
+
+      <!-- RIGHT PANEL: Two Tabs -->
+      <div class="right-panel">
+        <!-- Tab bar -->
+        <div class="rp-tabs">
+          <button class="rp-tab active">
+            <span class="rp-tab-icon">&#x1F4CB;</span> Analysis
+          </button>
+          <button class="rp-tab">
+            <span class="rp-tab-icon">&#x1F4AC;</span> Chat
+          </button>
+        </div>
+
+        <!-- Tab 1: Analysis (shown) -->
+        <div class="tab-analysis">
+          <div class="an-content">
+            <div class="an-window-label">
+              <span class="an-window-num">Window #7</span>
+              <span class="an-window-tag">Current</span>
+            </div>
+            <div class="an-time">&#x23F1; 00:35:00 — 00:40:00</div>
+            <div class="an-phase">
+              <span class="an-phase-dot"></span> Phase: Reconstruction
+            </div>
+            <div class="an-full-text">Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis. Two graspers are visible maintaining tissue tension while the needle driver completes an interrupted stitch. Hemostasis appears adequate with minimal bleeding at the suture line.
+
+The anastomosis is being constructed with 4-0 PDS interrupted sutures. Approximately 3 of 8 planned stitches have been placed. The bile duct appears to have good color and perfusion. No signs of ischemia at the cut edges.
+
+Camera angle provides a clear view of the operative field. Irrigation has been performed intermittently to maintain visualization. The assistant is providing appropriate countertraction on the proximal duct.
+
+Overall surgical technique is methodical with appropriate tissue handling. No complications observed at this stage of the procedure.</div>
+
+            <div class="an-divider"></div>
+
+            <div class="an-meta">
+              <div class="an-meta-row">
+                <span class="an-meta-label">Duration</span>
+                <span class="an-meta-value">5.0s</span>
+              </div>
+              <div class="an-meta-row">
+                <span class="an-meta-label">Frames Analyzed</span>
+                <span class="an-meta-value">3 / 5</span>
+              </div>
+              <div class="an-meta-row">
+                <span class="an-meta-label">Model</span>
+                <span class="an-meta-value">SurgR1 + GLM-4</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="an-actions">
+            <button class="an-btn primary">&#128264; Read</button>
+            <button class="an-btn">&#128203; Copy</button>
+            <button class="an-btn">&#127917; SAM3</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- CONTROL STRIP -->
+    <div class="ctrl-strip">
+      <div class="ctrl-progress">
+        <div class="ctrl-segments">
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg analyzed"></div>
+          <div class="ctrl-seg current"></div>
+        </div>
+        <div class="ctrl-fill"><div class="ctrl-head"></div></div>
+      </div>
+      <div class="ctrl-row">
+        <button class="cb">&#x23EE;</button>
+        <button class="cb">&#x23EA;</button>
+        <button class="cb play">&#x25B6;</button>
+        <button class="cb">&#x23E9;</button>
+        <button class="cb">&#x23ED;</button>
+        <span class="ctrl-time">00:35:12 / 01:42:30</span>
+        <div class="ctrl-spacer"></div>
+        <div class="svc-row">
+          <div class="svc-tag"><span class="svc-d on"></span>SurgR1</div>
+          <div class="svc-tag"><span class="svc-d on"></span>GLM</div>
+          <div class="svc-tag"><span class="svc-d on"></span>SAM3</div>
+          <div class="svc-tag"><span class="svc-d on"></span>TTS</div>
+          <div class="svc-tag"><span class="svc-d off"></span>ASR</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOTTOM CARDS -->
+    <div class="bottom-panel">
+      <div class="bp-header">
+        <div class="bp-tabs">
+          <button class="bp-tab active">Timeline</button>
+        </div>
+        <div class="bp-right">
+          <button class="bp-overview">&#x2B1A; Grid Overview</button>
+        </div>
+      </div>
+      <div class="card-scroll">
+        <div class="scroll-card selected">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:35</div></div>
+          <div class="sc-top"><span class="sc-win">#7</span><span class="sc-phase">Reconstruction</span></div>
+          <div class="sc-text">Surgeon performing laparoscopic suturing of hepatic duct anastomosis.</div>
+        </div>
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:30</div></div>
+          <div class="sc-top"><span class="sc-win">#6</span><span class="sc-phase">Dissection</span></div>
+          <div class="sc-text">Clipping of cystic artery completed. Transition to hepatocystic triangle.</div>
+        </div>
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:25</div></div>
+          <div class="sc-top"><span class="sc-win">#5</span><span class="sc-phase">Exposure</span></div>
+          <div class="sc-text">Gallbladder fundus exposure. Retraction with atraumatic grasper.</div>
+        </div>
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:20</div></div>
+          <div class="sc-top"><span class="sc-win">#4</span><span class="sc-phase">Access</span></div>
+          <div class="sc-text">Trocar placement. Four ports in standard config.</div>
+        </div>
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:15</div></div>
+          <div class="sc-top"><span class="sc-win">#3</span><span class="sc-phase">Adhesiolysis</span></div>
+          <div class="sc-text">Adhesiolysis near gallbladder fossa with electrocautery.</div>
+        </div>
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:10</div></div>
+          <div class="sc-top"><span class="sc-win">#2</span><span class="sc-phase">Survey</span></div>
+          <div class="sc-text">Abdominal cavity survey. Gallbladder distended.</div>
+        </div>
+        <div class="scroll-card">
+          <div class="sc-thumb"><div class="sc-thumb-time">00:05</div></div>
+          <div class="sc-top"><span class="sc-win">#1</span><span class="sc-phase">Preparation</span></div>
+          <div class="sc-text">Patient positioning and equipment check.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- =====================================================
+     CHAT TAB PREVIEW (separate section below to show both tabs)
+     ===================================================== -->
+<div style="position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:200; display:flex; align-items:center; justify-content:center;">
+  <div style="width: 420px; height: 600px; background: var(--bg-primary); border-radius: 16px; border: 1px solid var(--border); overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.6);">
+
+    <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+      <span style="color: var(--accent);">&#x1F4AC;</span>
+      Chat Tab Preview
+      <span style="flex:1"></span>
+      <span style="font-size:10px; color: var(--text-tertiary); font-family: 'JetBrains Mono', monospace;">gemini-embedding-2</span>
+    </div>
+
+    <!-- Chat messages -->
+    <div class="chat-messages" style="flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px;">
+
+      <div class="chat-msg assistant">
+        <div>Welcome! I can answer questions about the surgical video. I also support <b style="color:var(--accent)">similarity search</b> — describe a scene or paste text to find matching windows.</div>
+        <div class="msg-time">14:30:22</div>
+      </div>
+
+      <div class="chat-msg user">
+        <div>Which windows show cystic artery clipping?</div>
+        <div class="msg-time">14:31:05</div>
+      </div>
+
+      <div class="chat-msg assistant">
+        <div>Based on embedding similarity search (gemini-embedding-2), I found these matching windows:</div>
+        <div class="chat-similar">
+          <div class="chat-similar-item">W#6 — Clipping <span class="sim-score">0.94</span></div>
+          <div class="chat-similar-item">W#5 — Exposure <span class="sim-score">0.72</span></div>
+        </div>
+        <div style="margin-top:8px;">Window #6 (00:30-00:35) shows the cystic artery clipping. The clip applier is used to place two clips on the proximal side and one distally before division.</div>
+        <div class="msg-context">&#x1F4CB; Context: Window #6 analysis</div>
+        <div class="msg-time">14:31:08</div>
+      </div>
+
+      <div class="chat-msg user">
+        <div>&#x1F3A4; <i style="color:var(--text-tertiary)">[Voice input]</i> Is there any sign of bile duct injury?</div>
+        <div class="msg-time">14:32:15</div>
+      </div>
+
+      <div class="chat-msg assistant">
+        <div>Searching across all analyzed windows for bile duct injury indicators...</div>
+        <div class="chat-similar">
+          <div class="chat-similar-item">W#7 — Suturing <span class="sim-score">0.88</span></div>
+          <div class="chat-similar-item">W#6 — Clipping <span class="sim-score">0.65</span></div>
+          <div class="chat-similar-item">W#4 — Dissection <span class="sim-score">0.51</span></div>
+        </div>
+        <div style="margin-top:8px;">No evidence of bile duct injury observed across the analyzed windows. In W#7, the duct shows good color, adequate perfusion, and no signs of ischemia at the cut edges.</div>
+        <div class="msg-time">14:32:18</div>
+      </div>
+
+      <div class="chat-msg user">
+        <div>Find windows similar to "trocar placement and port setup"</div>
+        <div class="msg-time">14:33:40</div>
+      </div>
+
+      <div class="chat-msg assistant">
+        <div>Text similarity search results:</div>
+        <div class="chat-similar">
+          <div class="chat-similar-item">W#4 — Access <span class="sim-score">0.96</span></div>
+          <div class="chat-similar-item">W#1 — Preparation <span class="sim-score">0.71</span></div>
+        </div>
+        <div style="margin-top:8px;">W#4 is the closest match — trocar placement with 4 ports in standard configuration and pneumoperitoneum at 12mmHg. Click a window tag above to jump to it.</div>
+        <div class="msg-time">14:33:42</div>
+      </div>
+
+    </div>
+
+    <!-- Chat input -->
+    <div class="chat-input-bar">
+      <input class="chat-input" placeholder="Ask about the video or search similar windows..." />
+      <button class="chat-voice-btn" title="Voice input">&#x1F3A4;</button>
+      <button class="chat-send-btn">&#x27A4;</button>
+    </div>
+
+  </div>
+</div>
+
+<div class="design-label">DESIGN E3 — Main View + Chat Tab Preview</div>
+
+</body>
+</html>

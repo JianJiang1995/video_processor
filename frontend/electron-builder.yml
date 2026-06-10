@@ -1,0 +1,35 @@
+appId: com.surgr1.app
+productName: Surg-R1手术助手
+copyright: Copyright © 2025 Surg-R1
+
+directories:
+  output: dist-electron
+  buildResources: electron
+
+files:
+  - dist/**/*
+  - electron/**/*
+
+# 纯前端模式：不打包后端服务
+# 后端和 SurgR1 在 GPU 服务器上运行
+# Electron 通过 HTTP 连接远程后端
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Medical
+  icon: electron/icon.png
+  maintainer: Surg-R1 Team
+  synopsis: Surg-R1 Surgery Assistant
+  description: |
+    AI-powered surgery assistant for medical video analysis.
+    Connects to remote backend server with SurgR1 service.
+
+asar: true
+asarUnpack:
+  - "**/*.node"
+
+compression: normal
+removePackageScripts: true

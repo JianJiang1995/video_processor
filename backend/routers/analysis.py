@@ -14,6 +14,7 @@ from PIL import Image
 from io import BytesIO
 import base64
 import httpx
+from urllib.parse import urlparse
 
 from ..database import (
     get_db, get_video_session, get_video_session_by_id,
@@ -4046,6 +4047,29 @@ async def surgr1_status():
                 "cached": True,
                 "warning": f"health check delayed; using last success {int(now - last_success)}s ago",
             }
+        try:
+            parsed = urlparse(surgr1_client.api_url)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=1.0,
+            )
+            writer.close()
+            await writer.wait_closed()
+            surgr1_status_cache.update({
+                "available": True,
+                "last_success": now,
+                "last_checked": now,
+            })
+            return {
+                "available": True,
+                "api_url": surgr1_client.api_url,
+                "cached": True,
+                "warning": "health endpoint delayed; API port is reachable",
+            }
+        except Exception:
+            pass
         return {
             "available": False,
             "api_url": surgr1_client.api_url,

@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design E3 - Grid Overview Mode</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-base: #161616;
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252525;
+    --bg-card: #2a2a2a;
+    --bg-card-hover: #333;
+    --bg-elevated: #3a3a3a;
+    --border: #383838;
+    --border-subtle: #2e2e2e;
+    --accent: #f0a030;
+    --accent-light: #ffc870;
+    --accent-dim: rgba(240, 160, 48, 0.10);
+    --accent-glow: rgba(240, 160, 48, 0.15);
+    --success: #4ecdc4;
+    --warning: #f0a030;
+    --danger: #e74c3c;
+    --info: #74b9ff;
+    --similar: #a29bfe;
+    --similar-dim: rgba(162, 155, 254, 0.10);
+    --text-primary: #e8e6e3;
+    --text-secondary: #a8a5a0;
+    --text-tertiary: #6b6862;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-xs: 5px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .app {
+    height: 100vh;
+    display: grid;
+    grid-template-columns: 56px 1fr;
+  }
+
+  /* ===== LEFT NAV ===== */
+  .nav-rail {
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border-subtle);
+    display: flex; flex-direction: column;
+    align-items: center;
+    padding: 12px 0; gap: 4px;
+  }
+
+  .nav-logo {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), #e67e22);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 14px; color: var(--bg-base);
+    margin-bottom: 12px; cursor: pointer;
+  }
+
+  .nav-btn {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    background: transparent; border: none;
+    color: var(--text-tertiary);
+    cursor: pointer; font-size: 17px;
+    display: flex; align-items: center; justify-content: center;
+    position: relative; transition: all 0.15s;
+  }
+
+  .nav-btn:hover { background: var(--bg-secondary); color: var(--text-secondary); }
+
+  .nav-btn.active {
+    background: var(--accent-dim); color: var(--accent);
+  }
+
+  .nav-btn.active::after {
+    content: ''; position: absolute; left: -4px;
+    width: 3px; height: 18px;
+    background: var(--accent); border-radius: 0 3px 3px 0;
+  }
+
+  .nav-tooltip {
+    display: none; position: absolute; left: 52px;
+    padding: 4px 10px; background: var(--bg-elevated);
+    border-radius: 6px; font-size: 11px; color: var(--text-primary);
+    white-space: nowrap; z-index: 100; pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+
+  .nav-btn:hover .nav-tooltip { display: block; }
+
+  .nav-btn.analyze {
+    background: var(--accent); color: var(--bg-base); font-size: 15px;
+    margin-top: 4px;
+    box-shadow: 0 2px 8px var(--accent-glow);
+  }
+
+  .nav-btn.analyze:hover { background: var(--accent-light); }
+
+  .nav-divider { width: 24px; height: 1px; background: var(--border-subtle); margin: 6px 0; }
+  .nav-spacer { flex: 1; }
+
+  .nav-avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--bg-elevated); border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; color: var(--text-tertiary); cursor: pointer;
+  }
+
+  /* ===== MAIN ===== */
+  .main-area {
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Header */
+  .header {
+    height: 44px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center;
+    padding: 0 20px; gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .h-back {
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px; cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .h-back:hover { border-color: var(--accent); color: var(--accent); }
+
+  .h-title { font-size: 14px; font-weight: 600; }
+  .h-sep { width: 1px; height: 16px; background: var(--border); }
+
+  .h-session {
+    font-size: 10px; padding: 3px 10px;
+    border-radius: 100px; background: var(--bg-card);
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .h-count {
+    font-size: 11px; color: var(--text-tertiary);
+  }
+
+  .h-count b { color: var(--accent); }
+
+  .h-spacer { flex: 1; }
+
+  /* ===== TOOLBAR ===== */
+  .toolbar {
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 10px 20px;
+    display: flex; align-items: center; gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .tb-search {
+    flex: 1;
+    max-width: 400px;
+    padding: 7px 14px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: 12px; outline: none;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .tb-search:focus { border-color: var(--accent); }
+  .tb-search::placeholder { color: var(--text-tertiary); }
+
+  .tb-sim-btn {
+    padding: 6px 14px;
+    border-radius: 100px;
+    background: var(--similar-dim);
+    border: 1px solid rgba(162,155,254,0.2);
+    color: var(--similar);
+    font-size: 11px; cursor: pointer;
+    display: flex; align-items: center; gap: 5px;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.15s;
+  }
+
+  .tb-sim-btn:hover {
+    background: rgba(162,155,254,0.18);
+    border-color: var(--similar);
+  }
+
+  .tb-sim-btn.active {
+    background: var(--similar);
+    color: var(--bg-base);
+    border-color: var(--similar);
+    font-weight: 600;
+  }
+
+  .tb-sep { width: 1px; height: 20px; background: var(--border); }
+
+  .tb-filter {
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-tertiary);
+    font-size: 11px; cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .tb-filter:hover { border-color: var(--border); color: var(--text-secondary); }
+  .tb-filter.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+  .tb-sort {
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-tertiary);
+    font-size: 11px; cursor: pointer;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .tb-sort:hover { border-color: var(--border); color: var(--text-secondary); }
+
+  .tb-model-tag {
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--bg-card);
+    font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+  }
+
+  /* ===== GRID + RIGHT PANEL ===== */
+  .content {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    overflow: hidden;
+  }
+
+  /* ===== GRID ===== */
+  .grid-area {
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+
+  .grid-area::-webkit-scrollbar { width: 4px; }
+  .grid-area::-webkit-scrollbar-track { background: transparent; }
+  .grid-area::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  .grid-card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-subtle);
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .grid-card:hover {
+    border-color: var(--border);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  }
+
+  .grid-card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+
+  .grid-card.similar-match {
+    border-color: var(--similar);
+    box-shadow: 0 0 0 1px var(--similar);
+  }
+
+  /* Similarity score badge */
+  .sim-badge {
+    position: absolute;
+    top: 8px; right: 8px;
+    padding: 2px 7px;
+    background: var(--similar);
+    color: var(--bg-base);
+    font-size: 10px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    border-radius: 4px;
+    z-index: 2;
+  }
+
+  .gc-thumb {
+    width: 100%;
+    height: 120px;
+    background: var(--bg-elevated);
+    position: relative;
+  }
+
+  .gc-thumb-time {
+    position: absolute; bottom: 6px; left: 6px;
+    padding: 2px 6px; background: rgba(0,0,0,0.75);
+    border-radius: 4px; font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+  }
+
+  .gc-thumb-dur {
+    position: absolute; bottom: 6px; right: 6px;
+    padding: 2px 6px; background: rgba(0,0,0,0.75);
+    border-radius: 4px; font-size: 9px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+  }
+
+  .gc-body {
+    padding: 10px 12px 12px;
+  }
+
+  .gc-top {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .gc-win {
+    font-size: 12px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .gc-phase {
+    font-size: 9px; padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    color: var(--text-tertiary);
+  }
+
+  .gc-text {
+    font-size: 11px; line-height: 1.5;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* ===== RIGHT PANEL (in overview) ===== */
+  .right-panel {
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border-subtle);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  .rp-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .rp-tab {
+    flex: 1; padding: 10px 0;
+    text-align: center; font-size: 12px; font-weight: 500;
+    color: var(--text-tertiary); cursor: pointer;
+    border: none; background: transparent;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .rp-tab:hover { color: var(--text-secondary); }
+
+  .rp-tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  /* Analysis detail in right panel */
+  .rp-detail {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px;
+  }
+
+  .rp-detail::-webkit-scrollbar { width: 3px; }
+  .rp-detail::-webkit-scrollbar-track { background: transparent; }
+  .rp-detail::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .rp-window-label {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  .rp-window-num {
+    font-size: 20px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .rp-window-tag {
+    font-size: 9px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--bg-base); background: var(--accent);
+    padding: 2px 7px; border-radius: 4px;
+  }
+
+  .rp-time {
+    font-size: 11px; color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 14px;
+  }
+
+  .rp-phase {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 10px;
+    background: var(--bg-card); border-radius: 100px;
+    font-size: 11px; color: var(--accent);
+    margin-bottom: 16px;
+    border: 1px solid var(--border-subtle);
+  }
+
+  .rp-phase-dot {
+    width: 5px; height: 5px; border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .rp-full-text {
+    font-size: 13px; line-height: 1.8;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+  }
+
+  .rp-divider { height: 1px; background: var(--border-subtle); margin: 16px 0; }
+
+  .rp-similar-section {
+    margin-top: 0;
+  }
+
+  .rp-similar-title {
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--similar);
+    margin-bottom: 8px;
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .rp-similar-list {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+
+  .rp-sim-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg-card);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    border: 1px solid var(--border-subtle);
+    transition: all 0.15s;
+  }
+
+  .rp-sim-item:hover {
+    border-color: var(--similar);
+    background: var(--similar-dim);
+  }
+
+  .rp-sim-thumb {
+    width: 48px; height: 28px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .rp-sim-info { flex: 1; min-width: 0; }
+
+  .rp-sim-top {
+    display: flex; align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2px;
+  }
+
+  .rp-sim-win {
+    font-size: 10px; font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--similar);
+  }
+
+  .rp-sim-score {
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    background: var(--bg-elevated);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .rp-sim-text {
+    font-size: 10px; line-height: 1.3;
+    color: var(--text-tertiary);
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Actions */
+  .rp-actions {
+    padding: 12px 18px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex; gap: 6px;
+  }
+
+  .rp-btn {
+    flex: 1; padding: 7px 0;
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px; cursor: pointer;
+    text-align: center;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .rp-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+  .rp-btn.primary {
+    background: var(--accent); border-color: var(--accent);
+    color: var(--bg-base); font-weight: 500;
+  }
+
+  .rp-btn.primary:hover { background: var(--accent-light); }
+
+  /* DESIGN LABEL */
+  .design-label {
+    position: fixed; top: 52px; right: 12px;
+    padding: 6px 14px; background: var(--accent);
+    color: var(--bg-base); font-size: 11px; font-weight: 700;
+    border-radius: var(--radius-sm); z-index: 100;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- LEFT NAV -->
+  <div class="nav-rail">
+    <div class="nav-logo">SR</div>
+    <button class="nav-btn">
+      &#x1F4F9;
+      <span class="nav-tooltip">Analysis</span>
+    </button>
+    <button class="nav-btn">
+      &#x1F4AC;
+      <span class="nav-tooltip">Chat</span>
+    </button>
+    <button class="nav-btn active">
+      &#x2B1A;
+      <span class="nav-tooltip">Grid Overview</span>
+    </button>
+    <div class="nav-divider"></div>
+    <button class="nav-btn analyze">
+      &#x25B6;
+      <span class="nav-tooltip">Start Analysis</span>
+    </button>
+    <div class="nav-spacer"></div>
+    <button class="nav-btn">&#x2699;<span class="nav-tooltip">Settings</span></button>
+    <div class="nav-avatar">JJ</div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main-area">
+
+    <!-- HEADER -->
+    <div class="header">
+      <button class="h-back">&#x2190; Back to Video</button>
+      <div class="h-sep"></div>
+      <span class="h-title">Grid Overview</span>
+      <div class="h-session">Session a3f8c2d1</div>
+      <div class="h-spacer"></div>
+      <span class="h-count"><b>12</b> windows analyzed</span>
+    </div>
+
+    <!-- TOOLBAR -->
+    <div class="toolbar">
+      <input class="tb-search" placeholder="&#x1F50D; Search analysis content..." />
+      <button class="tb-sim-btn active">
+        &#x1F9E0; Similarity Search
+      </button>
+      <span class="tb-model-tag">gemini-embedding-2</span>
+      <div class="tb-sep"></div>
+      <button class="tb-filter">Phase: All</button>
+      <button class="tb-sort">Sort: Time &#x2193;</button>
+    </div>
+
+    <!-- GRID + RIGHT PANEL -->
+    <div class="content">
+
+      <!-- GRID -->
+      <div class="grid-area">
+        <div class="grid">
+
+          <!-- Card with similarity badge -->
+          <div class="grid-card similar-match">
+            <div class="sim-badge">0.96</div>
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:20</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#4</span><span class="gc-phase">Access</span></div>
+              <div class="gc-text">Trocar placement completed. Four ports established in standard configuration. Pneumoperitoneum at 12mmHg.</div>
+            </div>
+          </div>
+
+          <div class="grid-card similar-match">
+            <div class="sim-badge">0.82</div>
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:05</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#1</span><span class="gc-phase">Preparation</span></div>
+              <div class="gc-text">Patient positioning confirmed. Draping and equipment check completed. Anesthesia stable.</div>
+            </div>
+          </div>
+
+          <div class="grid-card similar-match">
+            <div class="sim-badge">0.71</div>
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:10</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#2</span><span class="gc-phase">Survey</span></div>
+              <div class="gc-text">Initial survey of abdominal cavity. Gallbladder distended and mildly inflamed.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:15</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#3</span><span class="gc-phase">Adhesiolysis</span></div>
+              <div class="gc-text">Adhesiolysis of peritoneal adhesions near the gallbladder fossa. Blunt dissection with electrocautery.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:25</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#5</span><span class="gc-phase">Exposure</span></div>
+              <div class="gc-text">Initial exposure of the gallbladder fundus. Retraction achieved with atraumatic grasper.</div>
+            </div>
+          </div>
+
+          <div class="grid-card selected">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:30</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#6</span><span class="gc-phase">Dissection</span></div>
+              <div class="gc-text">Clipping of cystic artery completed. Surgeon transitions to dissection of hepatocystic triangle.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:35</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#7</span><span class="gc-phase">Reconstruction</span></div>
+              <div class="gc-text">Laparoscopic suturing of hepatic duct anastomosis. Two graspers maintain tissue tension.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:40</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#8</span><span class="gc-phase">Reconstruction</span></div>
+              <div class="gc-text">Continued suturing with inspection of suture line integrity. Additional hemostatic measures applied.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:45</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#9</span><span class="gc-phase">Hemostasis</span></div>
+              <div class="gc-text">Final hemostasis check. Irrigation and suction of operative field. No active bleeding identified.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:50</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#10</span><span class="gc-phase">Extraction</span></div>
+              <div class="gc-text">Gallbladder placed in specimen bag. Extraction via umbilical port.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">00:55</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#11</span><span class="gc-phase">Closure</span></div>
+              <div class="gc-text">Port sites closed. Fascial closure at umbilical site with 0 Vicryl.</div>
+            </div>
+          </div>
+
+          <div class="grid-card">
+            <div class="gc-thumb">
+              <div class="gc-thumb-time">01:00</div>
+              <div class="gc-thumb-dur">5s</div>
+            </div>
+            <div class="gc-body">
+              <div class="gc-top"><span class="gc-win">#12</span><span class="gc-phase">Closure</span></div>
+              <div class="gc-text">Skin closure with subcuticular sutures. Dressings applied. Instruments and sponge count correct.</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- RIGHT PANEL -->
+      <div class="right-panel">
+        <div class="rp-tabs">
+          <button class="rp-tab active">&#x1F4CB; Detail</button>
+          <button class="rp-tab">&#x1F4AC; Chat</button>
+        </div>
+
+        <div class="rp-detail">
+          <div class="rp-window-label">
+            <span class="rp-window-num">Window #6</span>
+            <span class="rp-window-tag">Selected</span>
+          </div>
+          <div class="rp-time">&#x23F1; 00:30:00 — 00:35:00</div>
+          <div class="rp-phase">
+            <span class="rp-phase-dot"></span> Phase: Dissection
+          </div>
+          <div class="rp-full-text">Clipping of the cystic artery completed successfully. The clip applier was used to place two clips on the proximal side and one clip distally before sharp division.
+
+Surgeon then transitions to careful dissection of the hepatocystic triangle. The critical view of safety (CVS) is being systematically achieved with clear visualization of two structures entering the gallbladder.
+
+Monopolar electrocautery is used judiciously for hemostasis during the dissection. The cystic plate is being cleanly separated from the liver bed.
+
+No evidence of aberrant anatomy or variant ductal structures. The common bile duct is clearly identified and preserved at a safe distance from the dissection plane.</div>
+
+          <div class="rp-divider"></div>
+
+          <!-- Similar windows section -->
+          <div class="rp-similar-section">
+            <div class="rp-similar-title">
+              &#x1F9E0; Similar Windows
+            </div>
+            <div class="rp-similar-list">
+              <div class="rp-sim-item">
+                <div class="rp-sim-thumb"></div>
+                <div class="rp-sim-info">
+                  <div class="rp-sim-top">
+                    <span class="rp-sim-win">W#5 — Exposure</span>
+                    <span class="rp-sim-score">0.78</span>
+                  </div>
+                  <div class="rp-sim-text">Gallbladder fundus exposure with retraction</div>
+                </div>
+              </div>
+              <div class="rp-sim-item">
+                <div class="rp-sim-thumb"></div>
+                <div class="rp-sim-info">
+                  <div class="rp-sim-top">
+                    <span class="rp-sim-win">W#7 — Reconstruction</span>
+                    <span class="rp-sim-score">0.65</span>
+                  </div>
+                  <div class="rp-sim-text">Suturing of hepatic duct anastomosis</div>
+                </div>
+              </div>
+              <div class="rp-sim-item">
+                <div class="rp-sim-thumb"></div>
+                <div class="rp-sim-info">
+                  <div class="rp-sim-top">
+                    <span class="rp-sim-win">W#3 — Adhesiolysis</span>
+                    <span class="rp-sim-score">0.52</span>
+                  </div>
+                  <div class="rp-sim-text">Adhesiolysis near gallbladder fossa</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rp-actions">
+          <button class="rp-btn primary">&#x25B6; Play</button>
+          <button class="rp-btn">&#128264; Read</button>
+          <button class="rp-btn">&#128203; Copy</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<div class="design-label">DESIGN E3 — Grid Overview + Similarity Search</div>
+
+</body>
+</html>

@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design D - Bento Dashboard (Indigo Medical)</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    /* Indigo Medical - 冷静专业的蓝紫色调 */
+    --bg-base: #0c0e1a;
+    --bg-primary: #111427;
+    --bg-card: #171b30;
+    --bg-card-hover: #1d2240;
+    --bg-elevated: #242a48;
+    --bg-input: #1a1f38;
+    --border: #252b4a;
+    --border-subtle: #1e2340;
+
+    --accent: #6c5ce7;
+    --accent-light: #a29bfe;
+    --accent-dim: rgba(108, 92, 231, 0.12);
+    --accent-glow: rgba(108, 92, 231, 0.2);
+
+    --success: #00cec9;
+    --warning: #fdcb6e;
+    --danger: #ff7675;
+    --info: #74b9ff;
+
+    --text-primary: #e8eaf6;
+    --text-secondary: #9fa8c7;
+    --text-tertiary: #5c6590;
+
+    --radius: 14px;
+    --radius-sm: 8px;
+    --radius-xs: 5px;
+    --gap: 10px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+    padding: var(--gap);
+  }
+
+  /* ===== BENTO GRID ===== */
+  .bento {
+    height: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr 340px;
+    grid-template-rows: 48px 1fr 1fr 72px;
+    gap: var(--gap);
+  }
+
+  .cell {
+    background: var(--bg-primary);
+    border-radius: var(--radius);
+    border: 1px solid var(--border-subtle);
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+
+  .cell:hover {
+    border-color: var(--border);
+  }
+
+  /* ===== ROW 1: HEADER (full width) ===== */
+  .cell-header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+    background: var(--bg-primary);
+  }
+
+  .logo-mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-light));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 14px;
+    color: white;
+  }
+
+  .header-title {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .header-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+  }
+
+  .header-session {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    padding: 4px 10px;
+    background: var(--bg-card);
+    border-radius: 6px;
+  }
+
+  .header-spacer { flex: 1; }
+
+  .header-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .status-pill .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  .dot.live { background: var(--danger); animation: pulse 1.5s infinite; }
+  .dot.on { background: var(--success); }
+  .dot.off { background: var(--danger); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .h-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .h-btn:hover { background: var(--bg-card); color: var(--text-secondary); }
+
+  /* ===== ROW 2-3, COL 1-2: VIDEO (large cell) ===== */
+  .cell-video {
+    grid-column: 1 / 3;
+    grid-row: 2 / 4;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+
+  .video-inner {
+    flex: 1;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .video-ph {
+    text-align: center;
+    opacity: 0.3;
+  }
+
+  .video-ph-icon { font-size: 56px; margin-bottom: 10px; }
+  .video-ph-text { font-size: 13px; color: var(--text-tertiary); letter-spacing: 2px; text-transform: uppercase; }
+
+  /* Video overlays */
+  .v-badge {
+    position: absolute;
+    padding: 5px 12px;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(8px);
+    border-radius: 100px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .v-badge.tl { top: 14px; left: 14px; color: var(--danger); font-weight: 600; display: flex; align-items: center; gap: 5px; }
+  .v-badge.tr { top: 14px; right: 14px; color: var(--accent-light); border: 1px solid rgba(108,92,231,0.3); }
+  .v-badge.bl { bottom: 14px; left: 14px; color: var(--text-secondary); }
+
+  .v-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+    animation: pulse 1.5s infinite;
+  }
+
+  /* Phase bar inside video cell */
+  .phase-bar {
+    padding: 8px 16px;
+    background: var(--bg-card);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .phase-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  .phase-track {
+    flex: 1;
+    display: flex;
+    gap: 3px;
+  }
+
+  .phase-seg {
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-elevated);
+  }
+
+  .phase-seg.done { background: var(--accent); opacity: 0.5; }
+  .phase-seg.now { background: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+
+  .phase-now-text {
+    font-size: 10px;
+    color: var(--accent-light);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  /* ===== ROW 2, COL 3: CURRENT ANALYSIS ===== */
+  .cell-current {
+    grid-column: 3;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    padding: 18px;
+  }
+
+  .cell-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-tertiary);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .cell-label .ring {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.5s infinite;
+  }
+
+  .current-window {
+    font-size: 20px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent-light);
+    margin-bottom: 4px;
+  }
+
+  .current-time {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 16px;
+  }
+
+  .current-text {
+    font-size: 13px;
+    line-height: 1.8;
+    color: var(--text-primary);
+    flex: 1;
+  }
+
+  .current-phase-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--accent-dim);
+    border-radius: 100px;
+    font-size: 11px;
+    color: var(--accent-light);
+    margin-top: 14px;
+    align-self: flex-start;
+  }
+
+  .current-phase-pill .pd {
+    width: 6px;
+    height: 6px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .current-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 14px;
+  }
+
+  .ca-btn {
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .ca-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent-light);
+    background: var(--accent-dim);
+  }
+
+  /* ===== ROW 3, COL 3: HISTORY ===== */
+  .cell-history {
+    grid-column: 3;
+    grid-row: 3;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .history-header {
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .history-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-tertiary);
+  }
+
+  .history-count {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--bg-card);
+    color: var(--text-tertiary);
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .history-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  .history-scroll::-webkit-scrollbar { width: 3px; }
+  .history-scroll::-webkit-scrollbar-track { background: transparent; }
+  .history-scroll::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .h-card {
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-bottom: 2px;
+  }
+
+  .h-card:hover { background: var(--bg-card); }
+
+  .h-thumb {
+    width: 56px;
+    height: 32px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+  }
+
+  .h-info { flex: 1; min-width: 0; }
+
+  .h-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 3px;
+  }
+
+  .h-win {
+    font-size: 10px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent-light);
+  }
+
+  .h-time {
+    font-size: 9px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .h-text {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-tertiary);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* ===== ROW 4: CONTROL BAR (full width) ===== */
+  .cell-controls {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 20px;
+  }
+
+  .ctrl-progress {
+    height: 3px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .ctrl-progress:hover { height: 5px; }
+
+  .ctrl-fill {
+    height: 100%;
+    width: 35%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light));
+    border-radius: 2px;
+    position: relative;
+  }
+
+  .ctrl-head {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-light);
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-shadow: 0 0 10px var(--accent-glow);
+  }
+
+  .ctrl-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .cb {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+
+  .cb:hover { color: var(--text-primary); }
+
+  .cb.play {
+    width: 40px;
+    height: 40px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-light));
+    color: white;
+    font-size: 16px;
+    box-shadow: 0 4px 16px var(--accent-glow);
+  }
+
+  .cb.play:hover { transform: scale(1.06); }
+
+  .ctrl-time {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: 4px;
+  }
+
+  .ctrl-spacer { flex: 1; }
+
+  .svc-row {
+    display: flex;
+    gap: 4px;
+  }
+
+  .svc-chip {
+    padding: 3px 8px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-card);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .svc-chip .sd { width: 4px; height: 4px; border-radius: 50%; }
+  .svc-chip .sd.on { background: var(--success); }
+  .svc-chip .sd.off { background: var(--danger); }
+
+  .overview-pill {
+    padding: 6px 14px;
+    border-radius: 100px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 8px;
+  }
+
+  .overview-pill:hover {
+    border-color: var(--accent);
+    color: var(--accent-light);
+  }
+
+  /* ===== DESIGN LABEL ===== */
+  .design-label {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 8px 16px;
+    background: var(--accent);
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: var(--radius-sm);
+    z-index: 100;
+    letter-spacing: 0.5px;
+  }
+</style>
+</head>
+<body>
+
+<div class="bento">
+
+  <!-- HEADER -->
+  <div class="cell cell-header">
+    <div class="logo-mark">VA</div>
+    <span class="header-title">Video Analyzer</span>
+    <div class="header-divider"></div>
+    <span class="header-session">session_20260408_143022</span>
+    <div class="header-spacer"></div>
+    <div class="status-pill"><span class="dot live"></span> LIVE</div>
+    <div class="status-pill"><span class="dot on"></span> 5 Services</div>
+    <button class="h-btn">&#x1F3A4;</button>
+    <button class="h-btn">&#x2699;</button>
+  </div>
+
+  <!-- VIDEO -->
+  <div class="cell cell-video">
+    <div class="video-inner">
+      <div class="video-ph">
+        <div class="video-ph-icon">&#x25B6;</div>
+        <div class="video-ph-text">Surgical Video Feed</div>
+      </div>
+      <div class="v-badge tl"><div class="v-live-dot"></div> LIVE</div>
+      <div class="v-badge tr">SAM3 Active</div>
+      <div class="v-badge bl">Window #7 &middot; 1920x1080</div>
+    </div>
+    <div class="phase-bar">
+      <span class="phase-label">Phase</span>
+      <div class="phase-track">
+        <div class="phase-seg done"></div>
+        <div class="phase-seg done"></div>
+        <div class="phase-seg done"></div>
+        <div class="phase-seg done"></div>
+        <div class="phase-seg now"></div>
+        <div class="phase-seg"></div>
+      </div>
+      <span class="phase-now-text">Reconstruction</span>
+    </div>
+  </div>
+
+  <!-- CURRENT ANALYSIS -->
+  <div class="cell cell-current">
+    <div class="cell-label"><span class="ring"></span> Current Analysis</div>
+    <div class="current-window">Window #7</div>
+    <div class="current-time">00:35:00 — 00:40:00</div>
+    <div class="current-text">
+      Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis.
+      Two graspers are visible maintaining tissue tension while the needle driver
+      completes an interrupted stitch. Hemostasis appears adequate with minimal bleeding at the suture line.
+    </div>
+    <div class="current-phase-pill"><span class="pd"></span> Reconstruction</div>
+    <div class="current-actions">
+      <button class="ca-btn">&#128264; Read</button>
+      <button class="ca-btn">&#128203; Copy</button>
+      <button class="ca-btn">&#128269; Detail</button>
+    </div>
+  </div>
+
+  <!-- HISTORY -->
+  <div class="cell cell-history">
+    <div class="history-header">
+      <span class="history-title">History</span>
+      <span class="history-count">6 windows</span>
+    </div>
+    <div class="history-scroll">
+      <div class="h-card">
+        <div class="h-thumb"></div>
+        <div class="h-info">
+          <div class="h-top"><span class="h-win">W#6</span><span class="h-time">00:30-00:35</span></div>
+          <div class="h-text">Clipping of the cystic artery completed. Surgeon transitions to dissection of the hepatocystic triangle.</div>
+        </div>
+      </div>
+      <div class="h-card">
+        <div class="h-thumb"></div>
+        <div class="h-info">
+          <div class="h-top"><span class="h-win">W#5</span><span class="h-time">00:25-00:30</span></div>
+          <div class="h-text">Initial exposure of the gallbladder fundus. Retraction achieved with atraumatic grasper.</div>
+        </div>
+      </div>
+      <div class="h-card">
+        <div class="h-thumb"></div>
+        <div class="h-info">
+          <div class="h-top"><span class="h-win">W#4</span><span class="h-time">00:20-00:25</span></div>
+          <div class="h-text">Trocar placement completed. Four ports established in standard configuration.</div>
+        </div>
+      </div>
+      <div class="h-card">
+        <div class="h-thumb"></div>
+        <div class="h-info">
+          <div class="h-top"><span class="h-win">W#3</span><span class="h-time">00:15-00:20</span></div>
+          <div class="h-text">Adhesiolysis of peritoneal adhesions near the gallbladder fossa.</div>
+        </div>
+      </div>
+      <div class="h-card">
+        <div class="h-thumb"></div>
+        <div class="h-info">
+          <div class="h-top"><span class="h-win">W#2</span><span class="h-time">00:10-00:15</span></div>
+          <div class="h-text">Initial survey of the abdominal cavity. Gallbladder distended.</div>
+        </div>
+      </div>
+      <div class="h-card">
+        <div class="h-thumb"></div>
+        <div class="h-info">
+          <div class="h-top"><span class="h-win">W#1</span><span class="h-time">00:05-00:10</span></div>
+          <div class="h-text">Patient positioning and equipment check completed.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTROLS -->
+  <div class="cell cell-controls">
+    <div class="ctrl-progress">
+      <div class="ctrl-fill">
+        <div class="ctrl-head"></div>
+      </div>
+    </div>
+    <div class="ctrl-row">
+      <button class="cb">&#x23EE;</button>
+      <button class="cb">&#x23EA;</button>
+      <button class="cb play">&#x25B6;</button>
+      <button class="cb">&#x23E9;</button>
+      <button class="cb">&#x23ED;</button>
+      <span class="ctrl-time">00:35:12 / 01:42:30</span>
+      <div class="ctrl-spacer"></div>
+      <div class="svc-row">
+        <div class="svc-chip"><span class="sd on"></span>SurgR1</div>
+        <div class="svc-chip"><span class="sd on"></span>GLM</div>
+        <div class="svc-chip"><span class="sd on"></span>SAM3</div>
+        <div class="svc-chip"><span class="sd on"></span>TTS</div>
+        <div class="svc-chip"><span class="sd off"></span>ASR</div>
+      </div>
+      <button class="overview-pill">&#x2B1A; Overview</button>
+    </div>
+  </div>
+
+</div>
+
+<div class="design-label">DESIGN D — Bento Dashboard / Indigo Medical</div>
+
+</body>
+</html>

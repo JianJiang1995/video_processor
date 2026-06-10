@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design B - Three Panel</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-base: #08090d;
+    --bg-primary: #0d0f14;
+    --bg-secondary: #13161e;
+    --bg-card: #191d27;
+    --bg-card-hover: #1e2330;
+    --bg-elevated: #252a36;
+    --border: #1e2330;
+    --border-subtle: #161a24;
+    --accent: #00d4aa;
+    --accent-dim: rgba(0, 212, 170, 0.12);
+    --accent-glow: rgba(0, 212, 170, 0.08);
+    --danger: #ff6b6b;
+    --warning: #ffd93d;
+    --success: #00d4aa;
+    --info: #74b9ff;
+    --text-primary: #eef0f6;
+    --text-secondary: #8b95a8;
+    --text-tertiary: #5a6478;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+  }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ===== LAYOUT: Left Nav + Center Video + Right Summary ===== */
+  .app-layout {
+    display: grid;
+    grid-template-columns: 56px 1fr 380px;
+    grid-template-rows: 1fr;
+    height: 100vh;
+  }
+
+  /* ===== LEFT NAV BAR ===== */
+  .nav-rail {
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+  }
+
+  .nav-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, var(--accent), #00b894);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--bg-base);
+    margin-bottom: 16px;
+  }
+
+  .nav-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    transition: all 0.15s;
+    position: relative;
+  }
+
+  .nav-btn:hover {
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+  }
+
+  .nav-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .nav-btn.active::before {
+    content: '';
+    position: absolute;
+    left: -4px;
+    width: 3px;
+    height: 20px;
+    background: var(--accent);
+    border-radius: 0 2px 2px 0;
+  }
+
+  .nav-spacer { flex: 1; }
+
+  .nav-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--bg-elevated);
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+
+  /* ===== CENTER CONTENT ===== */
+  .center-area {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Top info bar */
+  .info-bar {
+    height: 44px;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+  }
+
+  .info-title {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .info-sep {
+    width: 1px;
+    height: 16px;
+    background: var(--border);
+  }
+
+  .info-meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .info-spacer { flex: 1; }
+
+  .info-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  .status-dot.live { background: #ff4757; animation: pulse 1.5s infinite; }
+  .status-dot.ok { background: var(--success); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Video viewport */
+  .video-viewport {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-base);
+    position: relative;
+  }
+
+  .video-frame {
+    width: calc(100% - 48px);
+    max-width: 900px;
+    aspect-ratio: 16/9;
+    background: #000;
+    border-radius: var(--radius-lg);
+    position: relative;
+    box-shadow: 0 8px 48px rgba(0,0,0,0.6);
+    overflow: hidden;
+  }
+
+  .video-placeholder {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #1a1e28 0%, #0d0f14 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .video-ph-icon { font-size: 48px; opacity: 0.2; }
+  .video-ph-text { font-size: 13px; color: var(--text-tertiary); }
+
+  /* Overlay badges */
+  .badge {
+    position: absolute;
+    padding: 4px 10px;
+    background: rgba(0,0,0,0.65);
+    backdrop-filter: blur(8px);
+    border-radius: 100px;
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .badge.tl { top: 14px; left: 14px; color: #ff6b6b; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+  .badge.tr { top: 14px; right: 14px; color: var(--accent); border: 1px solid rgba(0,212,170,0.2); }
+  .badge.bl { bottom: 14px; left: 14px; color: var(--text-secondary); }
+  .badge.br { bottom: 14px; right: 14px; color: var(--info); }
+
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ff4757;
+    animation: pulse 1.5s infinite;
+  }
+
+  /* Phase indicator strip */
+  .phase-strip {
+    padding: 8px 20px;
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .phase-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-tertiary);
+  }
+
+  .phase-steps {
+    display: flex;
+    gap: 2px;
+    flex: 1;
+  }
+
+  .phase-step {
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-elevated);
+    position: relative;
+  }
+
+  .phase-step.done { background: var(--accent); opacity: 0.6; }
+  .phase-step.current { background: var(--accent); }
+  .phase-step.current::after {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 4px;
+    border: 1px solid var(--accent);
+    opacity: 0.3;
+  }
+
+  .phase-name {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  /* Control strip */
+  .control-strip {
+    background: var(--bg-primary);
+    padding: 12px 20px 16px;
+  }
+
+  .progress-bar {
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    margin-bottom: 14px;
+    position: relative;
+    cursor: pointer;
+  }
+
+  .progress-bar:hover { height: 6px; }
+
+  .progress-fill {
+    height: 100%;
+    width: 35%;
+    background: var(--accent);
+    border-radius: 2px;
+    position: relative;
+  }
+
+  .progress-head {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    box-shadow: 0 0 10px rgba(0,212,170,0.4);
+  }
+
+  .ctrl-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .c-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: all 0.15s;
+  }
+
+  .c-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+
+  .c-btn.play {
+    width: 42px;
+    height: 42px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 16px;
+  }
+
+  .c-btn.play:hover { transform: scale(1.06); }
+
+  .time-text {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    margin-left: 4px;
+  }
+
+  .ctrl-spacer { flex: 1; }
+
+  .svc-badges {
+    display: flex;
+    gap: 4px;
+  }
+
+  .svc {
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .svc .d { width: 5px; height: 5px; border-radius: 50%; }
+  .svc .d.on { background: var(--success); }
+  .svc .d.off { background: var(--danger); }
+
+  /* ===== RIGHT PANEL ===== */
+  .right-panel {
+    background: var(--bg-primary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1;
+  }
+
+  .panel-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 100px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .panel-icon-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+
+  .panel-icon-btn:hover { background: var(--bg-elevated); color: var(--text-secondary); }
+
+  /* Current window card */
+  .current-card {
+    margin: 16px;
+    padding: 16px;
+    background: var(--bg-card);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--accent);
+    position: relative;
+  }
+
+  .current-card::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, rgba(0,212,170,0.1), transparent);
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  .cc-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .cc-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .cc-label .ring {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.5s infinite;
+  }
+
+  .cc-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .cc-body {
+    font-size: 13px;
+    line-height: 1.75;
+    color: var(--text-primary);
+    position: relative;
+    z-index: 1;
+  }
+
+  .cc-phase {
+    margin-top: 12px;
+    padding: 6px 10px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .cc-phase-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 2px;
+    background: var(--accent);
+  }
+
+  .cc-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 12px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .cc-btn {
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .cc-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* Divider */
+  .panel-divider {
+    padding: 0 20px;
+    margin: 4px 0 8px;
+  }
+
+  .divider-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .divider-line::before, .divider-line::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .divider-text {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-tertiary);
+  }
+
+  /* Timeline list */
+  .timeline {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 16px 16px;
+  }
+
+  .timeline::-webkit-scrollbar { width: 3px; }
+  .timeline::-webkit-scrollbar-track { background: transparent; }
+  .timeline::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+  .tl-item {
+    display: flex;
+    gap: 12px;
+    padding: 10px 0;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .tl-item:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 34px;
+    bottom: -2px;
+    width: 1px;
+    background: var(--border);
+  }
+
+  .tl-dot-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 4px;
+  }
+
+  .tl-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--bg-elevated);
+    border: 2px solid var(--text-tertiary);
+    flex-shrink: 0;
+  }
+
+  .tl-item.done .tl-dot {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+
+  .tl-content {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .tl-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  .tl-window {
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+  }
+
+  .tl-time {
+    font-size: 10px;
+    color: var(--text-tertiary);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .tl-text {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .tl-thumb {
+    width: 48px;
+    height: 28px;
+    border-radius: 4px;
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  /* ===== DESIGN LABEL ===== */
+  .design-label {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 8px 16px;
+    background: var(--accent);
+    color: var(--bg-base);
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: var(--radius-sm);
+    z-index: 100;
+    letter-spacing: 0.5px;
+  }
+</style>
+</head>
+<body>
+
+<div class="app-layout">
+
+  <!-- LEFT NAV RAIL -->
+  <div class="nav-rail">
+    <div class="nav-logo">V</div>
+    <button class="nav-btn active" title="Analysis">&#x1F4F9;</button>
+    <button class="nav-btn" title="Overview">&#x2B1A;</button>
+    <button class="nav-btn" title="Voice Chat">&#x1F3A4;</button>
+    <button class="nav-btn" title="Timeline">&#x1F552;</button>
+    <div class="nav-spacer"></div>
+    <button class="nav-btn" title="Settings">&#x2699;</button>
+    <div class="nav-avatar">JJ</div>
+  </div>
+
+  <!-- CENTER -->
+  <div class="center-area">
+    <div class="info-bar">
+      <span class="info-title">Laparoscopic Cholecystectomy</span>
+      <div class="info-sep"></div>
+      <span class="info-meta">session_20260408</span>
+      <div class="info-spacer"></div>
+      <div class="info-status">
+        <span class="status-dot live"></span>
+        Live Stream
+      </div>
+      <div class="info-status">
+        <span class="status-dot ok"></span>
+        All services online
+      </div>
+    </div>
+
+    <div class="video-viewport">
+      <div class="video-frame">
+        <div class="video-placeholder">
+          <div class="video-ph-icon">&#x25B6;</div>
+          <div class="video-ph-text">Surgical Video Feed</div>
+        </div>
+        <div class="badge tl"><div class="live-dot"></div> LIVE</div>
+        <div class="badge tr">SAM3 Active</div>
+        <div class="badge bl">Window #7</div>
+        <div class="badge br">1920x1080 @ 30fps</div>
+      </div>
+    </div>
+
+    <!-- Phase indicator -->
+    <div class="phase-strip">
+      <span class="phase-label">Phase</span>
+      <div class="phase-steps">
+        <div class="phase-step done" title="Preparation"></div>
+        <div class="phase-step done" title="Access"></div>
+        <div class="phase-step done" title="Exposure"></div>
+        <div class="phase-step done" title="Dissection"></div>
+        <div class="phase-step current" title="Reconstruction"></div>
+        <div class="phase-step" title="Closure"></div>
+      </div>
+      <span class="phase-name">Reconstruction</span>
+    </div>
+
+    <!-- Controls -->
+    <div class="control-strip">
+      <div class="progress-bar">
+        <div class="progress-fill">
+          <div class="progress-head"></div>
+        </div>
+      </div>
+      <div class="ctrl-row">
+        <button class="c-btn">&#x23EE;</button>
+        <button class="c-btn">&#x23EA;</button>
+        <button class="c-btn play">&#x25B6;</button>
+        <button class="c-btn">&#x23E9;</button>
+        <button class="c-btn">&#x23ED;</button>
+        <span class="time-text">00:35:12 / 01:42:30</span>
+        <div class="ctrl-spacer"></div>
+        <div class="svc-badges">
+          <div class="svc"><span class="d on"></span>SurgR1</div>
+          <div class="svc"><span class="d on"></span>GLM</div>
+          <div class="svc"><span class="d on"></span>SAM3</div>
+          <div class="svc"><span class="d on"></span>TTS</div>
+          <div class="svc"><span class="d off"></span>ASR</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <div class="panel-header">
+      <span class="panel-title">Analysis</span>
+      <span class="panel-badge">12 windows</span>
+      <button class="panel-icon-btn" title="Search">&#x1F50D;</button>
+      <button class="panel-icon-btn" title="Filter">&#x2B07;</button>
+    </div>
+
+    <!-- Current analysis -->
+    <div class="current-card">
+      <div class="cc-top">
+        <div class="cc-label"><span class="ring"></span> Current Window #7</div>
+        <span class="cc-time">00:35 - 00:40</span>
+      </div>
+      <div class="cc-body">
+        Surgeon is performing laparoscopic suturing of the hepatic duct anastomosis.
+        Two graspers maintain tissue tension while the needle driver completes an interrupted stitch.
+      </div>
+      <div class="cc-phase">
+        <div class="cc-phase-dot"></div>
+        Phase: Reconstruction
+      </div>
+      <div class="cc-actions">
+        <button class="cc-btn">&#128264; Read</button>
+        <button class="cc-btn">&#128203; Copy</button>
+        <button class="cc-btn">&#128269; Detail</button>
+      </div>
+    </div>
+
+    <div class="panel-divider">
+      <div class="divider-line">
+        <span class="divider-text">History</span>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="timeline">
+      <div class="tl-item done">
+        <div class="tl-dot-col"><div class="tl-dot"></div></div>
+        <div class="tl-content">
+          <div class="tl-header">
+            <span class="tl-window">W#6</span>
+            <span class="tl-time">00:30 - 00:35</span>
+          </div>
+          <div class="tl-text">Clipping of the cystic artery completed. Surgeon transitions to dissection of the hepatocystic triangle.</div>
+        </div>
+        <div class="tl-thumb"></div>
+      </div>
+
+      <div class="tl-item done">
+        <div class="tl-dot-col"><div class="tl-dot"></div></div>
+        <div class="tl-content">
+          <div class="tl-header">
+            <span class="tl-window">W#5</span>
+            <span class="tl-time">00:25 - 00:30</span>
+          </div>
+          <div class="tl-text">Initial exposure of the gallbladder fundus. Retraction achieved with atraumatic grasper.</div>
+        </div>
+        <div class="tl-thumb"></div>
+      </div>
+
+      <div class="tl-item done">
+        <div class="tl-dot-col"><div class="tl-dot"></div></div>
+        <div class="tl-content">
+          <div class="tl-header">
+            <span class="tl-window">W#4</span>
+            <span class="tl-time">00:20 - 00:25</span>
+          </div>
+          <div class="tl-text">Trocar placement completed. Four ports established in standard configuration.</div>
+        </div>
+        <div class="tl-thumb"></div>
+      </div>
+
+      <div class="tl-item done">
+        <div class="tl-dot-col"><div class="tl-dot"></div></div>
+        <div class="tl-content">
+          <div class="tl-header">
+            <span class="tl-window">W#3</span>
+            <span class="tl-time">00:15 - 00:20</span>
+          </div>
+          <div class="tl-text">Adhesiolysis of peritoneal adhesions near the gallbladder fossa. Blunt dissection with occasional electrocautery.</div>
+        </div>
+        <div class="tl-thumb"></div>
+      </div>
+
+      <div class="tl-item done">
+        <div class="tl-dot-col"><div class="tl-dot"></div></div>
+        <div class="tl-content">
+          <div class="tl-header">
+            <span class="tl-window">W#2</span>
+            <span class="tl-time">00:10 - 00:15</span>
+          </div>
+          <div class="tl-text">Initial survey of the abdominal cavity. No abnormalities noted. Gallbladder is distended.</div>
+        </div>
+        <div class="tl-thumb"></div>
+      </div>
+
+      <div class="tl-item done">
+        <div class="tl-dot-col"><div class="tl-dot"></div></div>
+        <div class="tl-content">
+          <div class="tl-header">
+            <span class="tl-window">W#1</span>
+            <span class="tl-time">00:05 - 00:10</span>
+          </div>
+          <div class="tl-text">Patient positioning confirmed. Draping and equipment check completed.</div>
+        </div>
+        <div class="tl-thumb"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="design-label">DESIGN B - Three Panel + Nav Rail</div>
+
+</body>
+</html>
