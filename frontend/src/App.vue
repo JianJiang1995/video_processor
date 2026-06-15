@@ -310,6 +310,9 @@ const showSam3 = ref(false)  // Toggle for SAM3 segmented view
 
 // Loop playback state - when set, video will loop within this window
 const loopWindow = ref(null)  // { window_id, start_time, end_time }
+const livePlaybackTime = ref(0)
+const loopReturnTime = ref(null)
+const loopWasPlaying = ref(false)
 // Flag to prevent clearing loopWindow during loop-triggered seeks
 let isLoopSeek = false
 const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime due to processing delay)
@@ -586,18 +589,15 @@ const isBleedingResolvedSummary = (summary) => {
   return /(出血(?:已经|已)?(?:停止|控制|解决)|已(?:完成)?止血|止血(?:完成|成功|有效)|凝血后(?:未见|无)活动性出血|未见活动性出血|无活动性出血|bleeding (?:stopped|controlled|resolved)|hemostasis achieved)/i.test(text)
 }
 
-// Computed: current summary based on time
-// When in loop playback mode, always show the loop window's summary to avoid flickering
+// Computed: current summary based on the live playback clock.
 const currentSummary = computed(() => {
   if (!summaries.value.length) return null
   
-  // If in loop playback mode, use the fixed loop window ID
-  // This prevents flickering caused by currentTime constantly changing
-  if (loopWindow.value) {
-    return cleanSummaryPayload(summaries.value.find(s => s.window_id === loopWindow.value.window_id)) || null
-  }
-  
-  const windowId = Math.floor(currentTime.value / windowDuration.value)
+  // During history-loop preview, the native video element seeks inside an old
+  // window. Keep the analysis panel tied to livePlaybackTime so review mode
+  // does not make "latest" jump backward.
+  const displayTime = loopWindow.value ? livePlaybackTime.value : currentTime.value
+  const windowId = Math.floor(displayTime / windowDuration.value)
   return cleanSummaryPayload(summaries.value.find(s => s.window_id === windowId)
     || [...summaries.value]
       .filter(s => s.window_id <= windowId)
@@ -779,12 +779,18 @@ const handleTimeUpdate = (time) => {
     return
   }
   lastAcceptedTimeUpdate = now
+  if (loopWindow.value) {
+    // History-loop preview must not rewrite the live playback clock. The
+    // native video element is temporarily seeking within an analyzed window,
+    // but backend position, latest-analysis selection, and resume point stay
+    // tied to the live stream timeline.
+    return
+  }
   currentTime.value = time
   if (mode.value === 'stream') {
-    if (!loopWindow.value) {
-      duration.value = Math.max(duration.value || 0, time)
-    }
-    if (currentSession.value && !loopWindow.value && now - lastPositionHeartbeat >= 1000) {
+    livePlaybackTime.value = time
+    duration.value = Math.max(duration.value || 0, time)
+    if (currentSession.value && now - lastPositionHeartbeat >= 1000) {
       lastPositionHeartbeat = now
       axios.post(`/api/video/control/${currentSession.value.session_id}`, {
         action: 'position',
@@ -815,6 +821,10 @@ const handleSam3TimeUpdate = (time) => {
 }
 
 const handlePlay = () => {
+  if (loopWindow.value) {
+    exitLoopMode(true)
+    return
+  }
   isPlaying.value = true
   if (currentSession.value) {
     if (mode.value === 'stream' && !isSimulatorSession.value) {
@@ -823,12 +833,16 @@ const handlePlay = () => {
     }
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
       action: 'play',
-      position: currentTime.value
+      position: loopWindow.value ? livePlaybackTime.value : currentTime.value
     })
   }
 }
 
 const handlePause = () => {
+  if (loopWindow.value) {
+    exitLoopMode(false)
+    return
+  }
   isPlaying.value = false
   if (currentSession.value) {
     if (mode.value === 'stream' && !isSimulatorSession.value) {
@@ -837,7 +851,7 @@ const handlePause = () => {
     }
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
       action: 'pause',
-      position: currentTime.value
+      position: loopWindow.value ? livePlaybackTime.value : currentTime.value
     })
   }
 }
@@ -860,12 +874,26 @@ const handleSeek = (time) => {
 }
 
 // Exit loop playback mode
-const exitLoopMode = () => {
+const exitLoopMode = (forcePlaying = null) => {
   if (loopWindow.value) {
     console.log('[Loop] Exiting loop mode')
+    const resumeAt = Number.isFinite(loopReturnTime.value) ? loopReturnTime.value : livePlaybackTime.value
+    const shouldPlay = typeof forcePlaying === 'boolean' ? forcePlaying : loopWasPlaying.value
+    currentTime.value = Math.max(0, resumeAt || 0)
+    livePlaybackTime.value = currentTime.value
     loopWindow.value = null
+    loopReturnTime.value = null
+    loopWasPlaying.value = false
+    isPlaying.value = shouldPlay
     userSelectedWindow.value = false
     highlightedWindowId.value = -1
+    selectedWindowId.value = -1
+    if (currentSession.value) {
+      axios.post(`/api/video/control/${currentSession.value.session_id}`, {
+        action: shouldPlay ? 'play' : 'pause',
+        position: currentTime.value
+      }).catch(() => {})
+    }
   }
 }
 
@@ -1781,6 +1809,11 @@ const handleSeekToWindow = (windowId) => {
   const summary = summaries.value.find(s => s.window_id === windowId)
   
   if (summary) {
+    if (!loopWindow.value) {
+      loopReturnTime.value = currentTime.value
+      livePlaybackTime.value = currentTime.value
+      loopWasPlaying.value = isPlaying.value
+    }
     // Set up loop playback for this window
     loopWindow.value = {
       window_id: windowId,
@@ -1788,10 +1821,9 @@ const handleSeekToWindow = (windowId) => {
       end_time: summary.end_time
     }
     console.log(`[Loop] Enabled loop playback for window ${windowId}: ${summary.start_time}s - ${summary.end_time}s`)    
-    // Seek to the start of this window
-    isLoopSeek = true
-    handleSeek(summary.start_time)
-    setTimeout(() => { isLoopSeek = false }, 100)
+    // Seek only the frontend preview. Do not call backend seek here; history
+    // loop playback is a temporary review mode and must not alter the live
+    // analysis/playback clock.
     if (!isPlaying.value) {
       handlePlay()
     }
@@ -1909,8 +1941,9 @@ const handleVideoSectionClick = (event) => {
   const isProgressBar = target.closest('.progress-bar') || target.closest('.progress-container')
   const isControlBtn = target.closest('.control-btn') || target.closest('.controls-row')
   const isSummaryPanel = target.closest('.summary-section') || target.closest('.summary-panel')
+  const isLoopBar = target.closest('.loop-indicator-bar')
   
-  if (!isProgressBar && !isControlBtn && !isSummaryPanel) {
+  if (!isProgressBar && !isControlBtn && !isSummaryPanel && !isLoopBar) {
     // Close frame analysis popup if visible
     if (frameAnalysisPopup.value.visible) {
       closeFrameAnalysisPopup()

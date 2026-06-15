@@ -194,13 +194,26 @@
     </div>
     
     <!-- Loop Playback Indicator - Outside video container to avoid blocking video -->
-    <div v-if="loopWindow" class="loop-indicator-bar">
+    <div
+      v-if="loopWindow"
+      class="loop-indicator-bar"
+      @mousedown.stop.prevent="emit('exitLoop')"
+      @click.stop.prevent="emit('exitLoop')"
+    >
       <span class="loop-icon">🔄</span>
       <span class="loop-text">{{ t('video.loopWindow', { num: loopWindow.window_id + 1 }) }}</span>
       <span class="loop-separator">|</span>
       <span class="loop-time">{{ formatTime(loopWindow.start_time) }} - {{ formatTime(loopWindow.end_time) }}</span>
       <span class="loop-separator">|</span>
       <span class="loop-hint">{{ t('video.loopExitHint') }}</span>
+      <button
+        class="loop-exit-btn"
+        type="button"
+        @mousedown.stop.prevent="emit('exitLoop')"
+        @click.stop.prevent="emit('exitLoop')"
+      >
+        {{ t('video.exitLoop') }}
+      </button>
     </div>
   </div>
 </template>
@@ -1203,6 +1216,21 @@ watch(() => props.loopWindow, async (newVal, oldVal) => {
           }
         }
         requestAnimationFrame(seekToLoopStart)
+      } else if (oldVal && !newVal) {
+        const restoreLivePlayback = () => {
+          if (!videoRef.value) return
+          const resumeAt = Number.isFinite(props.currentTime) ? props.currentTime : oldVal.end_time || 0
+          if (Math.abs(videoRef.value.currentTime - resumeAt) > 0.08) {
+            videoRef.value.currentTime = resumeAt
+          }
+          loopPlaybackTime.value = 0
+          if (props.isPlaying) {
+            videoRef.value.play().catch(() => {})
+          } else {
+            videoRef.value.pause()
+          }
+        }
+        requestAnimationFrame(restoreLivePlayback)
       }
       return
     }
@@ -1739,6 +1767,22 @@ onUnmounted(() => {
 .loop-indicator-bar .loop-hint:hover {
   color: white;
   text-decoration: underline;
+}
+
+.loop-exit-btn {
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.22);
+  color: white;
+  border-radius: 4px;
+  padding: 0.28rem 0.65rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.loop-exit-btn:hover {
+  background: rgba(0, 0, 0, 0.36);
+  border-color: rgba(255, 255, 255, 0.8);
 }
 
 /* Loop Playback Frame */
