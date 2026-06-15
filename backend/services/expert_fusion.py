@@ -20,6 +20,7 @@ import logging
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set
 
+import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,71 @@ def _aggregate_yolo(per_frame: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
         "tools": [{"label": lbl, "frames_seen": c} for lbl, c in label_counts.most_common()],
         "total_detections": total,
         "frames_analyzed": len(per_frame),
+    }
+
+
+def _detect_short_action(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
+    """Detect brief shiny tool-tip entry/contact events with a cheap heuristic."""
+    hits: List[Dict[str, Any]] = []
+    for idx, frame in enumerate(frames_bgr):
+        if frame is None or frame.size == 0:
+            continue
+        h, w = frame.shape[:2]
+        scale = 640.0 / max(w, 1)
+        small = cv2.resize(frame, (640, max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+        sh, sw = small.shape[:2]
+        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+        mask = ((hsv[:, :, 1] < 75) & (hsv[:, :, 2] > 178)).astype(np.uint8) * 255
+        mask[: int(sh * 0.04), :] = 0
+        mask[int(sh * 0.82) :, :] = 0
+        mask[:, : int(sw * 0.03)] = 0
+        mask[:, int(sw * 0.97) :] = 0
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+
+        n, _, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
+        for comp_id in range(1, n):
+            x, y, bw, bh, area = stats[comp_id]
+            if area < 18 or area > 900:
+                continue
+            aspect = bh / max(1, bw)
+            if bw > 90 or bh < 24 or aspect < 1.8:
+                continue
+            cx, cy = centroids[comp_id]
+            hits.append({
+                "frame_index": idx,
+                "bbox": [
+                    int(x / scale), int(y / scale),
+                    int((x + bw) / scale), int((y + bh) / scale),
+                ],
+                "centroid": [round(float(cx / scale), 1), round(float(cy / scale), 1)],
+                "area": int(area),
+                "aspect": round(float(aspect), 2),
+            })
+            break
+
+    needle_hits = []
+    for hit in hits:
+        x1, _, x2, _ = hit["bbox"]
+        bw = x2 - x1
+        cx = hit["centroid"][0]
+        # Original frame is 1920 wide in our capture-card simulator; using the
+        # hit bbox avoids carrying frame dimensions through every result.
+        if hit["aspect"] >= 4.0 and bw <= 55 and 420 <= cx <= 1500:
+            needle_hits.append(hit)
+
+    if len(hits) < 2 or not needle_hits:
+        return {"detected": False, "frames_seen": len(hits), "hits": hits}
+
+    ys = [hit["centroid"][1] for hit in hits]
+    return {
+        "detected": True,
+        "label": "puncture_like_contact",
+        "tool_hint": "hook_or_metal_tip",
+        "frames_seen": len(hits),
+        "vertical_motion": round(float(max(ys) - min(ys)), 1) if ys else 0,
+        "description": "亮白细长器械尖端短时进入并接触组织，疑似穿孔/点触动作",
+        "needle_hits": needle_hits[:4],
+        "hits": hits[:8],
     }
 
 
@@ -124,7 +190,12 @@ def _aggregate_phase(
     return result
 
 
-def _format_text(yolo: Dict[str, Any], phase: Dict[str, Any], triplet: Dict[str, Any]) -> str:
+def _format_text(
+    yolo: Dict[str, Any],
+    phase: Dict[str, Any],
+    triplet: Dict[str, Any],
+    short_action: Optional[Dict[str, Any]] = None,
+) -> str:
     """Build a compact text block to paste into Gemini prompts.
 
     Formatted for clarity — one section per expert with top-K findings.
@@ -141,6 +212,8 @@ def _format_text(yolo: Dict[str, Any], phase: Dict[str, Any], triplet: Dict[str,
     if triplet and triplet.get("triplet"):
         top3 = ", ".join(f"{t['label']} ({t['confidence']:.2f})" for t in triplet["triplet"][:3])
         lines.append(f"[Triplet Expert] top-3 动作三元组: {top3}")
+    if short_action and short_action.get("detected"):
+        lines.append(f"[Short Action Expert] {short_action.get('description')}")
     return "\n".join(lines)
 
 
@@ -161,7 +234,7 @@ def run_experts_on_window(
         - "triplet": raw Triplet recognition (top-K I/V/T/IVT)
         - "available": list of experts that actually produced output
     """
-    out: Dict[str, Any] = {"yolo": {}, "phase": {}, "triplet": {}, "available": []}
+    out: Dict[str, Any] = {"yolo": {}, "phase": {}, "triplet": {}, "short_action": {}, "available": []}
     if not frames_bgr:
         out["text"] = "【专家模型判断】(窗口无采样帧)"
         return out
@@ -207,6 +280,14 @@ def run_experts_on_window(
         except Exception as e:
             logger.warning(f"[ExpertFusion] YOLO skipped: {e}")
 
-    out["text"] = _format_text(out["yolo"], out["phase"], out["triplet"])
+    try:
+        short_action = _detect_short_action(frames_bgr)
+        out["short_action"] = short_action
+        if short_action.get("detected"):
+            out["available"].append("short_action")
+    except Exception as e:
+        logger.warning(f"[ExpertFusion] Short action skipped: {e}")
+
+    out["text"] = _format_text(out["yolo"], out["phase"], out["triplet"], out["short_action"])
     logger.info(f"[ExpertFusion] available={out['available']}")
     return out

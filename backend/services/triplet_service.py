@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # LAM-Lite class definition lives in the surg_agent project; we import it
 # instead of duplicating 150+ lines. This sys.path insertion is contained.
-_SURG_AGENT_ROOT = Path(_os.environ.get("SURG_AGENT_ROOT", "/data4/jj/proj/surg_agent"))
+_SURG_AGENT_ROOT = Path(_os.environ.get("SURG_AGENT_ROOT", "/home/user/proj/surg_agent"))
 
 
 class TripletService:
@@ -136,13 +136,16 @@ class TripletService:
 
 
 _triplet_service: Optional[TripletService] = None
+_triplet_failed_reason: Optional[str] = None
 
 
 def get_triplet_service() -> Optional[TripletService]:
     """Get or lazily create the singleton."""
-    global _triplet_service
+    global _triplet_service, _triplet_failed_reason, _SURG_AGENT_ROOT
     if _triplet_service is not None:
         return _triplet_service
+    if _triplet_failed_reason:
+        return None
 
     try:
         config_path = Path(__file__).parent.parent.parent / "config.json"
@@ -155,14 +158,21 @@ def get_triplet_service() -> Optional[TripletService]:
         model_path = tcfg.get("model_path", "")
         mappings_path = tcfg.get("mappings_path", "")
         if not model_path or not Path(model_path).exists():
+            _triplet_failed_reason = f"checkpoint not found: {model_path}"
             logger.error(f"[Triplet] Checkpoint not found: {model_path}")
             return None
         if not mappings_path or not Path(mappings_path).exists():
+            _triplet_failed_reason = f"mappings file not found: {mappings_path}"
             logger.error(f"[Triplet] Mappings file not found: {mappings_path}")
             return None
+        for parent in Path(model_path).resolve().parents:
+            if parent.name == "triplet_expert":
+                _SURG_AGENT_ROOT = parent.parent
+                break
         device = _os.environ.get("TRIPLET_DEVICE") or tcfg.get("device", "cuda:0")
         _triplet_service = TripletService(model_path, mappings_path, device)
         return _triplet_service
     except Exception as e:
+        _triplet_failed_reason = str(e)
         logger.error(f"[Triplet] Initialization failed: {e}")
         return None

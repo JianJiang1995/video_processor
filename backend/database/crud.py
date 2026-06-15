@@ -183,8 +183,12 @@ def create_window_summary(
         others_data=others_data
     )
     
-    # Trigger async compression check in background
-    _trigger_compression_check(session_str)
+    # Live Stage 1 updates are latency-sensitive and arrive frequently. Do not
+    # let summary compression compete with the real-time analysis loop; refined
+    # Stage 2 summaries still trigger compression.
+    stage = (others_data or {}).get("stage") if isinstance(others_data, dict) else None
+    if stage != 1:
+        _trigger_compression_check(session_str)
     
     return result_id
 

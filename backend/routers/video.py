@@ -533,6 +533,11 @@ async def connect_to_capture_device(
         fps = float((simulator_source.fps if simulator_source else None) or fps or 30.0)
         width = int((simulator_source.width if simulator_source else None) or width or 1920)
         height = int((simulator_source.height if simulator_source else None) or height or 1080)
+        duration = float((simulator_source.duration if simulator_source else None) or 0.0)
+        total_frames = int((simulator_source.total_frames if simulator_source else None) or 0)
+    else:
+        duration = 0.0
+        total_frames = 0
     
     # Create a device URL for internal use
     # Format: device://{device_id} or device://{device_name}
@@ -557,11 +562,11 @@ async def connect_to_capture_device(
         db=db,
         video_path=device_url,
         video_name=f"📹 {device_display_name}",
-        duration=0,  # Live capture has no fixed duration
+        duration=duration,
         fps=fps,
         width=width,
         height=height,
-        total_frames=0
+        total_frames=total_frames
     )
     
     session_id = session["session_id"]
@@ -582,6 +587,8 @@ async def connect_to_capture_device(
             fps=fps,
             width=width,
             height=height,
+            duration=duration,
+            total_frames=total_frames,
             storage_path=storage_path
         )
     except Exception as e:
@@ -596,7 +603,7 @@ async def connect_to_capture_device(
         "session_id": session_id,
         "video_name": video_name,
         "video_path": device_url,
-        "duration": 0,
+        "duration": duration,
         "fps": fps,
         "width": width,
         "height": height,
@@ -900,22 +907,46 @@ async def control_video(
         raise HTTPException(404, "Session not found")
     
     action = request.action.lower()
+
+    def _resolved_position(requested: Optional[float]) -> float:
+        """Clamp client position while ignoring stale zeroes on play/pause.
+
+        The Electron simulator uses the native video element as the playback
+        clock. During UI hot reloads or native pause events, the renderer can
+        briefly emit position=0 even though the persisted session is already
+        mid-video. For play/pause/resume controls, preserving the last known
+        non-zero session position is safer than jumping the session clock back
+        to the start. Explicit seek/position updates still accept zero.
+        """
+        previous = float(session.get("current_position", 0) or 0)
+        if requested is None:
+            return previous
+        duration = session.get("duration", 0) or 0
+        position = max(0, min(requested, duration)) if duration else max(0, requested)
+        if previous > 1.0 and position <= 0.25:
+            return previous
+        if previous > 3.0 and position < previous - 2.0:
+            return previous
+        return position
     
     if action == "play":
-        update_session_status(db, session_id, "processing", is_paused=False)
-        return {"status": "playing", "position": session.get("current_position", 0)}
+        position = _resolved_position(request.position)
+        update_session_status(db, session_id, "processing", current_position=position, is_paused=False)
+        return {"status": "playing", "position": position}
     
     elif action == "pause":
-        update_session_status(db, session_id, "paused", is_paused=True)
+        position = _resolved_position(request.position)
+        update_session_status(db, session_id, "paused", current_position=position, is_paused=True)
         if session_id in active_processors:
             active_processors[session_id].pause()
-        return {"status": "paused", "position": session.get("current_position", 0)}
+        return {"status": "paused", "position": position}
     
     elif action == "resume":
-        update_session_status(db, session_id, "processing", is_paused=False)
+        position = _resolved_position(request.position)
+        update_session_status(db, session_id, "processing", current_position=position, is_paused=False)
         if session_id in active_processors:
             active_processors[session_id].resume()
-        return {"status": "playing", "position": session.get("current_position", 0)}
+        return {"status": "playing", "position": position}
     
     elif action == "stop":
         update_session_status(db, session_id, "stopped", current_position=0, is_paused=False)
@@ -931,6 +962,19 @@ async def control_video(
         update_session_status(db, session_id, session.get("status", "processing"), current_position=position)
         if session_id in active_processors:
             active_processors[session_id].seek(position)
+        return {"status": session.get("status", "processing"), "position": position}
+
+    elif action == "position":
+        if request.position is None:
+            raise HTTPException(400, "Position required for position update")
+        duration = session.get("duration", 0) or 0
+        position = max(0, min(request.position, duration)) if duration else max(0, request.position)
+        previous = float(session.get("current_position", 0) or 0)
+        if previous > 1.0 and position <= 0.25:
+            position = previous
+        elif previous > 3.0 and position < previous - 2.0:
+            position = previous
+        update_session_status(db, session_id, session.get("status", "processing"), current_position=position)
         return {"status": session.get("status", "processing"), "position": position}
     
     else:

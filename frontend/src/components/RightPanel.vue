@@ -7,14 +7,14 @@
         :class="{ active: activeTab === 'analysis' }"
         @click="$emit('update:activeTab', 'analysis')"
       >
-        <span class="rp-tab-icon">&#x1F4CB;</span> Analysis
+        <span class="rp-tab-icon">&#x1F4CB;</span> {{ t('right.analysis') }}
       </button>
       <button
         class="rp-tab"
         :class="{ active: activeTab === 'chat' }"
         @click="$emit('update:activeTab', 'chat')"
       >
-        <span class="rp-tab-icon">&#x1F4AC;</span> Chat
+        <span class="rp-tab-icon">&#x1F4AC;</span> {{ t('right.chat') }}
       </button>
     </div>
 
@@ -22,9 +22,9 @@
     <div v-show="activeTab === 'analysis'" class="tab-analysis">
       <div v-if="chapters.length > 0" class="an-content">
         <div class="narrative-header">
-          <span class="narrative-title">手术进程</span>
+          <span class="narrative-title">{{ t('right.surgicalProgress') }}</span>
           <span class="narrative-meta">
-            {{ totalWindows }} 个窗口 · {{ chapters.length }} 个阶段段
+            {{ t('app.windowCount', { count: totalWindows }) }} · {{ t('right.updatedByWindow') }}
           </span>
         </div>
 
@@ -36,25 +36,57 @@
           <div class="bleeding-status-head">
             <span class="bleeding-status-title">{{ bleedingStatus.title }}</span>
             <span class="bleeding-status-time">
-              窗口 {{ bleedingStatus.windowId + 1 }} · {{ formatTime(bleedingStatus.startTime) }} – {{ formatTime(bleedingStatus.endTime) }}
+              {{ windowLabel(bleedingStatus.windowId + 1) }} · {{ formatTime(bleedingStatus.startTime) }} – {{ formatTime(bleedingStatus.endTime) }}
             </span>
           </div>
           <div class="bleeding-status-text">{{ bleedingStatus.text }}</div>
         </div>
 
-        <!-- 相邻同阶段合并后的章节 -->
+        <div v-if="topChapters.length > 0" class="latest-chapters">
+          <div
+            v-for="(ch, index) in topChapters"
+            :key="`top-${ch.key}`"
+            class="latest-chapter"
+            :class="{ secondary: index === 1 }"
+            role="button"
+            tabindex="0"
+            @click="seekChapter(ch)"
+            @keydown.enter.prevent="seekChapter(ch)"
+            @keydown.space.prevent="seekChapter(ch)"
+          >
+            <div class="latest-label">{{ index === 0 ? t('right.latestWindow') : t('right.previousWindow') }}</div>
+            <div class="latest-head">
+              <span class="chapter-time">
+                {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
+              </span>
+              <span class="chapter-count">{{ windowLabel(ch.windows[0].window_id + 1) }}</span>
+            </div>
+            <div class="latest-text">{{ ch.mergedSummary }}</div>
+          </div>
+        </div>
+
+        <div v-if="historyChapters.length > 0" class="history-title">
+          {{ t('right.historyWindow') }}
+        </div>
+
+        <!-- 旧窗口倒序显示：最新窗口固定在上方，避免实时结果滚到列表底部 -->
         <div
-          v-for="ch in chapters"
+          v-for="ch in historyChapters"
           :key="ch.key"
           class="chapter"
           :class="{ active: ch.containsCurrent }"
+          role="button"
+          tabindex="0"
+          @click="seekChapter(ch)"
+          @keydown.enter.prevent="seekChapter(ch)"
+          @keydown.space.prevent="seekChapter(ch)"
         >
           <!-- phase 标签已去掉：文字里本来就会提阶段，避免重复 -->
           <div class="chapter-head">
             <span class="chapter-time">
               {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
             </span>
-            <span class="chapter-count">{{ ch.windows.length }} 个窗口</span>
+            <span class="chapter-count">{{ ch.windowLabel }}</span>
           </div>
           <div class="chapter-text">{{ ch.mergedSummary }}</div>
         </div>
@@ -63,8 +95,8 @@
       <!-- Empty state -->
       <div v-else class="an-empty">
         <div class="an-empty-icon">&#x1F4CA;</div>
-        <div class="an-empty-text">暂无分析</div>
-        <div class="an-empty-hint">分析开始后，手术进程将在此滚动展开</div>
+        <div class="an-empty-text">{{ t('right.noAnalysis') }}</div>
+        <div class="an-empty-hint">{{ t('right.noAnalysisHint') }}</div>
       </div>
 
       <!-- Actions：基于当前显示的章节（通常是正在播放的那段）-->
@@ -74,10 +106,10 @@
           :disabled="!currentChapter"
           @click="$emit('tts', currentChapterAsSummary)"
         >
-          &#128264; 朗读本段
+          &#128264; {{ t('right.readSegment') }}
         </button>
         <button class="an-btn" :disabled="!currentChapter" @click="copyChapter">
-          &#128203; 复制
+          &#128203; {{ t('right.copy') }}
         </button>
       </div>
     </div>
@@ -97,6 +129,9 @@
 <script setup>
 import { computed } from 'vue'
 import ChatPanel from './ChatPanel.vue'
+import { useI18n } from '@/i18n'
+
+const { language, t, windowLabel } = useI18n()
 
 const props = defineProps({
   activeTab: { type: String, default: 'analysis' },
@@ -129,6 +164,21 @@ const PHASE_CN = {
   CleaningCoagulation: '清洁凝血',
 }
 
+const PHASE_EN = {
+  Preparation: 'Preparation',
+  CalotTriangleDissection: 'Calot Triangle Dissection',
+  ClippingCutting: 'Clipping and Cutting',
+  GallbladderDissection: 'Gallbladder Dissection',
+  GallbladderPackaging: 'Gallbladder Packaging',
+  GallbladderRetraction: 'Gallbladder Retraction',
+  CleaningCoagulation: 'Cleaning and Coagulation',
+}
+
+const phaseLabel = (phase) => {
+  const table = language.value === 'zh' ? PHASE_CN : PHASE_EN
+  return table[phase] || phase || t('right.unknownPhase')
+}
+
 // 字符 bigram Jaccard 相似度，用来判断新内容是否跟已有句子近似重复
 function bigrams(s) {
   const t = String(s || '').replace(/\s+/g, '')
@@ -146,6 +196,7 @@ function jaccard(a, b) {
 function stripPhaseHeader(t) {
   return String(t || '')
     .replace(/^【[^】]*】\s*/, '')
+    .replace(/^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?s?\s*[：:]\s*/i, '')
     .replace(/【专家实时快照[^】]*】/g, '')
     .replace(/该段为实时快照，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
     .replace(/已基于\s*\d+\s*帧快速更新手术进程，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
@@ -254,44 +305,86 @@ const _chapterCache = new Map()
 
 const chapters = computed(() => {
   const sorted = [...(props.summaries || [])].sort((a, b) => a.window_id - b.window_id)
-  const out = []
-  let cur = null
-  for (const s of sorted) {
-    const phase = s.phase || 'Unknown'
-    if (cur && cur.phase === phase) {
-      cur.windows.push(s)
-      cur.endTime = s.end_time
-    } else {
-      cur = {
-        key: `${phase}-${s.window_id}`,
-        phase,
-        phaseLabel: PHASE_CN[phase] || phase || '未知阶段',
-        startTime: s.start_time,
-        endTime: s.end_time,
-        windows: [s],
-      }
-      out.push(cur)
-    }
-  }
   const currentId = props.currentSummary?.window_id ?? -1
-  for (const ch of out) {
-    const updatedWindows = ch.windows.filter(w => w.stage === 2)
-    const src = updatedWindows.length > 0 ? updatedWindows : ch.windows
-    // 指纹：窗口 id+stage 序列；只要没新加/升级窗口就直接用缓存
-    const sig = src.map(w => `${w.window_id}:${w.stage || 0}`).join(',')
-    const cached = _chapterCache.get(ch.key)
-    if (cached && cached.sig === sig) {
-      ch.mergedSummary = cached.merged
-    } else {
-      ch.mergedSummary = mergeIncrementally(src)
-      _chapterCache.set(ch.key, { sig, merged: ch.mergedSummary })
+  return sorted.map((s) => {
+    const phase = s.phase || 'Unknown'
+    const cleaned = stripPhaseHeader(s.summary)
+    return {
+      key: `window-${s.window_id}-${s.stage || 0}`,
+      phase,
+      phaseLabel: phaseLabel(phase),
+      startTime: s.start_time,
+      endTime: s.end_time,
+      windows: [s],
+      windowLabel: windowLabel(s.window_id + 1),
+      mergedSummary: cleaned || t('right.emptyWindowResult'),
+      containsCurrent: s.window_id === currentId,
     }
-    ch.containsCurrent = ch.windows.some(w => w.window_id === currentId)
-  }
-  return out
+  })
 })
 
 const totalWindows = computed(() => (props.summaries || []).length)
+
+const latestChapter = computed(() => {
+  if (!chapters.value.length) return null
+  return topChapters.value[0] || chapters.value.reduce((latest, ch) => {
+    const latestId = latest?.windows?.[0]?.window_id ?? -1
+    const currentId = ch?.windows?.[0]?.window_id ?? -1
+    return currentId > latestId ? ch : latest
+  }, null)
+})
+
+const topChapters = computed(() => {
+  if (!chapters.value.length) return []
+  const currentId = props.currentSummary?.window_id
+  if (Number.isFinite(currentId)) {
+    const nearPlayback = [...chapters.value]
+      .filter(ch => (ch.windows?.[0]?.window_id ?? -1) <= currentId)
+      .sort((a, b) => (b.windows?.[0]?.window_id ?? -1) - (a.windows?.[0]?.window_id ?? -1))
+      .slice(0, 2)
+    if (nearPlayback.length) return nearPlayback
+  }
+  return [...chapters.value]
+    .sort((a, b) => (b.windows?.[0]?.window_id ?? -1) - (a.windows?.[0]?.window_id ?? -1))
+    .slice(0, 2)
+})
+
+const historyChapters = computed(() => {
+  const topIds = new Set(topChapters.value.map(ch => ch.windows?.[0]?.window_id))
+  const history = [...chapters.value]
+    .filter(ch => !topIds.has(ch.windows?.[0]?.window_id))
+    .sort((a, b) => (b.windows?.[0]?.window_id ?? 0) - (a.windows?.[0]?.window_id ?? 0))
+  const groups = []
+  for (const ch of history) {
+    const last = groups[groups.length - 1]
+    const lastMinId = last ? Math.min(...last.windows.map(w => w.window_id ?? -1)) : -1
+    const curId = ch.windows?.[0]?.window_id ?? -1
+    const contiguous = last && curId === lastMinId - 1
+    const sim = last ? jaccard(bigrams(last.mergedSummary), bigrams(ch.mergedSummary)) : 0
+    const samePhase = last && last.phase === ch.phase
+
+    if (last && contiguous && (sim >= 0.35 || (samePhase && sim >= 0.22))) {
+      last.windows = [...last.windows, ...ch.windows]
+      last.startTime = Math.min(last.startTime, ch.startTime)
+      last.endTime = Math.max(last.endTime, ch.endTime)
+      const chronological = [...last.windows].sort((a, b) => (a.window_id ?? 0) - (b.window_id ?? 0))
+      last.mergedSummary = mergeIncrementally(chronological)
+      const ids = last.windows.map(w => (w.window_id ?? 0) + 1)
+      last.windowLabel = ids.length > 1
+        ? windowLabel(Math.min(...ids), Math.max(...ids))
+        : windowLabel(ids[0])
+      last.key = `history-${Math.min(...ids)}-${Math.max(...ids)}-${last.windows.length}`
+      last.containsCurrent = last.windows.some(w => w.window_id === (props.currentSummary?.window_id ?? -1))
+    } else {
+      groups.push({
+        ...ch,
+        windowLabel: windowLabel((ch.windows?.[0]?.window_id ?? 0) + 1),
+        key: `history-${ch.windows?.[0]?.window_id ?? 0}-${ch.stage || 0}`,
+      })
+    }
+  }
+  return groups
+})
 
 const bleedingStatus = computed(() => {
   const sorted = [...(props.summaries || [])].sort((a, b) => (a.window_id ?? 0) - (b.window_id ?? 0))
@@ -310,31 +403,29 @@ const bleedingStatus = computed(() => {
   if (lastResolved) {
     return {
       status: 'resolved',
-      title: '出血已控制',
+      title: t('right.bleedingControlled'),
       windowId: lastResolved.window_id,
       startTime: lastResolved.start_time,
       endTime: lastResolved.end_time,
-      text: bleedingText(lastResolved.summary, '活动性出血已控制，继续观察术野。')
+      text: bleedingText(lastResolved.summary, t('right.bleedingControlledFallback'))
     }
   }
 
   if (lastActive) {
     return {
       status: 'active',
-      title: '活动性出血',
+      title: t('right.activeBleeding'),
       windowId: lastActive.window_id,
       startTime: lastActive.start_time,
       endTime: lastActive.end_time,
-      text: bleedingText(lastActive.summary, '当前窗口出现大量活动性出血，需要重点关注。')
+      text: bleedingText(lastActive.summary, t('right.activeBleedingFallback'))
     }
   }
 
   return null
 })
 
-const currentChapter = computed(() =>
-  chapters.value.find(c => c.containsCurrent) || chapters.value[chapters.value.length - 1]
-)
+const currentChapter = computed(() => latestChapter.value || chapters.value[chapters.value.length - 1])
 
 const currentChapterAsSummary = computed(() => {
   const c = currentChapter.value
@@ -352,6 +443,13 @@ const copyChapter = () => {
   if (c?.mergedSummary) {
     navigator.clipboard.writeText(c.mergedSummary)
   }
+}
+
+const seekChapter = (chapter) => {
+  const windows = chapter?.windows || []
+  if (!windows.length) return
+  const target = [...windows].sort((a, b) => (b.window_id ?? 0) - (a.window_id ?? 0))[0]
+  emit('seekToWindow', target.window_id)
 }
 </script>
 
@@ -552,19 +650,87 @@ const copyChapter = () => {
   line-height: 1.65;
 }
 
+.latest-chapters {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 0 0 22px;
+}
+
+.latest-chapter {
+  margin: 0 0 22px;
+  padding: 24px 26px 28px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 2px solid rgba(245, 158, 11, 0.65);
+  border-left: 7px solid var(--accent-primary);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.latest-chapters .latest-chapter {
+  margin: 0;
+}
+
+.latest-chapter.secondary {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.42);
+  border-left-width: 5px;
+}
+
+.latest-label {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.latest-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.latest-text {
+  font-size: 34px;
+  line-height: 1.65;
+  font-weight: 650;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.latest-chapter.secondary .latest-text {
+  font-size: 31px;
+}
+
+.history-title {
+  margin: 8px 0 6px;
+  color: var(--text-tertiary);
+  font-size: 22px;
+  font-weight: 700;
+}
+
 .chapter {
   padding: 16px 0 18px;
   border-bottom: 1px dashed var(--border-subtle);
+  cursor: pointer;
 }
 .chapter:last-of-type { border-bottom: none; }
 .chapter.active .chapter-phase {
   color: var(--accent-primary);
 }
 .chapter.active {
-  background: linear-gradient(90deg, var(--accent-glow), transparent);
-  margin: 0 -22px;
-  padding: 18px 24px 20px;
-  border-left: 3px solid var(--accent-primary);
+  background: transparent;
+  margin: 0;
+  padding: 16px 0 18px;
+  border-left: none;
 }
 .chapter-head {
   display: flex;
@@ -697,9 +863,9 @@ const copyChapter = () => {
 }
 
 .chapter.active {
-  margin: 0 -24px;
-  padding: 24px 28px 28px;
-  border-left-width: 6px;
+  margin: 0;
+  padding: 22px 0 24px;
+  border-left-width: 0;
 }
 
 .an-actions {

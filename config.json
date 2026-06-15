@@ -95,6 +95,28 @@
             "retry_delay": 1.0,
             "comment": "Gemini 3.0 Flash API - Google多模态分析，需设置GEMINI_API_KEY环境变量 [可选服务]，max_tokens需足够大以避免中文输出被截断"
         },
+        "realtime_open_vision": {
+            "enabled": true,
+            "provider": "gemini",
+            "api_key_env": "GEMINI_API_KEY",
+            "model_name": "gemini-3.1-pro-preview",
+            "thinking_level": "low",
+            "max_images": 8,
+            "max_tokens": 180,
+            "timeout": 10.0,
+            "temperature": 0.1,
+            "comment": "实时开放视觉兜底专家：可替换模型，默认关闭 thinking，用少量压缩帧补充 YOLO/Triplet 未覆盖的器械、动作和组织描述"
+        },
+        "translation": {
+            "enabled": true,
+            "provider": "gemini",
+            "api_key_env": "GEMINI_API_KEY",
+            "model_name": "gemini-3.1-flash-preview",
+            "thinking_level": "none",
+            "max_tokens": 220,
+            "temperature": 0.0,
+            "comment": "UI 摘要中英文切换的文本翻译模型：只翻译已有分析，不参与医学判断"
+        },
         "yolo": {
             "enabled": true,
             "model_path": "/home/user/proj/surg_agent/detection_expert/runs/yolo26s_cholec_tool/weights/best.pt",
@@ -123,7 +145,7 @@
         }
     },
     "video_processing": {
-        "window_duration": 10.0,
+        "window_duration": 5.0,
         "sample_interval": 1.0,
         "frame_storage": {
             "storage_base": "/home/user/proj/video_processor/video_stream_app/sessions",
@@ -138,7 +160,7 @@
             "prune_every_frames": 50,
             "comment": "帧存储配置: 本地视频按 fps 保存；实时流按 live_fps 保存并只保留 live_retention_seconds 秒，避免长时间测试打满磁盘"
         },
-        "comment": "N=10秒窗口，1秒采样一帧 → 10 帧/窗口；Stage2 Gemini 取其中 3 帧做多模态精修"
+        "comment": "N=5秒窗口，1秒采样一帧 → 5 帧/窗口；实时模式先出低延迟专家快照，OpenVision/SurgR1/Gemini 后续覆盖"
     },
     "analysis": {
         "questions": {

@@ -70,6 +70,10 @@ surgr1_continuous_flags: dict = {}
 # Key: session_id, Value: list of tasks
 active_surgr1_tasks: dict = {}
 
+# Text-only translation cache for UI language switching.
+# Key: (target_lang, source_text)
+summary_translation_cache: dict = {}
+
 # Global stream start times for time synchronization
 # Key: session_id, Value: float (unix timestamp when processing started)
 stream_start_times: dict = {}
@@ -137,16 +141,63 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
     phase_cn = PHASE_LABEL_CN.get(phase_raw) or PHASE_LABEL_CN.get(phase) or "当前阶段"
 
     tools = (expert_pack.get("yolo") or {}).get("tools", [])[:5]
+    short_action = expert_pack.get("short_action") or {}
     tool_names = []
     for t in tools:
         label = t.get("label", "")
         name = TOOL_LABEL_CN.get(label, label)
         if name:
             tool_names.append(name)
+    if short_action.get("detected") and not any(name in tool_names for name in ("电钩", "剪刀", "施夹器")):
+        tool_names.append("电钩/尖端器械")
     tool_text = "、".join(tool_names) if tool_names else "未见明确器械"
 
-    time_text = f"{start_time:.0f}-{end_time:.0f}s"
-    return f"{time_text}：当前处于{phase_cn}，可见{tool_text}。"
+    action_text = ""
+    if short_action.get("detected"):
+        action_text = f" {short_action.get('description', '可见短时器械接触动作')}。"
+    return f"当前处于{phase_cn}，可见{tool_text}。{action_text}".strip()
+
+
+def _merge_realtime_evidence(
+    summary_text: str,
+    stage1_summary: str = "",
+    open_vlm_summary: str = "",
+    short_action: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Preserve high-value realtime evidence when slower refinement overwrites a window."""
+    text = (summary_text or "").strip()
+    short_action = short_action or {}
+    evidence_terms = (
+        "穿刺", "穿孔", "穿透", "钻孔", "器械进入", "进入视野", "吸引器", "抓钳",
+        "电钩", "剪刀", "施夹器", "尖端", "接触", "点触", "牵拉", "暴露",
+    )
+    negative_terms = ("无明确新增动作", "未见明确器械", "未见手术器械", "没有器械")
+
+    def _sentences(s: str) -> List[str]:
+        import re as _re
+        return [p.strip(" \n。；;") for p in _re.split(r"[。；;\n]+", s or "") if p.strip()]
+
+    def _append(sentence: str):
+        nonlocal text
+        sentence = sentence.strip(" \n。；;")
+        if not sentence:
+            return
+        if any(term in sentence for term in negative_terms):
+            return
+        if not any(term in sentence for term in evidence_terms):
+            return
+        if sentence in text:
+            return
+        text = f"{text.rstrip('。')}。{sentence}。" if text else f"{sentence}。"
+
+    for source in (stage1_summary, open_vlm_summary):
+        for sentence in _sentences(source):
+            _append(sentence)
+
+    if short_action.get("detected"):
+        _append(short_action.get("description", "可见短时器械接触动作"))
+
+    return text
 
 
 def _queue_embedding(session_id: str, window_id: int, summary_text: str,
@@ -184,7 +235,7 @@ def open_video_source(video_path: str):
 
     resolved = resolve_video_source(video_path)
     if resolved.is_simulator and resolved.source != video_path:
-        cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=True)
+        cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=False)
         logger.info(
             "[SurgR1] Using paced simulator source: %s @ %.1ffps",
             resolved.source,
@@ -300,6 +351,8 @@ async def frame_capture_for_playback(
     if not cap or not cap.isOpened():
         logger.warning(f"[FrameCapture] Could not open video source for session {session_id}")
         return
+    resolved_video_source = resolve_video_source(video_source)
+    is_finite_simulator = bool(resolved_video_source.is_simulator and resolved_video_source.source != video_source)
     
     logger.info(f"[FrameCapture] Started frame capture task for session {session_id} at 10 FPS")
     
@@ -326,6 +379,9 @@ async def frame_capture_for_playback(
             ret, bgr_frame = await loop.run_in_executor(None, cap.read)
             
             if not ret:
+                if is_finite_simulator:
+                    logger.info(f"[FrameCapture] Simulator source ended for session {session_id}")
+                    break
                 if is_realtime_stream:
                     await asyncio.sleep(0.05)
                     continue
@@ -335,7 +391,9 @@ async def frame_capture_for_playback(
                     continue
             
             # Calculate current time
-            if is_realtime_stream:
+            if is_finite_simulator and hasattr(cap, "last_timestamp"):
+                current_time = float(cap.last_timestamp())
+            elif is_realtime_stream:
                 current_time = time_module.time() - stream_start_time
             else:
                 fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -486,6 +544,11 @@ class SemanticSearchRequest(BaseModel):
 class TextSearchRequest(BaseModel):
     session_id: str
     query: str
+
+
+class TranslateSummaryRequest(BaseModel):
+    text: str
+    target_lang: str = "en"
 
 
 @router.post("/analyze-frames-batch")
@@ -1687,6 +1750,8 @@ async def surgr1_continuous_task(
         
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         is_realtime_stream = video_path.startswith(("http://", "https://", "rtsp://", "device://", "decklink://", "simulator://"))
+        resolved_video_source = resolve_video_source(video_path)
+        is_finite_simulator = bool(resolved_video_source.is_simulator and resolved_video_source.source != video_path)
         
         # For realtime streams, use wall clock time instead of frame-based time
         # This ensures timestamps match the frontend's elapsed time
@@ -1772,6 +1837,9 @@ async def surgr1_continuous_task(
             ret, bgr_frame = await loop.run_in_executor(None, _blocking_read, cap)
             
             if not ret:
+                if is_finite_simulator:
+                    logger.info(f"[SurgR1] Simulator source ended for session {session_id}, stopping continuous processing")
+                    break
                 # For streams, wait and retry; for files, loop
                 if is_realtime_stream:
                     consecutive_read_failures += 1
@@ -1808,7 +1876,9 @@ async def surgr1_continuous_task(
             
             # For realtime streams, use actual elapsed time (wall clock)
             # For local videos, use frame-based time calculation
-            if is_realtime_stream:
+            if is_finite_simulator and hasattr(cap, "last_timestamp"):
+                current_time = float(cap.last_timestamp())
+            elif is_realtime_stream:
                 current_time = time_module.time() - stream_start_time
             else:
                 current_time = frame_idx / fps
@@ -2498,6 +2568,7 @@ async def glm_summarization_task(
             # 获取所有窗口ID并排序
             r1_window_ids = sorted(window_frames.keys())
             stage1_ready_windows = []
+            playback_limited_elapsed = None
 
             # Live fast path: use independently saved stream frames to emit
             # Stage 1 without waiting for SurgR1. This is the intended v4
@@ -2508,16 +2579,24 @@ async def glm_summarization_task(
                 try:
                     capture_stats = get_frame_capture_service().get_capture_stats(session_id) or {}
                     live_elapsed = float(capture_stats.get("last_capture_time") or 0)
+                    try:
+                        video_session_for_clock = get_video_session(db, session_id) or {}
+                        playback_position = float(video_session_for_clock.get("current_position") or 0)
+                        if playback_position > 0:
+                            live_elapsed = min(live_elapsed, playback_position + 1.0)
+                        playback_limited_elapsed = live_elapsed
+                    except Exception as e:
+                        logger.debug(f"[GLM Task] Could not clamp live clock to playback position: {e}")
                     if live_elapsed > 0:
                         max_completed = int(live_elapsed / settings.WINDOW_DURATION)
                         candidate_ids = set(range(0, max_completed))
 
                         # Realtime fast track: for the currently playing window,
-                        # emit an expert-only snapshot after a few seconds. Do
-                        # not wait for the full 10s window, Gemini, or R1.
+                        # emit an expert-only snapshot after a short warmup. Do
+                        # not wait for the full window, Gemini, or R1.
                         current_wid = int(live_elapsed / settings.WINDOW_DURATION)
                         current_start = current_wid * settings.WINDOW_DURATION
-                        if live_elapsed - current_start >= min(3.0, settings.WINDOW_DURATION * 0.3):
+                        if live_elapsed - current_start >= min(1.5, settings.WINDOW_DURATION * 0.3):
                             candidate_ids.add(current_wid)
 
                         for wid in sorted(candidate_ids):
@@ -2533,7 +2612,7 @@ async def glm_summarization_task(
                                 end_time=end_time,
                                 subfolder="frames"
                             )
-                            if len(saved) >= 3:
+                            if len(saved) >= 2:
                                 stage1_ready_windows.append(wid)
                 except Exception as e:
                     logger.warning(f"[GLM Task] Live Stage 1 readiness check failed: {e}")
@@ -2601,7 +2680,26 @@ async def glm_summarization_task(
                     # 帧数不足，继续等待 R1 处理更多帧
                     waiting_windows.append((wid, frame_count, f"需要{MIN_FRAMES_PER_WINDOW}帧(当前{frame_count})"))
 
+            if is_live and playback_limited_elapsed is not None:
+                max_allowed_window = int(playback_limited_elapsed / settings.WINDOW_DURATION)
+                new_windows = [wid for wid in new_windows if wid <= max_allowed_window]
+
             new_windows = sorted(set(new_windows))
+
+            if is_live and new_windows:
+                draft_ids = sorted(
+                    [wid for wid in new_windows if wid not in stage1_processed_windows],
+                    reverse=True,
+                )
+                refinement_ids = sorted(
+                    [wid for wid in new_windows if wid in stage1_processed_windows]
+                )
+                selected_ids = draft_ids[:2]
+                if len(draft_ids) > 2:
+                    selected_ids.append(draft_ids[-1])
+                if not selected_ids and refinement_ids:
+                    selected_ids = refinement_ids[:1]
+                new_windows = list(dict.fromkeys(selected_ids))
             
             # Log window frame counts for debugging
             window_frame_counts = {wid: len(window_frames[wid]) for wid in window_frames.keys()}
@@ -2615,24 +2713,39 @@ async def glm_summarization_task(
                 logger.info(f"[GLM Task] Waiting for R1: {waiting_windows}")
             
             if not new_windows:
-                no_new_frames_count += 1
-                if no_new_frames_count >= max_wait_for_new_frames:
-                    logger.info(f"[GLM Task] No new frames for {max_wait_for_new_frames}s, checking for remaining windows...")
-                    
-                    # ========== 【新增】流结束时强制处理所有剩余窗口 ==========
-                    # 确保即使帧数不足的窗口也能有总结，避免历史记录出现空洞
-                    remaining_windows = [wid for wid in all_window_ids if wid not in processed_windows and len(window_frames.get(wid, [])) >= 1]
+                capture_stats = get_frame_capture_service().get_capture_stats(session_id) if is_live else None
+                capture_stopped = bool(capture_stats and not capture_stats.get("is_running"))
+                if capture_stopped:
+                    remaining_windows = [
+                        wid for wid in all_window_ids
+                        if wid not in processed_windows and len(window_frames.get(wid, [])) >= 1
+                    ]
                     if remaining_windows:
-                        logger.info(f"[GLM Task] Force processing {len(remaining_windows)} remaining windows before exit: {remaining_windows}")
+                        logger.info(f"[GLM Task] Capture ended; processing remaining windows before exit: {remaining_windows}")
                         new_windows = remaining_windows
-                        no_new_frames_count = 0  # 重置计数器，允许处理完成
-                        # 继续下面的处理逻辑，不 continue
                     else:
-                        logger.info(f"[GLM Task] No remaining windows with frames, stopping for session {session_id}")
+                        logger.info(f"[GLM Task] Capture ended and no remaining windows; stopping for session {session_id}")
+                        update_session_status(db, session_id, "completed")
                         break
                 else:
-                    await asyncio.sleep(1)
-                    continue
+                    no_new_frames_count += 1
+                    if no_new_frames_count >= max_wait_for_new_frames:
+                        logger.info(f"[GLM Task] No new frames for {max_wait_for_new_frames}s, checking for remaining windows...")
+                        
+                        # ========== 【新增】流结束时强制处理所有剩余窗口 ==========
+                        # 确保即使帧数不足的窗口也能有总结，避免历史记录出现空洞
+                        remaining_windows = [wid for wid in all_window_ids if wid not in processed_windows and len(window_frames.get(wid, [])) >= 1]
+                        if remaining_windows:
+                            logger.info(f"[GLM Task] Force processing {len(remaining_windows)} remaining windows before exit: {remaining_windows}")
+                            new_windows = remaining_windows
+                            no_new_frames_count = 0  # 重置计数器，允许处理完成
+                            # 继续下面的处理逻辑，不 continue
+                        else:
+                            logger.info(f"[GLM Task] No remaining windows with frames, stopping for session {session_id}")
+                            break
+                    else:
+                        await asyncio.sleep(1)
+                        continue
             
             no_new_frames_count = 0  # Reset counter when we have new windows
             
@@ -2705,6 +2818,7 @@ async def glm_summarization_task(
                 
                 # ========== 加载窗口帧图片用于GLM多模态验证 ==========
                 window_images = None
+                expert_images = None
                 if storage_path:
                     try:
                         # 获取该时间范围内的帧文件列表
@@ -2716,23 +2830,44 @@ async def glm_summarization_task(
                         )
                         
                         if frame_files:
-                            window_images = []
-                            # 最多加载6张图片（GLM限制）
-                            max_images = 6
-                            step = max(1, len(frame_files) // max_images)
-                            sampled_files = frame_files[::step][:max_images]
+                            def _sample_frame_infos(files, max_count):
+                                if len(files) <= max_count:
+                                    return files
+                                import numpy as _np_sample
+                                idxs = _np_sample.linspace(0, len(files) - 1, max_count).round().astype(int)
+                                sampled = []
+                                seen = set()
+                                for idx in idxs:
+                                    idx = int(idx)
+                                    if idx in seen:
+                                        continue
+                                    seen.add(idx)
+                                    sampled.append(files[idx])
+                                return sampled
+
+                            def _load_images(sampled_files):
+                                loaded = []
+                                for frame_info in sampled_files:
+                                    frame_path = Path(storage_path) / frame_info["path"]
+                                    if frame_path.exists():
+                                        try:
+                                            img = Image.open(frame_path)
+                                            loaded.append(img)
+                                        except Exception as e:
+                                            logger.warning(f"[GLM Task] Failed to load frame {frame_path}: {e}")
+                                return loaded
                             
-                            for frame_info in sampled_files:
-                                frame_path = Path(storage_path) / frame_info["path"]
-                                if frame_path.exists():
-                                    try:
-                                        img = Image.open(frame_path)
-                                        window_images.append(img)
-                                    except Exception as e:
-                                        logger.warning(f"[GLM Task] Failed to load frame {frame_path}: {e}")
+                            # Expert pass gets denser full-frame samples so short
+                            # tool-tip actions are not missed. Gemini still gets a
+                            # small image set below.
+                            expert_images = _load_images(_sample_frame_infos(frame_files, 20))
+                            window_images = _load_images(_sample_frame_infos(frame_files, 6))
                             
                             if window_images:
-                                logger.info(f"[GLM Task] Loaded {len(window_images)} images for window {window_id}")
+                                logger.info(
+                                    f"[GLM Task] Loaded {len(window_images)} Gemini images and "
+                                    f"{len(expert_images or [])} expert images for window {window_id}"
+                                )
                             else:
                                 window_images = None
                     except Exception as e:
@@ -2747,6 +2882,7 @@ async def glm_summarization_task(
                     "window_id": window_id,
                     "frame_analyses": frame_analyses,
                     "images": window_images,  # GLM多模态验证：图片 + R1分析结果
+                    "expert_images": expert_images,
                     "stage1_only": window_id in stage1_ready_windows and not frame_analyses
                 })
                 
@@ -2773,7 +2909,30 @@ async def glm_summarization_task(
                     from ..services.glm_client import WindowSummary
                     history_manager = get_history_manager(session_id)
                     
-                    sorted_windows = sorted(windows_to_process, key=lambda w: w.get("window_id", 0))
+                    if is_live:
+                        draft_windows = sorted(
+                            [
+                                w for w in windows_to_process
+                                if w.get("window_id") not in stage1_processed_windows
+                            ],
+                            key=lambda w: w.get("window_id", 0),
+                            reverse=True,
+                        )
+                        refinement_windows = sorted(
+                            [
+                                w for w in windows_to_process
+                                if w.get("window_id") in stage1_processed_windows
+                            ],
+                            key=lambda w: w.get("window_id", 0),
+                        )
+                        # Keep live UI close to playback: never spend a loop
+                        # backfilling a long draft backlog before showing the
+                        # newest windows. Older gaps are filled by later loops.
+                        max_live_drafts = 2
+                        max_live_refinements = 0 if draft_windows else 1
+                        sorted_windows = draft_windows[:max_live_drafts] + refinement_windows[:max_live_refinements]
+                    else:
+                        sorted_windows = sorted(windows_to_process, key=lambda w: w.get("window_id", 0))
                     
                     # Pipeline v4: 两阶段流程
                     # Stage 1 = live mode: local experts only, no VLM/R1 wait;
@@ -2802,6 +2961,276 @@ async def glm_summarization_task(
                                 pass
                         return out
 
+                    def _uniform_sample(items, max_count: int = 12):
+                        if not items:
+                            return []
+                        if len(items) <= max_count:
+                            return items
+                        idxs = _np.linspace(0, len(items) - 1, max_count).round().astype(int)
+                        sampled = []
+                        seen = set()
+                        for idx in idxs:
+                            idx = int(idx)
+                            if idx in seen:
+                                continue
+                            seen.add(idx)
+                            sampled.append(items[idx])
+                        return sampled
+
+                    async def _open_vlm_realtime_hint(
+                        vlm_client,
+                        images,
+                        start_time: float,
+                        end_time: float,
+                        expert_text: str,
+                    ) -> Dict[str, Any]:
+                        """Open-set visual fallback for live Stage 1.
+
+                        This is deliberately small: 4 compressed frames, low
+                        temperature, short output. It covers instruments/actions
+                        outside YOLO/Triplet vocab such as brief puncture-like
+                        contact, drilling-like tip movement, gauze handling, and
+                        tissue changes.
+                        """
+                        config = load_config()
+                        open_cfg = config.get("services", {}).get("realtime_open_vision", {})
+                        if not open_cfg.get("enabled", True):
+                            return {}
+                        if not images:
+                            return {}
+
+                        provider = open_cfg.get("provider", "gemini")
+                        model_name = open_cfg.get("model_name")
+                        thinking_level = open_cfg.get("thinking_level", "none")
+                        max_images = int(open_cfg.get("max_images", 4) or 4)
+                        max_tokens = int(open_cfg.get("max_tokens", 180) or 180)
+                        timeout_s = float(open_cfg.get("timeout", 8.0) or 8.0)
+                        temperature = float(open_cfg.get("temperature", 0.1) or 0.1)
+
+                        vision_client = vlm_client
+                        if provider == "gemini":
+                            try:
+                                from ..services.gemini_client import GeminiClient
+                                cache_key = (provider, model_name or "", thinking_level)
+                                cached = getattr(_open_vlm_realtime_hint, "_client_cache", {})
+                                if cache_key not in cached:
+                                    cached[cache_key] = GeminiClient(
+                                        model_name=model_name,
+                                        thinking_level=thinking_level,
+                                        max_tokens=max_tokens,
+                                        max_concurrent=1,
+                                    )
+                                    setattr(_open_vlm_realtime_hint, "_client_cache", cached)
+                                vision_client = cached[cache_key]
+                            except Exception as e:
+                                logger.warning(f"[OpenVLM] Could not create realtime Gemini client: {e}")
+
+                        if not hasattr(vision_client, "_analyze_images_with_timestamps"):
+                            return {}
+                        sampled = _uniform_sample(images, max_images)
+                        if not sampled:
+                            return {}
+                        if len(sampled) == 1:
+                            timestamps = [(start_time + end_time) / 2]
+                        else:
+                            timestamps = [
+                                start_time + (end_time - start_time) * i / (len(sampled) - 1)
+                                for i in range(len(sampled))
+                            ]
+
+                        question = (
+                            "请作为开放视觉专家分析这些连续腹腔镜帧，不要受 YOLO 类别限制。"
+                            "重点找：短暂出现的尖端器械、电钩/钻孔样点触、刺入/穿孔样接触、"
+                            "抓钳牵拉、纱布/棉片、冲吸器、组织被顶起/牵拉/接触等。"
+                            "只要画面中出现任何疑似器械、器械尖端、夹持/牵拉/点触/进入视野动作，"
+                            "即使类别不确定也必须描述，不要因为 YOLO 未识别就回答无动作。"
+                            "只有在全部帧都完全没有器械或疑似器械时，才回答：无明确新增动作。"
+                            "如果有，请只用一句中文输出：可见什么器械/物体，在什么组织附近，做了什么动作。"
+                            "禁止描述光照、反光、阴影、水珠；不要输出英文；不要输出 JSON。\n\n"
+                            f"本地专家初判：\n{expert_text[:800]}"
+                        )
+                        async def _call_vision(client, level_label: str):
+                            result = await asyncio.wait_for(
+                                client._analyze_images_with_timestamps(
+                                    images=sampled,
+                                    timestamps=timestamps,
+                                    question=question,
+                                    system_prompt="你是腹腔镜手术开放视觉专家，输出短中文事实描述，只描述器械、动作、组织。",
+                                    temperature=temperature,
+                                    max_tokens=max_tokens,
+                                ),
+                                timeout=timeout_s,
+                            )
+                            result["_thinking_level_used"] = level_label
+                            return result
+
+                        try:
+                            result = await _call_vision(vision_client, thinking_level)
+                        except Exception as e:
+                            error_text = str(e)
+                            if provider == "gemini" and "Budget 0 is invalid" in error_text and thinking_level == "none":
+                                try:
+                                    from ..services.gemini_client import GeminiClient
+                                    fallback_key = (provider, model_name or "", "low")
+                                    cached = getattr(_open_vlm_realtime_hint, "_client_cache", {})
+                                    if fallback_key not in cached:
+                                        cached[fallback_key] = GeminiClient(
+                                            model_name=model_name,
+                                            thinking_level="low",
+                                            max_tokens=max_tokens,
+                                            max_concurrent=1,
+                                        )
+                                        setattr(_open_vlm_realtime_hint, "_client_cache", cached)
+                                    logger.warning("[OpenVLM] Model rejected thinking=none; retrying with thinking=low")
+                                    result = await _call_vision(cached[fallback_key], "low")
+                                except Exception as retry_e:
+                                    logger.warning(f"[OpenVLM] Realtime hint failed after fallback: {retry_e}")
+                                    return {"success": False, "error": str(retry_e), "initial_error": error_text}
+                            else:
+                                logger.warning(f"[OpenVLM] Realtime hint failed: {e}")
+                                return {"success": False, "error": error_text}
+
+                        if (
+                            provider == "gemini"
+                            and not result.get("success")
+                            and "Budget 0 is invalid" in str(result.get("error", ""))
+                            and thinking_level == "none"
+                        ):
+                            try:
+                                from ..services.gemini_client import GeminiClient
+                                fallback_key = (provider, model_name or "", "low")
+                                cached = getattr(_open_vlm_realtime_hint, "_client_cache", {})
+                                if fallback_key not in cached:
+                                    cached[fallback_key] = GeminiClient(
+                                        model_name=model_name,
+                                        thinking_level="low",
+                                        max_tokens=max_tokens,
+                                        max_concurrent=1,
+                                    )
+                                    setattr(_open_vlm_realtime_hint, "_client_cache", cached)
+                                logger.warning("[OpenVLM] Model returned thinking=none error; retrying with thinking=low")
+                                result = await _call_vision(cached[fallback_key], "low")
+                            except Exception as retry_e:
+                                logger.warning(f"[OpenVLM] Realtime hint failed after returned-error fallback: {retry_e}")
+                                return {
+                                    "success": False,
+                                    "error": str(retry_e),
+                                    "initial_error": result.get("error"),
+                                }
+
+                        text = (result.get("text") or "").strip()
+                        if not result.get("success") or not text:
+                            return {"success": False, "error": result.get("error")}
+                        if any(token in text for token in ("无明确新增动作", "未见明确", "没有明确", "无明显")):
+                            return {"success": True, "summary": "", "raw": text}
+                        return {
+                            "success": True,
+                            "summary": text.replace("\n", " ").strip(" 。") + "。",
+                            "raw": text,
+                            "model": result.get("model"),
+                            "provider": provider,
+                            "thinking_level": result.get("_thinking_level_used", thinking_level),
+                            "requested_thinking_level": thinking_level,
+                            "duration_ms": result.get("duration_ms"),
+                        }
+
+                    async def _patch_open_vlm_window(
+                        window_id: int,
+                        meta: Dict[str, Any],
+                        pil_images,
+                        expert_text: str,
+                        expert_pack_base: Dict[str, Any],
+                        stage1_summary_text: str,
+                        stage1_phase: str,
+                    ):
+                        try:
+                            open_vlm_hint = await _open_vlm_realtime_hint(
+                                vlm_client=vlm_client,
+                                images=pil_images,
+                                start_time=meta.get("start_time", 0),
+                                end_time=meta.get("end_time", 0),
+                                expert_text=expert_text,
+                            )
+                            if not open_vlm_hint:
+                                return
+
+                            current_summary = stage1_summary_text
+                            current_phase = stage1_phase
+                            current_stage = 1
+                            others_data: Dict[str, Any] = {}
+                            try:
+                                existing_summary = next(
+                                    (
+                                        s for s in get_summaries_by_session(db, db_session_id)
+                                        if (s.get("window_id") if isinstance(s, dict) else getattr(s, "window_id", None)) == window_id
+                                    ),
+                                    None,
+                                )
+                                if existing_summary:
+                                    current_summary = (
+                                        existing_summary.get("glm_summary", "")
+                                        if isinstance(existing_summary, dict)
+                                        else getattr(existing_summary, "summary_text", "")
+                                    ) or current_summary
+                                    current_phase = (
+                                        existing_summary.get("surgical_phase")
+                                        if isinstance(existing_summary, dict)
+                                        else getattr(existing_summary, "surgical_phase", None)
+                                    ) or current_phase
+                                    others_data = (
+                                        existing_summary.get("others")
+                                        if isinstance(existing_summary, dict)
+                                        else getattr(existing_summary, "others_data", None)
+                                    ) or {}
+                                    if isinstance(others_data, str):
+                                        import json as _json_patch
+                                        others_data = _json_patch.loads(others_data) if others_data else {}
+                                    current_stage = int(others_data.get("stage", current_stage))
+                            except Exception as e:
+                                logger.debug(f"[OpenVLM] Could not load existing window {window_id} before patch: {e}")
+
+                            hint_summary = open_vlm_hint.get("summary", "")
+                            if hint_summary:
+                                normalized_hint = hint_summary.rstrip("。")
+                                if normalized_hint and normalized_hint not in current_summary:
+                                    current_summary = f"{current_summary.rstrip('。')}。{normalized_hint}。"
+
+                            experts = dict((others_data or {}).get("experts") or {})
+                            experts.update({
+                                "phase": expert_pack_base.get("phase", experts.get("phase", {})),
+                                "triplet": expert_pack_base.get("triplet", experts.get("triplet", {})),
+                                "yolo": {
+                                    "tools": expert_pack_base.get("yolo", {}).get("tools", []),
+                                    "total_detections": expert_pack_base.get("yolo", {}).get("total_detections", 0),
+                                },
+                                "short_action": expert_pack_base.get("short_action", experts.get("short_action", {})),
+                                "open_vlm": open_vlm_hint,
+                                "available": expert_pack_base.get("available", experts.get("available", [])),
+                            })
+                            others_data = dict(others_data or {})
+                            others_data["stage"] = current_stage
+                            others_data.setdefault("stage1_summary", stage1_summary_text)
+                            others_data["experts"] = experts
+
+                            create_window_summary(
+                                db=db,
+                                session_id=db_session_id,
+                                window_id=window_id,
+                                start_time=meta.get("start_time", 0),
+                                end_time=meta.get("end_time", 0),
+                                summary_text=current_summary,
+                                dominant_phase=current_phase,
+                                tools_detected=[t["label"] for t in expert_pack_base.get("yolo", {}).get("tools", [])],
+                                key_actions=[],
+                                others_data=others_data,
+                            )
+                            logger.info(
+                                f"[OpenVLM] Window {window_id} patched asynchronously: "
+                                f"{(hint_summary or open_vlm_hint.get('raw') or '')[:80]}"
+                            )
+                        except Exception as e:
+                            logger.warning(f"[OpenVLM] Async patch failed for window {window_id}: {e}")
+
                     for window_data in sorted_windows:
                         # Check cancellation
                         if analysis_cancellation_flags.get(session_id, False):
@@ -2818,8 +3247,8 @@ async def glm_summarization_task(
                         expert_pack: Dict[str, Any] = {}
                         should_emit_stage1 = window_id not in stage1_processed_windows
                         try:
-                            pil_images = window_data.get("images") or []
-                            bgr_frames = _pil_list_to_bgr(pil_images[:5])
+                            pil_images = window_data.get("expert_images") or window_data.get("images") or []
+                            bgr_frames = _pil_list_to_bgr(_uniform_sample(pil_images, 12))
                             # 传入会话内已经走过的阶段集合，让 Phase Expert 不再闪回回退阶段
                             reached = set(getattr(history_manager, "_reached_phases", set()) or set())
                             if bgr_frames:
@@ -2842,6 +3271,18 @@ async def glm_summarization_task(
                                     )
                                     stage1_phase = _canonical_phase(
                                         expert_pack.get("phase", {}).get("label", "Unknown") or "Unknown"
+                                    )
+                                    expert_pack["open_vlm"] = {"pending": True}
+                                    asyncio.create_task(
+                                        _patch_open_vlm_window(
+                                            window_id=window_id,
+                                            meta=meta,
+                                            pil_images=pil_images,
+                                            expert_text=expert_text,
+                                            expert_pack_base=dict(expert_pack),
+                                            stage1_summary_text=stage1_summary_text,
+                                            stage1_phase=stage1_phase,
+                                        )
                                     )
                                 else:
                                     history_context = await history_manager.build_history_context()
@@ -2881,11 +3322,17 @@ async def glm_summarization_task(
                                             "tools": expert_pack.get("yolo", {}).get("tools", []),
                                             "total_detections": expert_pack.get("yolo", {}).get("total_detections", 0),
                                         },
+                                        "short_action": expert_pack.get("short_action", {}),
+                                        "open_vlm": expert_pack.get("open_vlm", {}),
                                         "available": expert_pack.get("available", []),
                                     },
                                 },
                             )
                             stage1_processed_windows.add(window_id)
+
+                            if is_live and should_emit_stage1:
+                                logger.info(f"[GLM Task] Window {window_id} Stage 1 saved; deferring Stage 2")
+                                continue
 
                         # If this live window was triggered only by saved
                         # playback frames, R1 has not produced frame analyses
@@ -2942,6 +3389,57 @@ async def glm_summarization_task(
 
                             if result.get("success"):
                                 summary_text = result.get("summary", "")
+                                previous_stage1_summary = stage1_summary_text
+                                existing_experts: Dict[str, Any] = {}
+                                try:
+                                    existing_summary = next(
+                                        (
+                                            s for s in get_summaries_by_session(db, db_session_id)
+                                            if (s.get("window_id") if isinstance(s, dict) else getattr(s, "window_id", None)) == window_id
+                                        ),
+                                        None,
+                                    )
+                                    if existing_summary:
+                                        existing_others = (
+                                            existing_summary.get("others")
+                                            if isinstance(existing_summary, dict)
+                                            else getattr(existing_summary, "others_data", None)
+                                        ) or {}
+                                        if isinstance(existing_others, str):
+                                            existing_others = json.loads(existing_others) if existing_others else {}
+                                        previous_stage1_summary = (
+                                            existing_others.get("stage1_summary")
+                                            or previous_stage1_summary
+                                            or (
+                                                existing_summary.get("glm_summary", "")
+                                                if isinstance(existing_summary, dict)
+                                                else getattr(existing_summary, "summary_text", "")
+                                            )
+                                        )
+                                        existing_experts = existing_others.get("experts") or {}
+                                except Exception as e:
+                                    logger.debug(f"[GLM Task] Could not merge previous realtime evidence for window {window_id}: {e}")
+
+                                short_action = expert_pack.get("short_action") or {}
+                                existing_short_action = existing_experts.get("short_action") or {}
+                                if not short_action.get("detected") and existing_short_action.get("detected"):
+                                    short_action = existing_short_action
+
+                                open_vlm = expert_pack.get("open_vlm") or {}
+                                existing_open_vlm = existing_experts.get("open_vlm") or {}
+                                if not open_vlm.get("summary") and existing_open_vlm.get("summary"):
+                                    open_vlm = existing_open_vlm
+                                    expert_pack["open_vlm"] = open_vlm
+                                expert_pack["short_action"] = short_action
+
+                                open_vlm_summary = (open_vlm or {}).get("summary", "")
+                                summary_text = _merge_realtime_evidence(
+                                    summary_text=summary_text,
+                                    stage1_summary=previous_stage1_summary,
+                                    open_vlm_summary=open_vlm_summary,
+                                    short_action=short_action,
+                                )
+                                stage1_summary_text = previous_stage1_summary or stage1_summary_text
                                 others_data_raw = result.get("others")
                                 gemini_phase = next((en for cn, en in phase_map.items() if cn in summary_text), "")
                                 r1_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
@@ -3003,6 +3501,8 @@ async def glm_summarization_task(
                                     "tools": expert_pack.get("yolo", {}).get("tools", []),
                                     "total_detections": expert_pack.get("yolo", {}).get("total_detections", 0),
                                 },
+                                "short_action": expert_pack.get("short_action", {}),
+                                "open_vlm": expert_pack.get("open_vlm", {}),
                                 "available": expert_pack.get("available", []),
                             },
                             "surgr1_reasoning": surgr1_reasoning,
@@ -3547,16 +4047,109 @@ async def get_session_summaries(
     
     summaries = get_summaries_by_session(db, session["session_id"])
     
-    return [
-        {
+    out = []
+    for s in summaries:
+        others = s.get("others") or {}
+        payload = {
             "window_id": s.get("window_id"),
             "start_time": s.get("window_start"),
             "end_time": s.get("window_end"),
             "summary": s.get("glm_summary", ""),
             "tts_audio_path": s.get("image_path")  # Use image_path as fallback, no tts_audio_path in new schema
         }
-        for s in summaries
-    ]
+        if isinstance(others, dict):
+            payload["stage"] = int(others.get("stage", 2) or 2)
+            if others.get("stage1_summary"):
+                payload["stage1_summary"] = others.get("stage1_summary")
+            payload["others"] = others
+        out.append(payload)
+    return out
+
+
+@router.post("/translate-summary")
+async def translate_summary(request: TranslateSummaryRequest):
+    """Translate one window summary for UI language switching.
+
+    This is intentionally text-only and cached in memory. It does not alter the
+    stored clinical analysis; it only provides a localized display string.
+    """
+    source = (request.text or "").strip()
+    target = (request.target_lang or "en").lower()
+    if not source:
+        return {"success": True, "text": "", "target_lang": target, "cached": False}
+    if target.startswith("zh"):
+        return {"success": True, "text": source, "target_lang": target, "cached": True}
+
+    key = (target, source)
+    if key in summary_translation_cache:
+        return {
+            "success": True,
+            "text": summary_translation_cache[key],
+            "target_lang": target,
+            "cached": True,
+        }
+
+    config = load_config()
+    translation_cfg = config.get("services", {}).get("translation", {})
+    provider = translation_cfg.get("provider", "gemini")
+    model_name = translation_cfg.get("model_name")
+    max_tokens = int(translation_cfg.get("max_tokens", 220))
+    temperature = float(translation_cfg.get("temperature", 0.0))
+
+    system_prompt = (
+        "You are a surgical UI localization assistant. Translate the Chinese "
+        "laparoscopic cholecystectomy window summary into concise professional "
+        "English. Preserve instruments, anatomy, actions, bleeding status, and "
+        "puncture/contact uncertainty. Do not add new findings. Output only the "
+        "translated sentence(s), no markdown."
+    )
+    prompt = f"Translate to English:\n{source}"
+
+    try:
+        if provider == "glm":
+            client = get_glm_client()
+            result = await client.chat(
+                message=prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                disable_thinking=True,
+            )
+        else:
+            from ..services.gemini_client import GeminiClient
+            client = GeminiClient(
+                model_name=model_name,
+                thinking_level=translation_cfg.get("thinking_level", "none"),
+                max_tokens=max_tokens,
+            )
+            result = await client.chat(
+                message=prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+        text = (result.get("text") or "").strip()
+        if not result.get("success") or not text:
+            raise RuntimeError(result.get("error") or "empty translation")
+        summary_translation_cache[key] = text
+        return {
+            "success": True,
+            "text": text,
+            "target_lang": target,
+            "cached": False,
+            "provider": provider,
+            "model": model_name or result.get("model"),
+        }
+    except Exception as exc:
+        logger.warning(f"[Translate] Failed to translate summary: {exc}")
+        return {
+            "success": False,
+            "text": source,
+            "target_lang": target,
+            "cached": False,
+            "error": str(exc),
+        }
 
 
 @router.get("/summary-at/{session_id}")
@@ -3605,8 +4198,9 @@ async def stream_summaries(
         raise HTTPException(404, "Session not found")
 
     async def event_generator():
-        # Pipeline v4: 同一个 window 可能先来 stage=1，后被 stage=2 覆盖，都要推给前端。
-        last_stage_by_window: Dict[int, int] = {}
+        # Pipeline v4: 同一个 window 可能先来 stage=1，后被 OpenVision
+        # patch，再被 stage=2 覆盖。内容变化也要推给前端，而不只是 stage 增长。
+        last_signature_by_window: Dict[int, str] = {}
         # 4 小时，足够长视频跑完；真实停止靠 session status / cancellation_flag 驱动。
         max_iterations = 14400
         iteration = 0
@@ -3645,9 +4239,15 @@ async def stream_summaries(
                     s_others = (s.get("others") if isinstance(s, dict) else getattr(s, "others_data", None)) or {}
                     # 兼容旧行（无 stage 字段，视为 stage=2 已完成）
                     stage = int(s_others.get("stage", 2)) if isinstance(s_others, dict) else 2
-                    prev_stage = last_stage_by_window.get(s_window_id, 0)
+                    signature = json.dumps({
+                        "stage": stage,
+                        "summary": s_summary,
+                        "phase": s_phase,
+                        "others": s_others,
+                    }, ensure_ascii=False, sort_keys=True, default=str)
+                    prev_signature = last_signature_by_window.get(s_window_id)
 
-                    if stage > prev_stage:
+                    if signature != prev_signature:
                         payload = {
                             "window_id": s_window_id,
                             "start_time": s_start,
@@ -3665,7 +4265,7 @@ async def stream_summaries(
                             if "stage1_summary" in s_others and s_others["stage1_summary"]:
                                 payload["stage1_summary"] = s_others["stage1_summary"]
                         yield f"data: {json.dumps(payload)}\n\n"
-                        last_stage_by_window[s_window_id] = stage
+                        last_signature_by_window[s_window_id] = signature
                 
                 # Check if processing is complete or cancelled - reload session from cache/DB
                 current_session = get_session_record(session_id)

@@ -2,9 +2,9 @@
   <Transition name="popup">
     <div v-if="visible && frameData" class="frame-analysis-popup" :style="popupStyle" :class="{ 'with-image': frameData.has_saved_frame }">
       <div class="popup-header">
-        <span class="popup-title">🔬 单帧分析</span>
+        <span class="popup-title">🔬 {{ t('frame.title') }}</span>
         <span class="popup-time">{{ formatTime(frameData.timestamp) }}</span>
-        <button class="popup-close-btn" @click="$emit('close')" title="关闭">×</button>
+        <button class="popup-close-btn" @click="$emit('close')" :title="t('frame.close')">×</button>
       </div>
       
       <div class="popup-body">
@@ -12,7 +12,7 @@
         <div v-if="frameData.has_saved_frame && frameData.image_base64" class="frame-image-container">
           <img 
             :src="`data:image/jpeg;base64,${frameData.image_base64}`" 
-            alt="分析帧"
+            :alt="t('frame.alt')"
             class="frame-image"
           />
         </div>
@@ -22,7 +22,7 @@
           <div class="analysis-item" v-if="frameData.surgical_phase">
             <div class="item-label">
               <span class="item-icon">📋</span>
-              手术阶段
+              {{ t('frame.phase') }}
             </div>
             <div class="item-value phase">{{ frameData.surgical_phase }}</div>
           </div>
@@ -31,7 +31,7 @@
           <div class="analysis-item" v-if="frameData.surgical_action">
             <div class="item-label">
               <span class="item-icon">✂️</span>
-              手术动作
+              {{ t('frame.action') }}
             </div>
             <div class="item-value action">{{ frameData.surgical_action }}</div>
           </div>
@@ -40,7 +40,7 @@
           <div class="analysis-item" v-if="frameData.tool_localization">
             <div class="item-label">
               <span class="item-icon">🎯</span>
-              工具定位
+              {{ t('frame.toolLocalization') }}
             </div>
             <div class="item-value tools">{{ truncate(frameData.tool_localization, 150) }}</div>
           </div>
@@ -49,7 +49,7 @@
           <div class="analysis-item window-summary" v-if="frameData.window_summary">
             <div class="item-label">
               <span class="item-icon">📝</span>
-              窗口总结
+              {{ t('frame.windowSummary') }}
             </div>
             <div class="item-value summary">{{ truncate(frameData.window_summary, 200) }}</div>
           </div>
@@ -57,18 +57,18 @@
           <!-- Loading State -->
           <div v-if="isLoading" class="loading-state">
             <div class="loader-small"></div>
-            <span>正在分析帧...</span>
+            <span>{{ t('frame.loading') }}</span>
           </div>
           
           <!-- Empty State -->
           <div v-if="!isLoading && !hasData" class="empty-state">
-            <span>暂无分析数据</span>
+            <span>{{ t('frame.empty') }}</span>
           </div>
         </div>
       </div>
       
       <div class="popup-footer" v-if="frameData.window_id !== undefined && frameData.window_id !== null">
-        <span class="window-badge">窗口 {{ frameData.window_id + 1 }}</span>
+        <span class="window-badge">{{ t('app.windowPrefix') }} {{ frameData.window_id + 1 }}</span>
         <span v-if="frameData.window_start !== undefined" class="window-time">
           {{ formatTime(frameData.window_start) }} - {{ formatTime(frameData.window_end) }}
         </span>
@@ -79,6 +79,9 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useI18n } from '@/i18n'
+
+const { t } = useI18n()
 
 defineEmits(['close'])
 
@@ -350,6 +353,5 @@ const truncate = (text, length) => {
   transform: translateY(-90%) translateX(-50%) scale(0.95);
 }
 </style>
-
 
 

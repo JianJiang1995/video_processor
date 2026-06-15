@@ -18,7 +18,7 @@
     <!-- Window Overview Mode -->
     <WindowOverview
       v-else-if="currentView === 'overview'"
-      :summaries="summaries"
+      :summaries="localizedSummaries"
       :session="currentSession"
       :mode="mode"
       :isProcessing="isProcessing"
@@ -48,10 +48,10 @@
 
           <div class="header-center">
             <span class="mode-badge" :class="mode">
-              {{ mode === 'local' ? '&#x1F4C1; 本地视频' : '&#x1F4E1; 实时视频流' }}
+              {{ mode === 'local' ? `📁 ${t('app.localVideo')}` : `📡 ${t('app.liveStream')}` }}
             </span>
             <span v-if="currentSession" class="header-session-id">
-              Session {{ currentSession.session_id?.substring(0, 8) || '' }}
+              {{ t('app.session') }} {{ currentSession.session_id?.substring(0, 8) || '' }}
             </span>
             <span v-if="currentSession" class="session-name">
               {{ currentSession.video_name }}
@@ -59,8 +59,24 @@
           </div>
 
           <div class="header-actions">
+            <div class="language-switch" :aria-label="t('lang.label')">
+              <button
+                class="language-option"
+                :class="{ active: language === 'zh' }"
+                @click="setLanguage('zh')"
+              >
+                {{ t('lang.zh') }}
+              </button>
+              <button
+                class="language-option"
+                :class="{ active: language === 'en' }"
+                @click="setLanguage('en')"
+              >
+                {{ t('lang.en') }}
+              </button>
+            </div>
             <button class="btn btn-secondary" @click="goHome">
-              &#x2190; 返回
+              &#x2190; {{ t('app.back') }}
             </button>
           </div>
         </header>
@@ -102,7 +118,7 @@
                 :mode="mode"
                 :isLive="mode === 'stream'"
                 :analyzedWindows="analyzedWindows"
-                :summaries="summaries"
+                :summaries="localizedSummaries"
                 :highlightedWindowId="highlightedWindowId"
                 :isAnalyzing="isProcessing"
                 :surgr1Status="surgr1Status"
@@ -129,7 +145,7 @@
             <!-- 历史窗口分析 (always visible) -->
             <div
               class="video-resize-handle"
-              title="拖拽调整历史区高度，双击复位"
+              :title="t('app.resizeHistoryTitle')"
               @pointerdown="startVideoResize"
               @dblclick="resetBottomStripHeight"
             ></div>
@@ -139,16 +155,16 @@
               :style="{ height: bottomStripHeight + 'px' }"
             >
               <div class="bcs-header">
-                <span class="bcs-title">历史窗口分析</span>
+                <span class="bcs-title">{{ t('app.historyAnalysis') }}</span>
                 <span class="bcs-count" v-if="summaries.length > 0">
-                  {{ summaries.length }} 个窗口
+                  {{ t('app.windowCount', { count: summaries.length }) }}
                 </span>
                 <button
                   class="bcs-overview-btn"
                   :disabled="summaries.length === 0"
                   @click="enterOverview"
                 >
-                  &#x2B1A; 网格视图
+                  &#x2B1A; {{ t('app.gridView') }}
                 </button>
               </div>
               <div
@@ -168,10 +184,11 @@
                     resolved: isBleedingResolvedSummary(s),
                   }"
                   :title="s.summary"
+                  @pointerdown.stop
                   @click="handleBottomCardClick(s)"
                 >
                   <div class="bcs-card-top">
-                    <span class="bcs-card-win">窗口{{ toChineseNumeral(s.window_id + 1) }}</span>
+                    <span class="bcs-card-win">{{ bottomWindowLabel(s.window_id + 1) }}</span>
                     <span class="bcs-card-time">
                       {{ formatWindowTime(s.start_time) }}
                     </span>
@@ -193,8 +210,7 @@
               </div>
               <div v-else class="bcs-empty">
                 <span class="bcs-empty-hint">
-                  {{ isProcessing ? '分析进行中，窗口总结将在此逐条出现…'
-                                  : '点击「开始分析」后，各窗口的手术总结会按时间顺序显示在这里。' }}
+                  {{ isProcessing ? t('app.historyLoading') : t('app.historyEmpty') }}
                 </span>
               </div>
             </div>
@@ -203,7 +219,7 @@
           <!-- Right Panel (Analysis/Chat tabs) -->
           <div
             class="right-panel-resize-handle"
-            title="拖拽调整右侧面板宽度，双击复位"
+            :title="t('app.resizeRightPanelTitle')"
             @pointerdown="startRightPanelResize"
             @dblclick="resetRightPanelWidth"
           ></div>
@@ -211,8 +227,8 @@
           <RightPanel
             v-model:activeTab="rightPanelTab"
             :style="{ width: rightPanelWidth + 'px' }"
-            :summaries="summaries"
-            :currentSummary="currentSummary"
+            :summaries="localizedSummaries"
+            :currentSummary="localizedCurrentSummary"
             :selectedWindowId="selectedWindowId"
             :sessionId="currentSession?.session_id || ''"
             :isProcessing="isProcessing"
@@ -243,8 +259,8 @@
       <!-- Overview Toast -->
       <Transition name="toast">
         <div v-if="showOverviewToast" class="overview-toast">
-          <span class="overview-toast-text">分析完成</span>
-          <button class="overview-toast-btn" @click="enterOverview">进入一览模式 &#x2192;</button>
+          <span class="overview-toast-text">{{ t('app.analysisComplete') }}</span>
+          <button class="overview-toast-btn" @click="enterOverview">{{ t('app.enterOverview') }} &#x2192;</button>
           <button class="overview-toast-dismiss" @click="showOverviewToast = false">&#x2715;</button>
         </div>
       </Transition>
@@ -267,6 +283,9 @@ import FrameAnalysisPopup from './components/FrameAnalysisPopup.vue'
 import WindowOverview from './components/WindowOverview.vue'
 import NavRail from './components/NavRail.vue'
 import RightPanel from './components/RightPanel.vue'
+import { useI18n } from './i18n.js'
+
+const { language, setLanguage, t } = useI18n()
 
 // View state
 const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview'
@@ -345,6 +364,9 @@ const surgr1ProcessingStatus = ref({ running: false, framesAnalyzed: 0 })
 let streamPollingInterval = null
 let streamTimerInterval = null
 let streamEndCheckInterval = null  // Check if stream has ended
+let lastSummaryRefreshAt = 0
+let lastSummaryRefreshWindow = -1
+const translationInFlight = new Set()
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
 const streamEnded = ref(false)  // Whether the video stream has ended
 const streamWasActive = ref(false)  // Track if stream was ever active (for reliable end detection)
@@ -502,11 +524,55 @@ const cleanUserSummaryText = (text) => {
 
 const cleanSummaryPayload = (payload) => {
   if (!payload || typeof payload !== 'object') return payload
+  const others = payload.others && typeof payload.others === 'object' ? payload.others : {}
+  const windowId = payload.window_id ?? payload.windowId
+  const startTime = payload.start_time ?? payload.window_start ?? payload.startTime
+  const endTime = payload.end_time ?? payload.window_end ?? payload.endTime
+  const summaryText = payload.summary ?? payload.glm_summary ?? payload.summary_text ?? payload.window_summary ?? ''
   return {
     ...payload,
-    summary: cleanUserSummaryText(payload.summary),
-    stage1_summary: cleanUserSummaryText(payload.stage1_summary),
+    window_id: windowId == null ? windowId : Number(windowId),
+    start_time: startTime == null ? startTime : Number(startTime),
+    end_time: endTime == null ? endTime : Number(endTime),
+    summary: cleanUserSummaryText(summaryText),
+    phase: payload.phase || payload.dominant_phase || payload.surgical_phase || others.phase || 'Unknown',
+    stage: Number(payload.stage ?? others.stage ?? 2),
+    summary_en: payload.summary_en ?? others.summary_en ?? '',
+    stage1_summary: cleanUserSummaryText(payload.stage1_summary ?? others.stage1_summary),
   }
+}
+
+const upsertSummary = (payload) => {
+  const data = cleanSummaryPayload(payload)
+  if (!data || !Number.isFinite(data.window_id)) return null
+
+  const existingIndex = summaries.value.findIndex(s => s.window_id === data.window_id)
+  if (existingIndex >= 0) {
+    summaries.value[existingIndex] = {
+      ...summaries.value[existingIndex],
+      ...data,
+      summary: data.summary || summaries.value[existingIndex].summary,
+      summary_en: data.summary_en || summaries.value[existingIndex].summary_en,
+    }
+  } else {
+    const arr = summaries.value
+    const last = arr.length > 0 ? arr[arr.length - 1] : null
+    if (!last || (data.start_time ?? 0) >= (last.start_time ?? 0)) {
+      arr.push(data)
+    } else {
+      let lo = 0, hi = arr.length
+      const st = data.start_time ?? 0
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if ((arr[mid].start_time ?? 0) <= st) lo = mid + 1
+        else hi = mid
+      }
+      arr.splice(lo, 0, data)
+    }
+  }
+
+  enqueueBottomThumbnail(data)
+  return data
 }
 
 const isSevereBleedingSummary = (summary) => {
@@ -539,6 +605,18 @@ const currentSummary = computed(() => {
     || summaries.value[summaries.value.length - 1]
     || null)
 })
+
+const localizedSummary = (summary) => {
+  const s = cleanSummaryPayload(summary)
+  if (!s) return s
+  if (language.value === 'en' && s.summary_en) {
+    return { ...s, summary: s.summary_en }
+  }
+  return s
+}
+
+const localizedSummaries = computed(() => summaries.value.map(localizedSummary))
+const localizedCurrentSummary = computed(() => localizedSummary(currentSummary.value))
 
 const isSimulatorSession = computed(() => (
   mode.value === 'stream' &&
@@ -694,6 +772,7 @@ const goHome = () => {
 
 // Video handlers
 let lastAcceptedTimeUpdate = 0
+let lastPositionHeartbeat = 0
 const handleTimeUpdate = (time) => {
   const now = performance.now()
   if (mode.value === 'stream' && now - lastAcceptedTimeUpdate < 250) {
@@ -702,7 +781,17 @@ const handleTimeUpdate = (time) => {
   lastAcceptedTimeUpdate = now
   currentTime.value = time
   if (mode.value === 'stream') {
-    duration.value = Math.max(duration.value || 0, time)
+    if (!loopWindow.value) {
+      duration.value = Math.max(duration.value || 0, time)
+    }
+    if (currentSession.value && !loopWindow.value && now - lastPositionHeartbeat >= 1000) {
+      lastPositionHeartbeat = now
+      axios.post(`/api/video/control/${currentSession.value.session_id}`, {
+        action: 'position',
+        position: time
+      }).catch(() => {})
+    }
+    refreshCurrentWindowSummary(time)
   }
   
   // Check if we need to loop within window
@@ -728,12 +817,13 @@ const handleSam3TimeUpdate = (time) => {
 const handlePlay = () => {
   isPlaying.value = true
   if (currentSession.value) {
-    if (mode.value === 'stream') {
+    if (mode.value === 'stream' && !isSimulatorSession.value) {
       // Resume stream timer
       resumeStreamTimer()
     }
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
-      action: 'play'
+      action: 'play',
+      position: currentTime.value
     })
   }
 }
@@ -741,12 +831,13 @@ const handlePlay = () => {
 const handlePause = () => {
   isPlaying.value = false
   if (currentSession.value) {
-    if (mode.value === 'stream') {
+    if (mode.value === 'stream' && !isSimulatorSession.value) {
       // Pause stream timer
       pauseStreamTimer()
     }
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
-      action: 'pause'
+      action: 'pause',
+      position: currentTime.value
     })
   }
 }
@@ -935,10 +1026,15 @@ const startSurgR1Continuous = async (sessionId) => {
       if (response.data.server_time && mode.value === 'stream') {
         const networkLatency = (Date.now() - requestStartTime) / 2  // Estimate one-way latency
         const serverTimeMs = response.data.server_time * 1000  // Convert to milliseconds
-        // Reset streamStartTime to match backend's start time
-        streamStartTime.value = serverTimeMs + networkLatency
-        currentTime.value = 0  // Reset current time
-        console.log(`[TimeSync] Synchronized with backend. streamStartTime=${streamStartTime.value}, latency=${networkLatency}ms`)
+          // Reset streamStartTime to match backend's start time only at the
+          // beginning of a new wall-clock live stream. For local simulator
+          // playback the native video clock is authoritative; resetting here
+          // makes pause/resume jump back to 0.
+          if (!isSimulatorSession.value && currentTime.value < 0.5) {
+            streamStartTime.value = serverTimeMs + networkLatency
+            currentTime.value = 0
+          }
+          console.log(`[TimeSync] Synchronized with backend. streamStartTime=${streamStartTime.value}, latency=${networkLatency}ms`)
       }
       
       // Start polling for status updates
@@ -1068,28 +1164,7 @@ const startAnalysis = async () => {
       // Track if this is a new window (not just an update)
       const isNewWindow = existingIndex < 0
       
-      if (existingIndex >= 0) {
-        summaries.value[existingIndex] = data
-      } else {
-        // [perf] SSE 通常按时间顺序推送，绝大多数情况可直接 push 无需 sort。
-        // 只在乱序到达（新 window_id 不是最大）时做一次 O(n) 的顺序插入，
-        // 避免每条消息都跑 O(n log n) sort。
-        const arr = summaries.value
-        const last = arr.length > 0 ? arr[arr.length - 1] : null
-        if (!last || (data.start_time ?? 0) >= (last.start_time ?? 0)) {
-          arr.push(data)
-        } else {
-          let lo = 0, hi = arr.length
-          const st = data.start_time ?? 0
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1
-            if ((arr[mid].start_time ?? 0) <= st) lo = mid + 1
-            else hi = mid
-          }
-          arr.splice(lo, 0, data)
-        }
-      }
-      enqueueBottomThumbnail(data)
+      upsertSummary(data)
       
       // Highlight new window briefly - only for NEW windows, not updates
       // Also skip if user is in loop playback mode (userSelectedWindow is true)
@@ -1173,8 +1248,75 @@ const enterOverview = () => {
 // 底部条需要最新的在前（window_id 降序 ≈ start_time 降序），直接 reverse 即可，
 // O(n) 代替 O(n log n) 的 sort。
 const sortedSummaries = computed(() => {
-  return summaries.value.slice().reverse().map(cleanSummaryPayload)
+  return localizedSummaries.value.slice().reverse()
 })
+
+const requestSummaryTranslation = async (summary) => {
+  const s = cleanSummaryPayload(summary)
+  if (!s?.summary || s.summary_en || !currentSession.value) return
+  const key = `${currentSession.value.session_id}:${s.window_id}:en`
+  if (translationInFlight.has(key)) return
+  translationInFlight.add(key)
+  try {
+    const res = await axios.post('/api/analysis/translate-summary', {
+      text: s.summary,
+      target_lang: 'en',
+    }, {
+      signal: getSessionSignal(),
+      timeout: 20000,
+    })
+    if (res.data?.text) {
+      const idx = summaries.value.findIndex(item => item.window_id === s.window_id)
+      if (idx >= 0) {
+        summaries.value[idx] = {
+          ...summaries.value[idx],
+          summary_en: cleanUserSummaryText(res.data.text),
+        }
+      }
+    }
+  } catch (error) {
+    if (!axios.isCancel(error) && error.name !== 'AbortError') {
+      console.debug('[Translate] summary translation failed:', error.message)
+    }
+  } finally {
+    translationInFlight.delete(key)
+  }
+}
+
+const ensureEnglishSummaries = () => {
+  if (language.value !== 'en') return
+  const ordered = [
+    ...summaries.value.slice().reverse(),
+  ].filter(s => s?.summary && !s.summary_en)
+  ordered.slice(0, 24).forEach((s, index) => {
+    setTimeout(() => requestSummaryTranslation(s), index * 250)
+  })
+}
+
+const refreshCurrentWindowSummary = async (time) => {
+  if (!currentSession.value || loopWindow.value) return
+  const now = performance.now()
+  const windowId = Math.floor(time / windowDuration.value)
+  const alreadyLoaded = summaries.value.some(s => s.window_id === windowId && s.summary)
+  if (alreadyLoaded && lastSummaryRefreshWindow === windowId) return
+  if (now - lastSummaryRefreshAt < 1200) return
+
+  lastSummaryRefreshAt = now
+  lastSummaryRefreshWindow = windowId
+  try {
+    const res = await axios.get(
+      `/api/analysis/window-summary-at-timestamp/${currentSession.value.session_id}`,
+      { params: { timestamp: time }, signal: getSessionSignal() }
+    )
+    if (res.data?.success && res.data.window_id != null) {
+      upsertSummary(res.data)
+    }
+  } catch (error) {
+    if (!axios.isCancel(error) && error.name !== 'AbortError') {
+      console.debug('[SummaryRefresh] current window summary not ready:', error.message)
+    }
+  }
+}
 
 const videoSectionMinHeight = computed(() => {
   return Math.max(320, viewportHeight.value - bottomStripHeight.value - 220)
@@ -1260,6 +1402,12 @@ const toChineseNumeral = (n) => {
     return CN_DIGITS[tens] + '十' + (ones === 0 ? '' : CN_DIGITS[ones])
   }
   return String(num)
+}
+
+const bottomWindowLabel = (n) => {
+  return language.value === 'zh'
+    ? `${t('app.windowPrefix')}${toChineseNumeral(n)}`
+    : `${t('app.windowPrefix')} ${n}`
 }
 
 const handleNavigation = (view) => {
@@ -1356,6 +1504,14 @@ const startStreamTimer = () => {
   // Reset stream ended state
   streamEnded.value = false
   streamWasActive.value = false
+
+  // 本地采集卡模拟源使用原生 <video> 预览，currentTime 由视频解码器的
+  // timeupdate 驱动。不要再用直播墙钟覆盖，否则右上角时间和当前窗口高亮
+  // 会在视频时间与墙钟时间之间来回跳。
+  if (isSimulatorSession.value) {
+    startStreamEndCheck()
+    return
+  }
   
   // [perf] 原来每 100ms 更新 currentTime，会驱动 ControlBar 的 progressPercent /
   // windowCount / currentSummary 等一串 computed 跟着重算，与 MJPEG 解码争主线程。
@@ -1636,6 +1792,9 @@ const handleSeekToWindow = (windowId) => {
     isLoopSeek = true
     handleSeek(summary.start_time)
     setTimeout(() => { isLoopSeek = false }, 100)
+    if (!isPlaying.value) {
+      handlePlay()
+    }
   }
   
   highlightedWindowId.value = windowId
@@ -1812,6 +1971,11 @@ watch(currentTime, (newTime) => {
     }
   }
 })
+
+watch(
+  () => [language.value, summaries.value.length],
+  () => ensureEnglishSummaries()
+)
 
 // Check all service statuses
 const checkAnalysisServices = async () => {
@@ -2068,6 +2232,46 @@ onUnmounted(() => {
 
 .logo {
   cursor: pointer;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.language-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.language-option {
+  min-width: 64px;
+  padding: 0.38rem 0.7rem;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+
+.language-option:hover {
+  color: var(--text-secondary);
+}
+
+.language-option.active {
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  font-weight: 700;
 }
 
 /* Toast Message */

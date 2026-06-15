@@ -4,7 +4,7 @@
       <div class="logo-large">
         <div class="logo-icon-lg">🏥</div>
         <h1>Surg-R1<span>手术助手</span></h1>
-        <p class="subtitle">AI-Powered Surgical Video Analysis</p>
+        <p class="subtitle">{{ t('mode.subtitle') }}</p>
       </div>
     </div>
 
@@ -12,30 +12,30 @@
       <!-- Local Video Mode -->
       <div class="mode-card" @click="selectMode('local')">
         <div class="mode-icon">📁</div>
-        <h2>本地视频</h2>
-        <p>Local Video</p>
+        <h2>{{ t('mode.localVideo') }}</h2>
+        <p>{{ t('mode.localVideoEn') }}</p>
         <ul class="mode-features">
-          <li>上传本地视频文件</li>
-          <li>支持 MP4, AVI, MOV, MKV</li>
-          <li>可暂停、回放、拖动进度</li>
+          <li>{{ t('mode.localFeatureUpload') }}</li>
+          <li>{{ t('mode.localFeatureFormats') }}</li>
+          <li>{{ t('mode.localFeaturePlayback') }}</li>
         </ul>
         <div class="mode-action">
-          <span>选择此模式 →</span>
+          <span>{{ t('mode.chooseMode') }} →</span>
         </div>
       </div>
 
       <!-- Live Stream Mode -->
       <div class="mode-card" @click="selectMode('stream')">
         <div class="mode-icon">📡</div>
-        <h2>实时视频流</h2>
-        <p>Live Stream</p>
+        <h2>{{ t('mode.liveStream') }}</h2>
+        <p>{{ t('mode.liveStreamEn') }}</p>
         <ul class="mode-features">
-          <li>连接手术室视频流</li>
-          <li>支持 RTSP, HTTP, WebRTC</li>
-          <li>实时分析与总结</li>
+          <li>{{ t('mode.streamFeatureConnect') }}</li>
+          <li>{{ t('mode.streamFeatureProtocols') }}</li>
+          <li>{{ t('mode.streamFeatureRealtime') }}</li>
         </ul>
         <div class="mode-action">
-          <span>选择此模式 →</span>
+          <span>{{ t('mode.chooseMode') }} →</span>
         </div>
       </div>
     </div>
@@ -43,13 +43,13 @@
     <!-- Recent Sessions -->
     <div class="recent-sessions" v-if="recentSessions.length > 0">
       <div class="sessions-header">
-        <h3>最近的会话</h3>
+        <h3>{{ t('mode.recentSessions') }}</h3>
         <button 
           class="delete-all-btn"
           @click="deleteAllSessions"
-          title="删除所有会话"
+          :title="t('mode.deleteAllTitleAttr')"
         >
-          🗑️ 删除全部
+          🗑️ {{ t('mode.deleteAll') }}
         </button>
       </div>
       <div class="session-list">
@@ -65,7 +65,7 @@
           <button 
             class="delete-btn"
             @click.stop="deleteSession(session)"
-            title="删除此会话"
+            :title="t('mode.deleteSessionTitleAttr')"
           >
             ✕
           </button>
@@ -82,9 +82,9 @@
             <div class="modal-title">{{ deleteModalTitle }}</div>
             <div class="modal-message">{{ deleteModalMessage }}</div>
             <div class="modal-actions">
-              <button class="modal-btn cancel" @click="cancelDelete">取消</button>
+              <button class="modal-btn cancel" @click="cancelDelete">{{ t('mode.cancel') }}</button>
               <button class="modal-btn confirm" @click="confirmDelete" :disabled="isDeleting">
-                {{ isDeleting ? '删除中...' : '确认删除' }}
+                {{ isDeleting ? t('mode.deleting') : t('mode.confirmDelete') }}
               </button>
             </div>
           </div>
@@ -97,6 +97,9 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
+import { useI18n } from '@/i18n'
+
+const { t } = useI18n()
 
 const emit = defineEmits(['select-mode', 'resume-session'])
 const autoOpenStream = import.meta.env.VITE_AUTO_OPEN_STREAM === '1'
@@ -130,16 +133,16 @@ const loadSessions = async () => {
 // Delete single session
 const deleteSession = (session) => {
   pendingDeleteSession.value = session
-  deleteModalTitle.value = '删除会话'
-  deleteModalMessage.value = `确定要删除会话 "${session.video_name}" 吗？\n\n这将删除该会话的所有分析数据和保存的帧图片，此操作不可撤销。`
+  deleteModalTitle.value = t('mode.deleteSessionTitle')
+  deleteModalMessage.value = t('mode.deleteSessionMessage', { name: session.video_name })
   showDeleteModal.value = true
 }
 
 // Delete all sessions
 const deleteAllSessions = () => {
   pendingDeleteSession.value = null
-  deleteModalTitle.value = '删除所有会话'
-  deleteModalMessage.value = `确定要删除所有 ${recentSessions.value.length} 个会话吗？\n\n这将删除所有分析数据和保存的帧图片，此操作不可撤销！`
+  deleteModalTitle.value = t('mode.deleteAllTitle')
+  deleteModalMessage.value = t('mode.deleteAllMessage', { count: recentSessions.value.length })
   showDeleteModal.value = true
 }
 
@@ -167,7 +170,7 @@ const confirmDelete = async () => {
     
   } catch (error) {
     console.error('Failed to delete session(s):', error)
-    alert('删除失败: ' + (error.response?.data?.detail || error.message))
+    alert(`${t('mode.deleteFailed')}: ${error.response?.data?.detail || error.message}`)
   } finally {
     isDeleting.value = false
     showDeleteModal.value = false
@@ -552,4 +555,3 @@ onMounted(() => {
   }
 }
 </style>
-

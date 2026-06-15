@@ -5,10 +5,10 @@
       <div class="header-left">
         <button class="back-btn" @click="$emit('back')">
           <span class="back-arrow">←</span>
-          <span>返回</span>
+          <span>{{ t('overview.back') }}</span>
         </button>
         <div class="title-group">
-          <h1 class="overview-title">窗口一览</h1>
+          <h1 class="overview-title">{{ t('overview.title') }}</h1>
           <span class="window-count-badge">
             <span class="count-num">{{ filteredSummaries.length }}</span>
             <span class="count-sep">/</span>
@@ -19,7 +19,7 @@
       <div class="header-right">
         <div v-if="isProcessing" class="processing-badge">
           <span class="processing-dot"></span>
-          <span>分析中…</span>
+          <span>{{ t('overview.processing') }}</span>
         </div>
         <div class="total-duration">
           <span class="duration-icon">⏱</span>
@@ -40,7 +40,7 @@
             v-model="filterText"
             type="text"
             class="search-input"
-            placeholder="搜索窗口内容..."
+            :placeholder="t('overview.searchPlaceholder')"
             @focus="searchFocused = true"
             @blur="searchFocused = false"
           />
@@ -58,7 +58,7 @@
           @click="showChat = !showChat"
         >
           <span class="chat-toggle-icon">💬</span>
-          <span>智能问答</span>
+          <span>{{ t('overview.smartChat') }}</span>
         </button>
       </div>
     </div>
@@ -76,8 +76,8 @@
               <path d="M36 40l3 3 5-6" stroke="var(--accent-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
             </svg>
           </div>
-          <div class="empty-text">暂无分析窗口</div>
-          <div class="empty-hint">返回主界面开始分析视频</div>
+          <div class="empty-text">{{ t('overview.noWindows') }}</div>
+          <div class="empty-hint">{{ t('overview.noWindowsHint') }}</div>
         </div>
 
         <!-- No Results -->
@@ -89,8 +89,8 @@
               <path d="M28 36h16M36 28v16" stroke="var(--error)" stroke-width="2" stroke-linecap="round" opacity="0.5" transform="rotate(45 36 36)"/>
             </svg>
           </div>
-          <div class="empty-text">没有匹配的窗口</div>
-          <div class="empty-hint">尝试其他关键词 · 当前搜索「{{ filterText }}」</div>
+          <div class="empty-text">{{ t('overview.noResults') }}</div>
+          <div class="empty-hint">{{ t('overview.noResultsHint', { query: filterText }) }}</div>
         </div>
 
         <!-- Window Grid -->
@@ -140,7 +140,7 @@
           <div class="chat-panel-header">
             <span class="chat-panel-title">
               <span class="chat-panel-icon">🤖</span>
-              智能问答
+              {{ t('overview.smartChat') }}
             </span>
             <button class="chat-panel-close" @click="showChat = false">✕</button>
           </div>
@@ -148,11 +148,11 @@
           <div class="chat-messages" ref="chatMessagesRef">
             <div v-if="chatMessages.length === 0" class="chat-empty">
               <div class="chat-empty-icon">💬</div>
-              <div class="chat-empty-text">关于这些分析窗口有什么想了解的？</div>
+              <div class="chat-empty-text">{{ t('overview.chatEmpty') }}</div>
               <div class="chat-empty-hints">
-                <button class="hint-chip" @click="sendChat('总结所有窗口的主要发现')">总结主要发现</button>
-                <button class="hint-chip" @click="sendChat('哪些窗口涉及关键操作步骤？')">关键操作步骤</button>
-                <button class="hint-chip" @click="sendChat('有没有需要注意的异常情况？')">异常情况</button>
+                <button class="hint-chip" @click="sendChat(t('overview.summarizeFindingsPrompt'))">{{ t('overview.summarizeFindings') }}</button>
+                <button class="hint-chip" @click="sendChat(t('overview.keyStepsPrompt'))">{{ t('overview.keySteps') }}</button>
+                <button class="hint-chip" @click="sendChat(t('overview.abnormalIssuesPrompt'))">{{ t('overview.abnormalIssues') }}</button>
               </div>
             </div>
             <div
@@ -181,7 +181,7 @@
               v-model="chatInput"
               type="text"
               class="chat-input"
-              placeholder="问一个关于视频的问题..."
+              :placeholder="t('overview.chatPlaceholder')"
               @keyup.enter="sendChat()"
               :disabled="chatLoading"
             />
@@ -234,7 +234,7 @@
                 />
               </div>
               <div class="modal-summary-section">
-                <div class="modal-summary-label">分析摘要</div>
+                <div class="modal-summary-label">{{ t('overview.analysisSummary') }}</div>
                 <p class="modal-summary-text">{{ activeWindow.summary }}</p>
               </div>
             </div>
@@ -250,6 +250,9 @@ import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from
 import axios from 'axios'
 import { apiUrl } from '@/utils/electronBridge'
 import VideoPlayer from './VideoPlayer.vue'
+import { useI18n } from '@/i18n'
+
+const { t } = useI18n()
 
 const props = defineProps({
   summaries: {
@@ -392,13 +395,13 @@ async function sendChat(preset) {
     } else {
       chatMessages.value.push({
         role: 'assistant',
-        content: response.data.error || '抱歉，暂时无法回答。'
+        content: response.data.error || t('overview.chatFallback')
       })
     }
   } catch (e) {
     chatMessages.value.push({
       role: 'assistant',
-      content: '网络错误，请稍后再试。'
+      content: t('overview.networkError')
     })
   } finally {
     chatLoading.value = false

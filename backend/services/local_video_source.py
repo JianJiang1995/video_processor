@@ -36,6 +36,8 @@ class ResolvedVideoSource:
     fps: Optional[float] = None
     width: Optional[int] = None
     height: Optional[int] = None
+    duration: Optional[float] = None
+    total_frames: Optional[int] = None
 
 
 def _repo_root() -> Path:
@@ -71,6 +73,8 @@ def _probe_video(path: str, fallback_fps: float = 30.0) -> Optional[ResolvedVide
     fps = float(cap.get(cv2.CAP_PROP_FPS) or fallback_fps or 30.0)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = (total_frames / fps) if fps > 0 and total_frames > 0 else 0.0
     cap.release()
     return ResolvedVideoSource(
         original=path,
@@ -79,6 +83,8 @@ def _probe_video(path: str, fallback_fps: float = 30.0) -> Optional[ResolvedVide
         fps=fps,
         width=width,
         height=height,
+        duration=duration,
+        total_frames=total_frames,
     )
 
 
@@ -146,6 +152,8 @@ class PacedVideoCapture:
         self.interval = 1.0 / self.fps
         self.loop = loop
         self._next_read: Optional[float] = None
+        self._last_frame_index: int = -1
+        self._last_timestamp: float = 0.0
 
     def isOpened(self):
         return self.cap.isOpened()
@@ -162,6 +170,13 @@ class PacedVideoCapture:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self._next_read = time.perf_counter() + self.interval
             ret, frame = self.cap.read()
+        if ret:
+            # OpenCV reports the next frame index after read(); convert it back
+            # to the frame that was actually returned.
+            pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+            self._last_frame_index = max(0, pos - 1)
+            msec = float(self.cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+            self._last_timestamp = (msec / 1000.0) if msec > 0 else (self._last_frame_index / self.fps)
 
         base = self._next_read if self._next_read is not None else time.perf_counter()
         self._next_read = max(base + self.interval, time.perf_counter())
@@ -178,7 +193,15 @@ class PacedVideoCapture:
     def set(self, prop, value):
         if prop == cv2.CAP_PROP_POS_FRAMES:
             self._next_read = None
+            self._last_frame_index = max(0, int(value) - 1)
+            self._last_timestamp = max(0.0, self._last_frame_index / self.fps)
         return self.cap.set(prop, value)
+
+    def last_timestamp(self) -> float:
+        return self._last_timestamp
+
+    def last_frame_index(self) -> int:
+        return self._last_frame_index
 
     def release(self):
         return self.cap.release()

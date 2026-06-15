@@ -170,9 +170,13 @@ def get_all_session_records() -> list:
         mysql_svc = _get_mysql_service()
         sessions = mysql_svc.list_video_sessions(limit=100)
         # Update cache with these sessions
+        merged = []
         for s in sessions:
-            _sessions_cache[s["session_id"]] = s
-        return sessions
+            cached = _sessions_cache.get(s["session_id"], {})
+            combined = {**s, **{k: v for k, v in cached.items() if k in ("current_position", "is_paused")}}
+            _sessions_cache[s["session_id"]] = {**cached, **combined}
+            merged.append(_sessions_cache[s["session_id"]])
+        return merged
     except Exception as e:
         logger.warning(f"[Session] Failed to load sessions from MySQL: {e}")
         return list(_sessions_cache.values())
