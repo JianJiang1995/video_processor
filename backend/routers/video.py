@@ -1349,9 +1349,12 @@ async def get_frame(
 @router.get("/thumbnail/{session_id}")
 async def get_thumbnail(
     session_id: str,
+    timestamp: float = Query(0, ge=0),
+    width: int = Query(320, ge=120, le=960),
+    quality: int = Query(65, ge=35, le=90),
     db: Session = Depends(get_db)
 ):
-    """Get video thumbnail (first frame)"""
+    """Get a small video thumbnail at a timestamp."""
     
     session = get_video_session(db, session_id)
     if not session:
@@ -1359,20 +1362,22 @@ async def get_thumbnail(
     
     video_source = resolve_video_source(session.get("video_path", "")).source
     processor = VideoProcessor(video_path=video_source)
-    frame = processor.extract_frame(0)
+    frame = processor.extract_frame(timestamp)
     
     if frame is None:
         raise HTTPException(400, "Cannot extract thumbnail")
     
     # Resize for thumbnail
     thumb = frame.image.copy()
-    thumb.thumbnail((320, 180))
+    # Keep aspect ratio and bound the payload. Overview cards do not need the
+    # full frame; returning small JPEGs keeps the grid responsive.
+    thumb.thumbnail((width, int(width * 9 / 16)))
     
     from io import BytesIO
     import base64
     
     buffer = BytesIO()
-    thumb.save(buffer, format="JPEG", quality=75)
+    thumb.save(buffer, format="JPEG", quality=quality)
     thumb_base64 = base64.b64encode(buffer.getvalue()).decode()
     
     return {

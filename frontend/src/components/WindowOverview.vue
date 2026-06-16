@@ -66,7 +66,7 @@
     <!-- Main body: Grid + Chat side panel -->
     <div class="overview-body">
       <!-- Grid area -->
-      <div class="grid-area">
+      <div class="grid-area" ref="gridAreaRef">
         <!-- Empty State -->
         <div v-if="summaries.length === 0" class="empty-state">
           <div class="empty-visual">
@@ -99,7 +99,7 @@
             v-for="(s, idx) in filteredSummaries"
             :key="s.window_id"
             class="window-card"
-            :style="{ animationDelay: `${idx * 40}ms` }"
+            :style="{ animationDelay: `${Math.min(idx, 8) * 20}ms` }"
             @click="handleCardClick(s)"
           >
             <!-- Thumbnail -->
@@ -110,12 +110,13 @@
                 class="thumb-img"
                 alt=""
               />
-              <div v-else-if="thumbnailStatus[s.window_id] !== 'failed'" class="thumb-placeholder">
+              <div v-else-if="thumbnailStatus[s.window_id] === 'loading'" class="thumb-placeholder">
                 <div class="thumb-spinner"></div>
               </div>
-              <div v-else class="thumb-placeholder thumb-empty">
+              <div v-else-if="thumbnailStatus[s.window_id] === 'failed'" class="thumb-placeholder thumb-empty">
                 <span>{{ t('overview.noPreview') }}</span>
               </div>
+              <div v-else class="thumb-placeholder thumb-pending"></div>
               <span class="card-index-overlay">#{{ s.window_id }}</span>
               <span class="card-time-overlay">
                 {{ formatTime(s.start_time) }} – {{ formatTime(s.end_time) }}
@@ -285,6 +286,7 @@ const chatInput = ref('')
 const chatMessages = ref([])
 const chatLoading = ref(false)
 const chatMessagesRef = ref(null)
+const gridAreaRef = ref(null)
 
 // Modal
 const activeWindow = ref(null)
@@ -428,6 +430,7 @@ async function scrollChatBottom() {
 //   1. 只有卡片进入视口（IntersectionObserver）才触发 loadThumbnail
 //   2. 全局最多 MAX_CONCURRENT_THUMBS 个并行请求，其余排队
 // ============================================================
+const INITIAL_THUMB_COUNT = 8
 const MAX_CONCURRENT_THUMBS = 2
 const thumbQueue = []          // FIFO of summaries waiting to be fetched
 const queuedWids = new Set()   // window_id 已经入队或正在加载，避免重复
@@ -451,7 +454,7 @@ async function fetchThumbnail(summary) {
       params: {
         start,
         end,
-        max_frames: 20,
+        max_frames: 6,
         use_url: true,
         use_preview: true,
       }
@@ -468,22 +471,13 @@ async function fetchThumbnail(summary) {
       }
     }
 
-    const res = await axios.get(`/api/analysis/frame-at-timestamp/${sid}`, {
-      params: { timestamp: midTime, tolerance: 5.0 }
+    // Fallback to a small, timestamped video thumbnail. Avoid pulling a full
+    // frame into the overview grid; card covers only need a compact JPEG.
+    const videoFrameRes = await axios.get(`/api/video/thumbnail/${sid}`, {
+      params: { timestamp: midTime, width: 360, quality: 62 }
     })
-    if (res.data?.success && res.data.image_base64) {
-      thumbnails[wid] = `data:image/jpeg;base64,${res.data.image_base64}`
-      thumbnailStatus[wid] = 'loaded'
-      return
-    }
-
-    // Final fallback: extract directly from the session video. This covers
-    // windows that have summaries but no saved analysis frame yet.
-    const videoFrameRes = await axios.get(`/api/video/frame/${sid}`, {
-      params: { timestamp: midTime }
-    })
-    if (videoFrameRes.data?.image_base64) {
-      thumbnails[wid] = `data:image/jpeg;base64,${videoFrameRes.data.image_base64}`
+    if (videoFrameRes.data?.thumbnail) {
+      thumbnails[wid] = `data:image/jpeg;base64,${videoFrameRes.data.thumbnail}`
       thumbnailStatus[wid] = 'loaded'
       return
     }
@@ -514,14 +508,18 @@ function pumpThumbQueue() {
   }
 }
 
-function enqueueThumbnail(summary) {
+function enqueueThumbnail(summary, priority = false) {
   if (!summary) return
   const wid = summary.window_id
   if (thumbnails[wid] || queuedWids.has(wid)) return
   widToSummary.set(wid, summary)
   queuedWids.add(wid)
-  thumbnailStatus[wid] = 'loading'
-  thumbQueue.push(summary)
+  thumbnailStatus[wid] = 'queued'
+  if (priority) {
+    thumbQueue.unshift(summary)
+  } else {
+    thumbQueue.push(summary)
+  }
   pumpThumbQueue()
 }
 
@@ -541,8 +539,15 @@ function registerCardThumb(el, wid) {
 function observeRegisteredCards() {
   if (!thumbObserver) return
   for (const [wid, el] of widToCardEl.entries()) {
-    if (thumbnails[wid] || thumbnailStatus[wid] === 'loading') continue
+    if (thumbnails[wid] || thumbnailStatus[wid] === 'loading' || thumbnailStatus[wid] === 'queued') continue
     thumbObserver.observe(el)
+  }
+}
+
+function primeInitialThumbnails() {
+  const firstVisible = filteredSummaries.value.slice(0, INITIAL_THUMB_COUNT)
+  for (let i = firstVisible.length - 1; i >= 0; i--) {
+    enqueueThumbnail(firstVisible[i], true)
   }
 }
 
@@ -565,13 +570,16 @@ onMounted(() => {
         thumbObserver.unobserve(entry.target)
       }
     }, {
-      root: null,
-      rootMargin: '200px 0px',  // 提前 200px 预加载，滚动时基本无白屏
+      root: gridAreaRef.value || null,
+      rootMargin: '80px 0px',  // 小幅预加载；后续封面随滚动进入视口再取
       threshold: 0.01,
     })
-    nextTick().then(observeRegisteredCards)
+    nextTick().then(() => {
+      observeRegisteredCards()
+      primeInitialThumbnails()
+    })
   } else {
-    for (const s of props.summaries) enqueueThumbnail(s)
+    for (const s of props.summaries.slice(0, INITIAL_THUMB_COUNT)) enqueueThumbnail(s)
   }
 })
 
@@ -582,9 +590,10 @@ watch(() => props.summaries.length, async () => {
   }
   await nextTick()
   observeRegisteredCards()
+  primeInitialThumbnails()
   // 无 IntersectionObserver 的环境下主动把新 summary 入队
   if (!thumbObserver) {
-    for (const s of props.summaries) enqueueThumbnail(s)
+    for (const s of props.summaries.slice(0, INITIAL_THUMB_COUNT)) enqueueThumbnail(s)
   }
 })
 
@@ -886,6 +895,12 @@ onUnmounted(() => {
   color: var(--text-tertiary);
   font-size: 0.85rem;
   font-weight: 600;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent),
+    var(--bg-tertiary);
+}
+
+.thumb-pending {
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent),
     var(--bg-tertiary);

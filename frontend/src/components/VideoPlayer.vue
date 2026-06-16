@@ -57,7 +57,8 @@
           playsinline
           @timeupdate="onTimeUpdate"
           @loadedmetadata="onLoadedMetadata"
-          @loadeddata="onStreamLoad"
+          @loadeddata="onNativeDataReady"
+          @canplay="onNativeCanPlay"
           @play="$emit('play')"
           @pause="onNativePause"
           @click="togglePlay"
@@ -333,6 +334,42 @@ const onStreamLoad = () => {
   isLoading.value = false
 }
 
+const restoreNativeSimulatorPlayback = () => {
+  if (!isSimulatorStream.value || props.loopWindow || !videoRef.value) return
+
+  isLoading.value = false
+  const targetTime = Number(props.currentTime || 0)
+  if (
+    targetTime > 1 &&
+    Math.abs(videoRef.value.currentTime - targetTime) > 0.5
+  ) {
+    videoRef.value.currentTime = targetTime
+  }
+
+  if (!props.isPlaying || props.streamEnded) return
+
+  const playCurrentVideo = () => {
+    if (!videoRef.value || !props.isPlaying || props.streamEnded) return
+    videoRef.value.play().catch(() => {})
+  }
+
+  playCurrentVideo()
+  window.setTimeout(() => {
+    if (videoRef.value?.paused) {
+      playCurrentVideo()
+    }
+  }, 120)
+}
+
+const onNativeDataReady = () => {
+  onStreamLoad()
+  restoreNativeSimulatorPlayback()
+}
+
+const onNativeCanPlay = () => {
+  restoreNativeSimulatorPlayback()
+}
+
 const onStreamError = () => {
   console.error('Stream error')
   isLoading.value = false
@@ -599,18 +636,7 @@ const onTimeUpdate = () => {
 
 const onLoadedMetadata = () => {
   isLoading.value = false
-  if (
-    isSimulatorStream.value &&
-    !props.loopWindow &&
-    videoRef.value &&
-    props.currentTime > 1 &&
-    Math.abs(videoRef.value.currentTime - props.currentTime) > 0.5
-  ) {
-    videoRef.value.currentTime = props.currentTime
-  }
-  if (isSimulatorStream.value && props.isPlaying && videoRef.value?.paused) {
-    videoRef.value.play().catch(() => {})
-  }
+  restoreNativeSimulatorPlayback()
 }
 
 const onNativePause = () => {
