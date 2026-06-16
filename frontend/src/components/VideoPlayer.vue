@@ -254,6 +254,10 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  resumeNonce: {
+    type: Number,
+    default: 0
+  },
   windowDuration: {
     type: Number,
     default: 15  // From backend config, default 15s
@@ -368,6 +372,13 @@ const onNativeDataReady = () => {
 
 const onNativeCanPlay = () => {
   restoreNativeSimulatorPlayback()
+}
+
+const resumeNativeSimulatorPlaybackSoon = async () => {
+  await nextTick()
+  restoreNativeSimulatorPlayback()
+  window.setTimeout(restoreNativeSimulatorPlayback, 120)
+  window.setTimeout(restoreNativeSimulatorPlayback, 360)
 }
 
 const onStreamError = () => {
@@ -586,6 +597,10 @@ watch(() => props.isPlaying, async (playing) => {
     }
   }
 }, { flush: 'post' })
+
+watch(() => props.resumeNonce, () => {
+  resumeNativeSimulatorPlaybackSoon()
+}, { flush: 'post', immediate: true })
 
 watch(
   () => [backendUrl.value, props.session?.session_id, props.mode, props.loopWindow, useCanvasStream.value],

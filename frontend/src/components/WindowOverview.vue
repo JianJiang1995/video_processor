@@ -232,6 +232,7 @@
                   :mode="mode"
                   :loopWindow="activeLoopWindow"
                   :streamEnded="false"
+                  :windowDuration="windowDuration"
                   @timeupdate="modalCurrentTime = $event"
                   @exitLoop="closeModal"
                   @loopLoadFailed="closeModal"
@@ -271,6 +272,10 @@ const props = defineProps({
   isProcessing: {
     type: Boolean,
     default: false
+  },
+  windowDuration: {
+    type: Number,
+    default: 5
   }
 })
 

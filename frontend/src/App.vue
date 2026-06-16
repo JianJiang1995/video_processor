@@ -15,17 +15,6 @@
       />
     </div>
 
-    <!-- Window Overview Mode -->
-    <WindowOverview
-      v-else-if="currentView === 'overview'"
-      :summaries="localizedSummaries"
-      :session="currentSession"
-      :mode="mode"
-      :isProcessing="isProcessing"
-      @back="handleOverviewBack"
-      @seekToWindow="handleOverviewSeekToWindow"
-    />
-
     <!-- Main Video Analyzer View -->
     <template v-else>
       <!-- Nav Rail (left) -->
@@ -100,6 +89,8 @@
                 :sam3Available="sam3Status.available"
                 :loopWindow="loopWindow"
                 :streamEnded="streamEnded"
+                :resumeNonce="playbackResumeNonce"
+                :windowDuration="windowDuration"
                 @timeupdate="handleTimeUpdate"
                 @play="handlePlay"
                 @pause="handlePause"
@@ -264,6 +255,19 @@
           <button class="overview-toast-dismiss" @click="showOverviewToast = false">&#x2715;</button>
         </div>
       </Transition>
+
+      <!-- Window Overview Mode: overlay the main view so live playback stays mounted. -->
+      <WindowOverview
+        v-if="currentView === 'overview'"
+        class="overview-layer"
+        :summaries="localizedSummaries"
+        :session="currentSession"
+        :mode="mode"
+        :isProcessing="isProcessing"
+        :windowDuration="windowDuration"
+        @back="handleOverviewBack"
+        @seekToWindow="handleOverviewSeekToWindow"
+      />
     </template>
   </div>
 </template>
@@ -313,8 +317,11 @@ const loopWindow = ref(null)  // { window_id, start_time, end_time }
 const livePlaybackTime = ref(0)
 const loopReturnTime = ref(null)
 const loopWasPlaying = ref(false)
+const playbackResumeNonce = ref(0)
 // Flag to prevent clearing loopWindow during loop-triggered seeks
 let isLoopSeek = false
+let detachedPlaybackWallStart = null
+let detachedPlaybackBaseTime = 0
 const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime due to processing delay)
 
 // New E3 layout state
@@ -623,6 +630,39 @@ const isSimulatorSession = computed(() => (
   currentSession.value?.video_path?.startsWith('simulator://')
 ))
 
+const maxPlayableTime = () => {
+  const sessionDuration = Number(currentSession.value?.duration || 0)
+  const displayDuration = Number(duration.value || 0)
+  const maxTime = Math.max(sessionDuration, displayDuration)
+  return maxTime > 0 ? maxTime : Infinity
+}
+
+const startDetachedPlaybackClock = () => {
+  if (mode.value !== 'stream' || !isSimulatorSession.value || !isPlaying.value || streamEnded.value) return
+  detachedPlaybackWallStart = performance.now()
+  detachedPlaybackBaseTime = Math.max(
+    Number(livePlaybackTime.value || 0),
+    Number(currentTime.value || 0),
+    Number(loopReturnTime.value || 0)
+  )
+}
+
+const advanceDetachedPlaybackClock = () => {
+  if (detachedPlaybackWallStart == null) return null
+  const elapsed = isPlaying.value ? (performance.now() - detachedPlaybackWallStart) / 1000 : 0
+  const nextTime = Math.min(maxPlayableTime(), Math.max(0, detachedPlaybackBaseTime + elapsed))
+  livePlaybackTime.value = nextTime
+  currentTime.value = nextTime
+  return nextTime
+}
+
+const stopDetachedPlaybackClock = () => {
+  const nextTime = advanceDetachedPlaybackClock()
+  detachedPlaybackWallStart = null
+  detachedPlaybackBaseTime = 0
+  return nextTime
+}
+
 // Computed: list of analyzed window IDs
 const analyzedWindows = computed(() => {
   return summaries.value.map(s => s.window_id)
@@ -784,6 +824,7 @@ const handleTimeUpdate = (time) => {
     // native video element is temporarily seeking within an analyzed window,
     // but backend position, latest-analysis selection, and resume point stay
     // tied to the live stream timeline.
+    advanceDetachedPlaybackClock()
     return
   }
   if (
@@ -885,7 +926,10 @@ const handleSeek = (time) => {
 const exitLoopMode = (forcePlaying = null) => {
   if (loopWindow.value) {
     console.log('[Loop] Exiting loop mode')
-    const resumeAt = Number.isFinite(loopReturnTime.value) ? loopReturnTime.value : livePlaybackTime.value
+    const detachedResumeAt = stopDetachedPlaybackClock()
+    const resumeAt = Number.isFinite(detachedResumeAt)
+      ? detachedResumeAt
+      : (Number.isFinite(loopReturnTime.value) ? loopReturnTime.value : livePlaybackTime.value)
     const shouldPlay = typeof forcePlaying === 'boolean' ? forcePlaying : loopWasPlaying.value
     currentTime.value = Math.max(0, resumeAt || 0)
     livePlaybackTime.value = currentTime.value
@@ -893,6 +937,7 @@ const exitLoopMode = (forcePlaying = null) => {
     loopReturnTime.value = null
     loopWasPlaying.value = false
     isPlaying.value = shouldPlay
+    playbackResumeNonce.value += 1
     userSelectedWindow.value = false
     highlightedWindowId.value = -1
     selectedWindowId.value = -1
@@ -1274,6 +1319,10 @@ const showOverviewToastPrompt = () => {
 }
 
 const enterOverview = () => {
+  if (loopWindow.value) {
+    exitLoopMode(true)
+  }
+  navActiveView.value = 'overview'
   showOverviewToast.value = false
   if (overviewToastTimer) clearTimeout(overviewToastTimer)
   currentView.value = 'overview'
@@ -1523,11 +1572,17 @@ const startBottomScrollDrag = (event) => {
 }
 
 const handleOverviewBack = () => {
+  stopDetachedPlaybackClock()
   currentView.value = 'main'
+  navActiveView.value = 'analysis'
+  playbackResumeNonce.value += 1
 }
 
 const handleOverviewSeekToWindow = (windowId) => {
+  stopDetachedPlaybackClock()
   currentView.value = 'main'
+  navActiveView.value = 'analysis'
+  playbackResumeNonce.value += 1
   handleSeekToWindow(windowId)
 }
 
@@ -1821,6 +1876,7 @@ const handleSeekToWindow = (windowId) => {
       loopReturnTime.value = currentTime.value
       livePlaybackTime.value = currentTime.value
       loopWasPlaying.value = isPlaying.value
+      startDetachedPlaybackClock()
     }
     // Set up loop playback for this window
     loopWindow.value = {
@@ -2402,6 +2458,12 @@ onUnmounted(() => {
 }
 .overview-toast-dismiss:hover {
   color: var(--text-primary);
+}
+
+.overview-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
 }
 
 /* Overview Header Button */
