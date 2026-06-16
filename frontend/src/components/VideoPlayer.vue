@@ -564,6 +564,15 @@ watch(
 let lastNativeTimeEmit = 0
 const onTimeUpdate = () => {
   if (videoRef.value) {
+    if (
+      isSimulatorStream.value &&
+      !props.loopWindow &&
+      props.currentTime > 3 &&
+      videoRef.value.currentTime < props.currentTime - 2
+    ) {
+      videoRef.value.currentTime = props.currentTime
+      return
+    }
     if (isSimulatorStream.value && props.loopWindow) {
       const windowStart = props.loopWindow.start_time || 0
       const windowEnd = props.loopWindow.end_time || windowStart
@@ -590,6 +599,15 @@ const onTimeUpdate = () => {
 
 const onLoadedMetadata = () => {
   isLoading.value = false
+  if (
+    isSimulatorStream.value &&
+    !props.loopWindow &&
+    videoRef.value &&
+    props.currentTime > 1 &&
+    Math.abs(videoRef.value.currentTime - props.currentTime) > 0.5
+  ) {
+    videoRef.value.currentTime = props.currentTime
+  }
   if (isSimulatorStream.value && props.isPlaying && videoRef.value?.paused) {
     videoRef.value.play().catch(() => {})
   }

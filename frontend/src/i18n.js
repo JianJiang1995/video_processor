@@ -176,6 +176,7 @@ const messages = {
     'overview.analysisSummary': '分析摘要',
     'overview.chatFallback': '抱歉，暂时无法回答。',
     'overview.networkError': '网络错误，请稍后再试。',
+    'overview.noPreview': '无预览',
 
     'frame.title': '单帧分析',
     'frame.close': '关闭',
@@ -359,6 +360,7 @@ const messages = {
     'overview.analysisSummary': 'Analysis Summary',
     'overview.chatFallback': 'Sorry, I cannot answer right now.',
     'overview.networkError': 'Network error. Please try again later.',
+    'overview.noPreview': 'No preview',
 
     'frame.title': 'Frame Analysis',
     'frame.close': 'Close',

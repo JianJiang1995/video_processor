@@ -786,6 +786,14 @@ const handleTimeUpdate = (time) => {
     // tied to the live stream timeline.
     return
   }
+  if (
+    mode.value === 'stream' &&
+    isSimulatorSession.value &&
+    livePlaybackTime.value > 3 &&
+    time < livePlaybackTime.value - 2
+  ) {
+    return
+  }
   currentTime.value = time
   if (mode.value === 'stream') {
     livePlaybackTime.value = time

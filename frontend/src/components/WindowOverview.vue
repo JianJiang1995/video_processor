@@ -110,8 +110,11 @@
                 class="thumb-img"
                 alt=""
               />
-              <div v-else class="thumb-placeholder">
+              <div v-else-if="thumbnailStatus[s.window_id] !== 'failed'" class="thumb-placeholder">
                 <div class="thumb-spinner"></div>
+              </div>
+              <div v-else class="thumb-placeholder thumb-empty">
+                <span>{{ t('overview.noPreview') }}</span>
               </div>
               <span class="card-index-overlay">#{{ s.window_id }}</span>
               <span class="card-time-overlay">
@@ -289,6 +292,7 @@ const modalCurrentTime = ref(0)
 
 // Thumbnails
 const thumbnails = reactive({})
+const thumbnailStatus = reactive({}) // loading | loaded | failed
 const loadingThumbs = new Set()
 
 // Computed
@@ -429,6 +433,7 @@ const thumbQueue = []          // FIFO of summaries waiting to be fetched
 const queuedWids = new Set()   // window_id 已经入队或正在加载，避免重复
 let activeThumbFetches = 0
 const cardElToWid = new WeakMap()  // 卡片 DOM 元素 → window_id
+const widToCardEl = new Map()      // window_id → card DOM 元素，供 observer 创建后补注册
 const widToSummary = new Map()     // window_id → summary 对象（供队列消费时反查）
 let thumbObserver = null
 
@@ -458,6 +463,7 @@ async function fetchThumbnail(summary) {
       }, frames[0])
       if (best?.url) {
         thumbnails[wid] = best.url
+        thumbnailStatus[wid] = 'loaded'
         return
       }
     }
@@ -467,10 +473,24 @@ async function fetchThumbnail(summary) {
     })
     if (res.data?.success && res.data.image_base64) {
       thumbnails[wid] = `data:image/jpeg;base64,${res.data.image_base64}`
+      thumbnailStatus[wid] = 'loaded'
+      return
+    }
+
+    // Final fallback: extract directly from the session video. This covers
+    // windows that have summaries but no saved analysis frame yet.
+    const videoFrameRes = await axios.get(`/api/video/frame/${sid}`, {
+      params: { timestamp: midTime }
+    })
+    if (videoFrameRes.data?.image_base64) {
+      thumbnails[wid] = `data:image/jpeg;base64,${videoFrameRes.data.image_base64}`
+      thumbnailStatus[wid] = 'loaded'
+      return
     }
   } catch {
-    // silent fail — card stays without thumbnail
+    // Keep the UI deterministic: do not spin forever when no frame exists.
   }
+  thumbnailStatus[wid] = 'failed'
 }
 
 function pumpThumbQueue() {
@@ -484,6 +504,7 @@ function pumpThumbQueue() {
     }
     activeThumbFetches++
     loadingThumbs.add(wid)
+    thumbnailStatus[wid] = 'loading'
     fetchThumbnail(summary).finally(() => {
       activeThumbFetches--
       loadingThumbs.delete(wid)
@@ -499,21 +520,37 @@ function enqueueThumbnail(summary) {
   if (thumbnails[wid] || queuedWids.has(wid)) return
   widToSummary.set(wid, summary)
   queuedWids.add(wid)
+  thumbnailStatus[wid] = 'loading'
   thumbQueue.push(summary)
   pumpThumbQueue()
 }
 
 // 函数 ref：每张 card-thumb 挂载时注册到 observer
 function registerCardThumb(el, wid) {
-  if (!el) return
+  if (!el) {
+    widToCardEl.delete(wid)
+    return
+  }
+  widToCardEl.set(wid, el)
   cardElToWid.set(el, wid)
   if (thumbObserver) {
     thumbObserver.observe(el)
   }
 }
 
+function observeRegisteredCards() {
+  if (!thumbObserver) return
+  for (const [wid, el] of widToCardEl.entries()) {
+    if (thumbnails[wid] || thumbnailStatus[wid] === 'loading') continue
+    thumbObserver.observe(el)
+  }
+}
+
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  for (const s of props.summaries) {
+    widToSummary.set(s.window_id, s)
+  }
 
   // IntersectionObserver 不可用时退化为"立即加载所有"，但仍走并发队列限流
   if (typeof IntersectionObserver !== 'undefined') {
@@ -532,6 +569,7 @@ onMounted(() => {
       rootMargin: '200px 0px',  // 提前 200px 预加载，滚动时基本无白屏
       threshold: 0.01,
     })
+    nextTick().then(observeRegisteredCards)
   } else {
     for (const s of props.summaries) enqueueThumbnail(s)
   }
@@ -539,7 +577,11 @@ onMounted(() => {
 
 watch(() => props.summaries.length, async () => {
   // summaries 变化（新窗口到达）时，等下一帧 DOM 更新再让 observer 去 observe 新卡片
+  for (const s of props.summaries) {
+    widToSummary.set(s.window_id, s)
+  }
   await nextTick()
+  observeRegisteredCards()
   // 无 IntersectionObserver 的环境下主动把新 summary 入队
   if (!thumbObserver) {
     for (const s of props.summaries) enqueueThumbnail(s)
@@ -555,6 +597,7 @@ onUnmounted(() => {
   thumbQueue.length = 0
   queuedWids.clear()
   widToSummary.clear()
+  widToCardEl.clear()
 })
 </script>
 
@@ -837,6 +880,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.thumb-empty {
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent),
+    var(--bg-tertiary);
 }
 
 .thumb-spinner {

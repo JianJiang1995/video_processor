@@ -1329,8 +1329,9 @@ async def get_frame(
     if not session:
         raise HTTPException(404, "Session not found")
     
+    video_source = resolve_video_source(session.get("video_path", "")).source
     processor = VideoProcessor(
-        video_path=session.get("video_path", ""),
+        video_path=video_source,
         window_duration=settings.WINDOW_DURATION
     )
     
@@ -1356,7 +1357,8 @@ async def get_thumbnail(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    processor = VideoProcessor(video_path=session.get("video_path", ""))
+    video_source = resolve_video_source(session.get("video_path", "")).source
+    processor = VideoProcessor(video_path=video_source)
     frame = processor.extract_frame(0)
     
     if frame is None:
