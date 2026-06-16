@@ -303,9 +303,22 @@ function mergeIncrementally(windows) {
 // key = "phaseX-windowId"（章节起始 window 稳定不变），value = { signature, mergedSummary }
 const _chapterCache = new Map()
 
+const latestWindowId = computed(() => {
+  return (props.summaries || []).reduce((latest, s) => {
+    const id = Number(s?.window_id)
+    return Number.isFinite(id) && id > latest ? id : latest
+  }, -1)
+})
+
+const activeWindowId = computed(() => {
+  const selectedId = Number(props.selectedWindowId)
+  if (Number.isFinite(selectedId) && selectedId >= 0) return selectedId
+  return latestWindowId.value
+})
+
 const chapters = computed(() => {
   const sorted = [...(props.summaries || [])].sort((a, b) => a.window_id - b.window_id)
-  const currentId = props.currentSummary?.window_id ?? -1
+  const currentId = activeWindowId.value
   return sorted.map((s) => {
     const phase = s.phase || 'Unknown'
     const cleaned = stripPhaseHeader(s.summary)
@@ -336,14 +349,6 @@ const latestChapter = computed(() => {
 
 const topChapters = computed(() => {
   if (!chapters.value.length) return []
-  const currentId = props.currentSummary?.window_id
-  if (Number.isFinite(currentId)) {
-    const nearPlayback = [...chapters.value]
-      .filter(ch => (ch.windows?.[0]?.window_id ?? -1) <= currentId)
-      .sort((a, b) => (b.windows?.[0]?.window_id ?? -1) - (a.windows?.[0]?.window_id ?? -1))
-      .slice(0, 2)
-    if (nearPlayback.length) return nearPlayback
-  }
   return [...chapters.value]
     .sort((a, b) => (b.windows?.[0]?.window_id ?? -1) - (a.windows?.[0]?.window_id ?? -1))
     .slice(0, 2)
@@ -374,7 +379,7 @@ const historyChapters = computed(() => {
         ? windowLabel(Math.min(...ids), Math.max(...ids))
         : windowLabel(ids[0])
       last.key = `history-${Math.min(...ids)}-${Math.max(...ids)}-${last.windows.length}`
-      last.containsCurrent = last.windows.some(w => w.window_id === (props.currentSummary?.window_id ?? -1))
+      last.containsCurrent = last.windows.some(w => w.window_id === activeWindowId.value)
     } else {
       groups.push({
         ...ch,
