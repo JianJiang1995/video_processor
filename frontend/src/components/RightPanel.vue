@@ -54,7 +54,7 @@
             @keydown.enter.prevent="seekChapter(ch)"
             @keydown.space.prevent="seekChapter(ch)"
           >
-            <div class="latest-label">{{ index === 0 ? t('right.latestWindow') : t('right.previousWindow') }}</div>
+            <div class="latest-label">{{ index === 0 ? primaryChapterLabel : t('right.previousWindow') }}</div>
             <div class="latest-head">
               <span class="chapter-time">
                 {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
@@ -211,6 +211,119 @@ function stripPhaseHeader(t) {
     .trim()
 }
 
+const INSTRUMENT_LIST_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
+const PROGRESS_KEYWORDS = /(牵拉|暴露|分离|剥离|剪切|剪断|切断|夹闭|闭合|施夹|钛夹|胆囊|胆囊管|胆囊动脉|血管|管状结构|肝床|肝胆三角|三角区|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|残端|粘连|组织|出血|止血|渗血|凝血|视野)/
+const BLEEDING_KEYWORDS = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+const SAFETY_KEYWORDS = /(CVS|安全视野|关键安全视野|两条结构|胆囊管|胆囊动脉|管状结构|残端|夹闭|切断|critical view|cystic duct|cystic artery)/i
+const LOW_VALUE_VISUAL_RE = new RegExp(`^(?:当前)?(?:可见|见|视野中可见)${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*[。；;，,\\s]*$`)
+
+function splitSentences(text) {
+  return String(text || '')
+    .split(/(?<=[。；！？!?;])/)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+function softenInstrumentLanguage(text) {
+  let out = String(text || '')
+  const instrumentList = new RegExp(`${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*`, 'g')
+  const visualOnly = new RegExp(`(?:当前)?(?:可见|见|视野中可见)${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*[，,。；;]?`, 'g')
+  out = out.replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+  out = out.replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${INSTRUMENT_LIST_RE})在([^，。；;]+)[，,]`, 'g'), '在$2，')
+  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${INSTRUMENT_LIST_RE})对([^，。；;]+)[，,]`, 'g'), '对$2，')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+  out = out.replace(visualOnly, '')
+  out = out.replace(/当前处于[^，。；;]+[，,]\s*/g, '')
+  out = out.replace(/抓钳(?:持续)?牵拉/g, '牵拉')
+  out = out.replace(/夹持牵拉/g, '牵拉')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})(?:持续)?牵拉`, 'g'), '牵拉')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})(?:进行)?分离`, 'g'), '分离')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})(?:进行)?夹闭`, 'g'), '夹闭')
+  out = out.replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
+  out = out.replace(/使用(?:电钩|双极电凝|双极)?对组织进行点触和分离动作/g, '对组织进行电凝分离')
+  out = out.replace(/电钩对组织进行点触和分离动作/g, '对组织进行电凝分离')
+  out = out.replace(/电钩正?伸入([^，。；;]+)[，,]\s*/g, '在$1，')
+  out = out.replace(/使用(?:剪刀|电剪|电钩|双极电凝)?对/g, '对')
+  out = out.replace(/使用(?:剪刀|电剪|电钩|双极电凝)?在/g, '在')
+  out = out.replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
+  out = out.replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
+  out = out.replace(/使用(?:钛夹钳|施夹器)进行/g, '进行')
+  out = out.replace(/(?:钛夹钳|施夹器)对/g, '对')
+  out = out.replace(/已被多枚金属钛夹(?:夹闭|关闭)的管状结构残端/g, '已夹闭的管状结构残端')
+  out = out.replace(/已被多枚金属(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+  out = out.replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
+  out = out.replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
+  out = out.replace(/在([^，。；;]+)[，,]\s*(?:夹闭|关闭|闭合)了?组织/g, '在$1进行夹闭处理')
+  out = out.replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
+  out = out.replace(/进行钛夹的施加并闭合/g, '进行夹闭处理')
+  out = out.replace(/钛夹的施加并闭合/g, '夹闭处理')
+  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})进入视野[，,]?\\s*`, 'g'), '')
+  out = out.replace(/(?:剪刀|电剪)进入视野[，,]?\s*/g, '')
+  out = out.replace(/(?:冲洗器|吸引器|冲吸器)进入视野[，,]?\s*/g, '')
+  out = out.replace(/已夹闭并切断的管状结构残端。已夹闭的管状结构残端/g, '已夹闭并切断的管状结构残端')
+  out = out.replace(/已夹闭的管状结构残端。已夹闭并切断的管状结构残端/g, '已夹闭并切断的管状结构残端')
+  out = out.replace(/视野中可见/g, '')
+  out = out.replace(new RegExp(`可见${instrumentList.source}[，,]`, 'g'), '')
+  out = out.replace(/可见/g, '')
+  out = out.replace(/\s+/g, ' ')
+  out = out.replace(/[，,]\s*[。；;]/g, '。')
+  out = out.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
+  return out.trim()
+}
+
+function focusProgressText(text, maxChars = 260, maxSentences = 2) {
+  const normalized = softenInstrumentLanguage(stripPhaseHeader(text))
+  if (!normalized) return ''
+
+  const risk = []
+  const safety = []
+  const actions = []
+  const seen = new Set()
+
+  for (const raw of splitSentences(normalized)) {
+    const sentence = softenInstrumentLanguage(raw).replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
+    if (!sentence) continue
+    if (LOW_VALUE_VISUAL_RE.test(sentence)) continue
+    if (!PROGRESS_KEYWORDS.test(sentence)) continue
+
+    const fp = sentenceFingerprint(sentence)
+    if (!fp || seen.has(fp)) continue
+    seen.add(fp)
+
+    if (BLEEDING_KEYWORDS.test(sentence)) {
+      risk.push(sentence)
+    } else if (SAFETY_KEYWORDS.test(sentence)) {
+      safety.push(sentence)
+    } else {
+      actions.push(sentence)
+    }
+  }
+
+  const selected = []
+  const pushFrom = (items, limit = maxSentences) => {
+    for (const s of items) {
+      if (selected.length >= limit) return
+      if (selected.some(existing => jaccard(bigrams(existing), bigrams(s)) >= 0.55)) continue
+      selected.push(s)
+      const joined = selected.map(x => /[。；！？!?;]$/.test(x) ? x : `${x}。`).join('')
+      if (joined.length >= maxChars) return
+    }
+  }
+  pushFrom(risk, Math.min(maxSentences, risk.length || maxSentences))
+  pushFrom(safety, maxSentences)
+  pushFrom(actions, maxSentences)
+
+  const result = selected
+    .map(s => /[。；！？!?;]$/.test(s) ? s : `${s}。`)
+    .join('')
+    .slice(0, maxChars)
+  return result || normalized.slice(0, maxChars)
+}
+
 function hasSevereBleedingText(text) {
   const t = String(text || '').toLowerCase()
   if (/(无(?:明显)?出血|未见(?:明显)?出血|没有(?:明显)?出血|无活动性出血|未见活动性出血|no bleeding|without bleeding)/i.test(t)) return false
@@ -229,7 +342,7 @@ function bleedingText(text, fallback) {
 
 // 章节文本只保留"关键节点"——窗口级 + 句子级双层去重，并对总长度设上限。
 // 目标：用户看到的叙事像手术记录，而不是同一句话的几十次复述。
-const CHAPTER_MAX_CHARS = 600
+const CHAPTER_MAX_CHARS = 220
 const SIM_SKIP_THRESHOLD = 0.45   // 新窗口与已有合并文本相似度≥45% 就整窗口跳过
 const SENT_FINGERPRINT_LEN = 12    // 句子指纹长度：越短去重越狠
 const BORING_TOKENS = ['器械', '操作', '动作', '手术', '进行中', '继续', '正在']
@@ -259,7 +372,7 @@ function mergeIncrementally(windows) {
   const existingSentKeys = new Set()
 
   for (const w of windows) {
-    const cleaned = stripPhaseHeader(w.summary)
+    const cleaned = focusProgressText(w.summary, 180, 1)
     if (!cleaned) continue
 
     // 首条直接进
@@ -310,9 +423,15 @@ const latestWindowId = computed(() => {
   }, -1)
 })
 
+const playbackWindowId = computed(() => {
+  const id = Number(props.currentSummary?.window_id)
+  return Number.isFinite(id) && id >= 0 ? id : -1
+})
+
 const activeWindowId = computed(() => {
   const selectedId = Number(props.selectedWindowId)
   if (Number.isFinite(selectedId) && selectedId >= 0) return selectedId
+  if (playbackWindowId.value >= 0) return playbackWindowId.value
   return latestWindowId.value
 })
 
@@ -322,6 +441,7 @@ const chapters = computed(() => {
   return sorted.map((s) => {
     const phase = s.phase || 'Unknown'
     const cleaned = stripPhaseHeader(s.summary)
+    const focused = focusProgressText(cleaned, 240, 2)
     return {
       key: `window-${s.window_id}-${s.stage || 0}`,
       phase,
@@ -330,7 +450,7 @@ const chapters = computed(() => {
       endTime: s.end_time,
       windows: [s],
       windowLabel: windowLabel(s.window_id + 1),
-      mergedSummary: cleaned || t('right.emptyWindowResult'),
+      mergedSummary: focused || cleaned || t('right.emptyWindowResult'),
       containsCurrent: s.window_id === currentId,
     }
   })
@@ -349,9 +469,28 @@ const latestChapter = computed(() => {
 
 const topChapters = computed(() => {
   if (!chapters.value.length) return []
-  return [...chapters.value]
-    .sort((a, b) => (b.windows?.[0]?.window_id ?? -1) - (a.windows?.[0]?.window_id ?? -1))
-    .slice(0, 2)
+  const currentId = activeWindowId.value
+  const current = chapters.value.find(ch => (ch.windows?.[0]?.window_id ?? -1) === currentId)
+    || chapters.value.reduce((latest, ch) => {
+      const latestId = latest?.windows?.[0]?.window_id ?? -1
+      const chId = ch?.windows?.[0]?.window_id ?? -1
+      return chId > latestId ? ch : latest
+    }, null)
+  if (!current) return []
+
+  const currentWindowId = current.windows?.[0]?.window_id ?? -1
+  const previous = [...chapters.value]
+    .filter(ch => (ch.windows?.[0]?.window_id ?? -1) < currentWindowId)
+    .sort((a, b) => (b.windows?.[0]?.window_id ?? -1) - (a.windows?.[0]?.window_id ?? -1))[0]
+  return [current, previous].filter(Boolean)
+})
+
+const primaryChapterLabel = computed(() => {
+  if (Number(props.selectedWindowId) >= 0) return t('right.selectedWindow')
+  if (!props.isProcessing && playbackWindowId.value >= 0 && playbackWindowId.value < latestWindowId.value) {
+    return t('right.currentPlaybackWindow')
+  }
+  return t('right.latestWindow')
 })
 
 const historyChapters = computed(() => {
@@ -392,7 +531,10 @@ const historyChapters = computed(() => {
 })
 
 const bleedingStatus = computed(() => {
-  const sorted = [...(props.summaries || [])].sort((a, b) => (a.window_id ?? 0) - (b.window_id ?? 0))
+  const cutoffWindowId = activeWindowId.value
+  const sorted = [...(props.summaries || [])]
+    .filter(w => cutoffWindowId < 0 || (w.window_id ?? 0) <= cutoffWindowId)
+    .sort((a, b) => (a.window_id ?? 0) - (b.window_id ?? 0))
   let lastActive = null
   let lastResolved = null
 
@@ -430,7 +572,7 @@ const bleedingStatus = computed(() => {
   return null
 })
 
-const currentChapter = computed(() => latestChapter.value || chapters.value[chapters.value.length - 1])
+const currentChapter = computed(() => topChapters.value[0] || latestChapter.value || chapters.value[chapters.value.length - 1])
 
 const currentChapterAsSummary = computed(() => {
   const c = currentChapter.value

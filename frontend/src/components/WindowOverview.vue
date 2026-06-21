@@ -132,7 +132,7 @@
                 ></div>
               </div>
 
-              <p class="card-summary" v-html="highlightText(truncate(s.summary, 100))"></p>
+              <p class="card-summary" v-html="highlightText(truncate(displaySummary(s), 110))"></p>
             </div>
           </div>
         </div>
@@ -240,7 +240,7 @@
               </div>
               <div class="modal-summary-section">
                 <div class="modal-summary-label">{{ t('overview.analysisSummary') }}</div>
-                <p class="modal-summary-text">{{ activeWindow.summary }}</p>
+                <p class="modal-summary-text">{{ displaySummary(activeWindow) }}</p>
               </div>
             </div>
           </div>
@@ -257,7 +257,7 @@ import { apiUrl } from '@/utils/electronBridge'
 import VideoPlayer from './VideoPlayer.vue'
 import { useI18n } from '@/i18n'
 
-const { t } = useI18n()
+const { t, language } = useI18n()
 
 const props = defineProps({
   summaries: {
@@ -307,7 +307,7 @@ const filteredSummaries = computed(() => {
   if (!filterText.value.trim()) return props.summaries
   const keyword = filterText.value.trim().toLowerCase()
   return props.summaries.filter(s =>
-    s.summary && s.summary.toLowerCase().includes(keyword)
+    displaySummary(s).toLowerCase().includes(keyword)
   )
 })
 
@@ -329,6 +329,92 @@ const maxWindowDuration = computed(() => {
   if (props.summaries.length === 0) return 1
   return Math.max(...props.summaries.map(s => (s.end_time || 0) - (s.start_time || 0)), 1)
 })
+
+const OVERVIEW_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
+const OVERVIEW_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野)/
+const OVERVIEW_RISK_RE = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+
+function compactChineseSummary(text, maxChars = 150) {
+  let out = String(text || '')
+    .replace(/^【[^】]*】\s*/, '')
+    .replace(/当前处于[^，。；;]+[，,。；;]?\s*/g, '')
+    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${OVERVIEW_INSTRUMENT_RE}(?:、${OVERVIEW_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
+    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
+    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+    .replace(/电钩正?伸入([^，。；;]+)[，,]\s*/g, '在$1，')
+    .replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
+    .replace(/夹持牵拉/g, '牵拉')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '对')
+    .replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
+    .replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
+    .replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
+    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+    .replace(/视野中可见|可见/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const sentences = out
+    .split(/(?<=[。；！？!?;])/)
+    .map(s => s.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '').trim())
+    .filter(s => s && OVERVIEW_SIGNAL_RE.test(s))
+  const risks = sentences.filter(s => OVERVIEW_RISK_RE.test(s))
+  const actions = sentences.filter(s => !OVERVIEW_RISK_RE.test(s))
+  const selected = [...risks, ...actions].slice(0, 2)
+  out = (selected.length ? selected : sentences.slice(0, 1))
+    .map(s => /[。；！？!?;]$/.test(s) ? s : `${s}。`)
+    .join('')
+  return (out || String(text || '')).slice(0, maxChars)
+}
+
+function fallbackEnglishSummary(text) {
+  const src = compactChineseSummary(text, 260)
+  const lower = src.toLowerCase()
+  const parts = []
+  const add = (s) => { if (s && !parts.includes(s)) parts.push(s) }
+
+  if (/hem[-\s]?o[-\s]?lok|hemolok|hemlock/i.test(src)) add('A Hem-o-lok clip is placed on the isolated tubular structure.')
+  if (/(肝胆三角|胆囊三角|calot)/i.test(src) && /(游离|分离|电凝|剥离|点触)/.test(src)) {
+    add('Dissection is performed in the hepatocystic triangle around the cystic duct.')
+  }
+  if (/(胆囊管|胆囊动脉|管状结构)/.test(src) && /(夹闭|施夹|闭合)/.test(src)) add('The isolated cystic duct or cystic artery region is clipped.')
+  if (/(剪切|切断|夹断)/.test(src)) add('The clipped tubular structure is divided.')
+  if (/(胆囊分离|胆囊与肝床|肝床|胆囊床)/.test(src)) add('The gallbladder is dissected from the liver bed.')
+  if (/(冲吸|冲洗|吸引|清理)/.test(src)) add('Suction and irrigation are used to clear the operative field.')
+  if (/(大量活动性出血|活动性出血|明显出血|持续出血)/.test(src)) add('Active bleeding is noted.')
+  else if (/(少量出血|少量渗血|渗血|出血)/.test(src)) add('Minor local bleeding or oozing is noted.')
+  if (/(止血|凝血|无活动性出血|未见活动性出血)/.test(src)) add('Hemostasis is achieved or no active bleeding is seen.')
+  if (/(牵拉|暴露)/.test(src)) add('Traction is maintained for exposure.')
+  if (parts.length) return parts.slice(0, 2).join(' ')
+
+  return src
+    .replace(/胆囊管/g, 'cystic duct')
+    .replace(/胆囊动脉/g, 'cystic artery')
+    .replace(/肝胆三角/g, 'hepatocystic triangle')
+    .replace(/胆囊床/g, 'gallbladder bed')
+    .replace(/肝床/g, 'liver bed')
+    .replace(/钛夹/g, 'titanium clip')
+    .replace(/施夹器|施夹钳/g, 'clip applier')
+    .replace(/抓钳/g, 'grasper')
+    .replace(/电钩/g, 'electrocautery hook')
+    .replace(/剪刀/g, 'scissors')
+    .replace(/出血/g, 'bleeding')
+    .replace(/止血/g, 'hemostasis')
+}
+
+function displaySummary(summary) {
+  if (!summary) return ''
+  if (language.value === 'en') {
+    return summary.summary_en || fallbackEnglishSummary(summary.summary || '')
+  }
+  return compactChineseSummary(summary.summary || '')
+}
 
 // Methods
 function handleCardClick(summary) {
@@ -378,7 +464,7 @@ function durationPercent(s) {
 // Smart chat
 function buildContext() {
   return props.summaries.map(s =>
-    `[窗口${s.window_id} ${formatTime(s.start_time)}-${formatTime(s.end_time)}] ${s.summary}`
+    `[窗口${s.window_id} ${formatTime(s.start_time)}-${formatTime(s.end_time)}] ${displaySummary(s)}`
   ).join('\n')
 }
 

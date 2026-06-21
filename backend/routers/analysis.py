@@ -10,6 +10,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import json
+import hashlib
+import re
+import os
 from PIL import Image
 from io import BytesIO
 import base64
@@ -73,6 +76,10 @@ active_surgr1_tasks: dict = {}
 # Text-only translation cache for UI language switching.
 # Key: (target_lang, source_text)
 summary_translation_cache: dict = {}
+
+# LLM-generated key event nodes for the bottom timeline UI.
+# Key: (session_id, language, max_windows, summaries_signature)
+event_node_cache: dict = {}
 
 # Global stream start times for time synchronization
 # Key: session_id, Value: float (unix timestamp when processing started)
@@ -549,6 +556,12 @@ class TextSearchRequest(BaseModel):
 class TranslateSummaryRequest(BaseModel):
     text: str
     target_lang: str = "en"
+
+
+class EventNodesRequest(BaseModel):
+    language: str = "zh"
+    force: bool = False
+    max_windows: Optional[int] = None
 
 
 @router.post("/analyze-frames-batch")
@@ -4089,6 +4102,86 @@ async def translate_summary(request: TranslateSummaryRequest):
             "cached": True,
         }
 
+    def local_translate_summary_en(text: str) -> str:
+        """Fast local fallback for short laparoscopic cholecystectomy UI summaries.
+
+        This is deliberately conservative: it compresses known surgical findings
+        into professional English and preserves fixed terms instead of trying to
+        be a general-purpose translator.
+        """
+        src = re.sub(r"\s+", " ", str(text or "")).strip()
+        src = re.sub(r"^【[^】]*】\s*", "", src)
+        src = re.sub(r"当前处于[^，。；;]+[，,。；;]?\s*", "", src)
+        src = re.sub(r"(?:可见|视野中可见)(?:抓钳|施夹器|施夹钳|钛夹钳|剪刀|电钩|冲吸器|冲洗器|吸引器|器械)(?:、(?:抓钳|施夹器|施夹钳|钛夹钳|剪刀|电钩|冲吸器|冲洗器|吸引器|器械))*[，,。；;]?\s*", "", src)
+
+        sentences: List[str] = []
+        lower = src.lower()
+
+        def add(sentence: str) -> None:
+            if sentence and sentence not in sentences:
+                sentences.append(sentence)
+
+        if re.search(r"hem[-\s]?o[-\s]?lok|hemolok|hemlock", lower, re.IGNORECASE):
+            add("A Hem-o-lok clip is placed on the isolated tubular structure.")
+
+        if re.search(r"(肝胆三角|胆囊三角|calot)", src, re.IGNORECASE) and re.search(r"(游离|分离|电凝|剥离|点触)", src):
+            add("Dissection is performed in the hepatocystic triangle, separating adhesions and connective tissue around the cystic duct.")
+
+        if re.search(r"(胆囊管|胆囊动脉|管状结构)", src) and re.search(r"(夹闭|施夹|闭合)", src):
+            add("The isolated cystic duct or cystic artery region is clipped.")
+
+        if re.search(r"(剪刀|剪切|切断|夹断)", src) and re.search(r"(胆囊管|胆囊动脉|管状结构|组织)", src):
+            add("The clipped tubular structure is divided.")
+
+        if re.search(r"(胆囊分离|胆囊与肝床|胆囊床|肝床)", src) and re.search(r"(游离|分离|剪切|剥离|牵拉)", src):
+            add("The gallbladder is dissected from the liver bed under traction.")
+
+        if re.search(r"(冲吸器|冲洗|吸引|清理)", src):
+            add("Suction and irrigation are used to clear the operative field.")
+
+        if re.search(r"(穿刺|穿入|穿孔|钻孔)", src):
+            add("A puncture or entry maneuver is noted.")
+
+        if re.search(r"(大量活动性出血|活动性出血|明显出血|持续出血|喷涌出血)", src):
+            add("Active bleeding is noted and requires attention.")
+        elif re.search(r"(少量出血|少量渗血|渗血|局部.*出血|出血)", src):
+            add("Minor local bleeding or oozing is noted.")
+
+        if re.search(r"(止血|凝血|出血.*控制|无活动性出血|未见活动性出血)", src):
+            add("Hemostasis is achieved or no active bleeding is seen.")
+
+        if re.search(r"(牵拉|夹持)", src) and re.search(r"(胆囊|组织)", src):
+            add("Traction is maintained to expose the operative field.")
+
+        if sentences:
+            return " ".join(sentences[:3])
+
+        replacements = [
+            ("Hem-o-lok", "Hem-o-lok clip"),
+            ("Hemolok", "Hem-o-lok clip"),
+            ("胆囊管", "cystic duct"),
+            ("胆囊动脉", "cystic artery"),
+            ("肝胆三角", "hepatocystic triangle"),
+            ("Calot三角", "Calot's triangle"),
+            ("胆囊床", "gallbladder bed"),
+            ("肝床", "liver bed"),
+            ("钛夹", "titanium clip"),
+            ("施夹器", "clip applier"),
+            ("施夹钳", "clip applier"),
+            ("钛夹钳", "titanium clip applier"),
+            ("抓钳", "grasper"),
+            ("电钩", "electrocautery hook"),
+            ("剪刀", "scissors"),
+            ("出血", "bleeding"),
+            ("止血", "hemostasis"),
+            ("夹闭切断", "clipping and division"),
+            ("胆囊分离", "gallbladder dissection"),
+        ]
+        out = src
+        for cn, en in replacements:
+            out = out.replace(cn, en)
+        return out[:260]
+
     config = load_config()
     translation_cfg = config.get("services", {}).get("translation", {})
     provider = translation_cfg.get("provider", "gemini")
@@ -4143,13 +4236,611 @@ async def translate_summary(request: TranslateSummaryRequest):
         }
     except Exception as exc:
         logger.warning(f"[Translate] Failed to translate summary: {exc}")
+        fallback_text = local_translate_summary_en(source)
+        summary_translation_cache[key] = fallback_text
         return {
-            "success": False,
-            "text": source,
+            "success": True,
+            "text": fallback_text,
             "target_lang": target,
             "cached": False,
+            "provider": "local_rule_fallback",
             "error": str(exc),
         }
+
+
+def _normalize_summary_for_event_nodes(summary: Any) -> Optional[Dict[str, Any]]:
+    """Convert stored summary rows into compact records for event-node LLM input."""
+    if isinstance(summary, dict):
+        others = summary.get("others") or {}
+        if isinstance(others, str):
+            try:
+                others = json.loads(others)
+            except Exception:
+                others = {}
+        window_id = summary.get("window_id")
+        start_time = summary.get("window_start", summary.get("start_time", 0))
+        end_time = summary.get("window_end", summary.get("end_time", 0))
+        text = summary.get("glm_summary") or summary.get("summary") or summary.get("summary_text") or ""
+        phase = (
+            summary.get("surgical_phase")
+            or summary.get("phase")
+            or (others.get("phase") if isinstance(others, dict) else None)
+            or "Unknown"
+        )
+    else:
+        others = getattr(summary, "others_data", None) or getattr(summary, "others", None) or {}
+        if isinstance(others, str):
+            try:
+                others = json.loads(others)
+            except Exception:
+                others = {}
+        window_id = getattr(summary, "window_id", None)
+        start_time = getattr(summary, "start_time", getattr(summary, "window_start", 0))
+        end_time = getattr(summary, "end_time", getattr(summary, "window_end", 0))
+        text = getattr(summary, "summary_text", getattr(summary, "glm_summary", ""))
+        phase = getattr(summary, "surgical_phase", None) or (others.get("phase") if isinstance(others, dict) else None) or "Unknown"
+
+    if window_id is None:
+        return None
+    try:
+        window_id = int(window_id)
+    except Exception:
+        return None
+
+    try:
+        start_time = float(start_time or 0)
+        end_time = float(end_time or start_time)
+    except Exception:
+        start_time, end_time = 0.0, 0.0
+
+    stage = 2
+    if isinstance(others, dict):
+        try:
+            stage = int(others.get("stage", 2) or 2)
+        except Exception:
+            stage = 2
+
+    return {
+        "window_id": window_id,
+        "display_window": window_id + 1,
+        "start_time": start_time,
+        "end_time": end_time,
+        "summary": str(text or "").strip(),
+        "phase": str(phase or "Unknown"),
+        "stage": stage,
+    }
+
+
+def _event_nodes_signature(records: List[Dict[str, Any]]) -> str:
+    payload = [
+        {
+            "w": r.get("window_id"),
+            "p": r.get("phase"),
+            "s": r.get("stage"),
+            "t": r.get("summary", ""),
+        }
+        for r in records
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _strip_json_fences(text: str) -> str:
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _parse_event_nodes_json(text: str) -> Dict[str, Any]:
+    cleaned = _strip_json_fences(text)
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            raise
+        parsed = json.loads(match.group(0))
+    if isinstance(parsed, list):
+        return {"events": parsed}
+    if not isinstance(parsed, dict):
+        raise ValueError("event node response must be a JSON object")
+    return parsed
+
+
+def _coerce_event_window_ids(raw_ids: Any, valid_ids: set) -> List[int]:
+    if raw_ids is None:
+        return []
+    if isinstance(raw_ids, (int, float)):
+        candidates = [int(raw_ids)]
+    elif isinstance(raw_ids, str):
+        candidates = [int(x) for x in re.findall(r"-?\d+", raw_ids)]
+    elif isinstance(raw_ids, list):
+        candidates = []
+        for item in raw_ids:
+            try:
+                candidates.append(int(item))
+            except Exception:
+                if isinstance(item, str):
+                    candidates.extend(int(x) for x in re.findall(r"-?\d+", item))
+    else:
+        candidates = []
+
+    seen = set()
+    out = []
+    for wid in candidates:
+        if wid in valid_ids and wid not in seen:
+            out.append(wid)
+            seen.add(wid)
+    return sorted(out)
+
+
+def _normalize_event_nodes(
+    raw_events: List[Dict[str, Any]],
+    records: List[Dict[str, Any]],
+    language: str,
+    source: str,
+) -> List[Dict[str, Any]]:
+    valid_ids = {r["window_id"] for r in records}
+    by_window = {r["window_id"]: r for r in records}
+    allowed_types = {"phase", "cvs", "action", "risk", "resolution", "visibility", "other"}
+    allowed_severities = {"normal", "important", "safety", "critical", "resolved"}
+    events = []
+
+    for idx, item in enumerate(raw_events or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        window_ids = _coerce_event_window_ids(item.get("window_ids"), valid_ids)
+        if not window_ids:
+            rep_id = item.get("representative_window_id") or item.get("window_id")
+            window_ids = _coerce_event_window_ids(rep_id, valid_ids)
+        if not window_ids:
+            continue
+
+        windows = [by_window[wid] for wid in window_ids if wid in by_window]
+        if not windows:
+            continue
+        start_time = min(float(w.get("start_time", 0) or 0) for w in windows)
+        end_time = max(float(w.get("end_time", start_time) or start_time) for w in windows)
+
+        try:
+            confidence = float(item.get("confidence", 0.65))
+        except Exception:
+            confidence = 0.65
+        if confidence <= 0:
+            confidence = 0.65
+        confidence = max(0.0, min(1.0, confidence))
+
+        event_type = str(item.get("type") or "other").lower()
+        if event_type not in allowed_types:
+            event_type = "other"
+        severity = str(item.get("severity") or "normal").lower()
+        if severity not in allowed_severities:
+            severity = "normal"
+
+        title = str(item.get("title") or "").strip()
+        summary_text = str(item.get("summary") or "").strip()
+        if not title:
+            title = "关键事件" if language.startswith("zh") else "Key event"
+        if not summary_text:
+            summary_text = windows[-1].get("summary") or title
+
+        events.append({
+            "id": str(item.get("id") or f"event_{idx:03d}"),
+            "type": event_type,
+            "severity": severity,
+            "title": title[:80],
+            "summary": summary_text[:260],
+            "window_ids": window_ids,
+            "representative_window_id": window_ids[-1],
+            "start_time": start_time,
+            "end_time": end_time,
+            "confidence": confidence,
+            "source": source,
+        })
+
+    # Chronological order; frontend chooses latest-first layout.
+    events.sort(key=lambda e: (e["start_time"], e["representative_window_id"]))
+    return events[:14]
+
+
+def _merge_or_append_fallback_event(events: List[Dict[str, Any]], event: Dict[str, Any]) -> None:
+    """Merge adjacent fallback events of the same type/severity to reduce clutter."""
+    if events:
+        last = events[-1]
+        close = event["window_ids"][0] - last["window_ids"][-1] <= 2
+        if close and last["type"] == event["type"] and last["severity"] == event["severity"] and last["title"] == event["title"]:
+            merged_ids = sorted(set(last["window_ids"] + event["window_ids"]))
+            last["window_ids"] = merged_ids
+            last["representative_window_id"] = merged_ids[-1]
+            last["end_time"] = max(last["end_time"], event["end_time"])
+            if event.get("summary") and event["summary"] not in last.get("summary", ""):
+                last["summary"] = f"{last['summary'].rstrip('。.')}; {event['summary']}"
+            return
+    events.append(event)
+
+
+def _fallback_event_nodes(records: List[Dict[str, Any]], language: str, reason: str = "") -> List[Dict[str, Any]]:
+    zh = language.startswith("zh")
+    events: List[Dict[str, Any]] = []
+    prev_phase = None
+
+    def make_event(record: Dict[str, Any], event_type: str, severity: str, title: str, summary: str, confidence: float) -> Dict[str, Any]:
+        return {
+            "id": f"fallback_{len(events) + 1:03d}",
+            "type": event_type,
+            "severity": severity,
+            "title": title,
+            "summary": summary[:260],
+            "window_ids": [record["window_id"]],
+            "representative_window_id": record["window_id"],
+            "start_time": record["start_time"],
+            "end_time": record["end_time"],
+            "confidence": confidence,
+            "source": "fallback",
+            "fallback_reason": reason,
+        }
+
+    for record in records:
+        text = f"{record.get('summary', '')} {record.get('phase', '')}".lower()
+        phase = record.get("phase") or "Unknown"
+        if phase != prev_phase and phase not in ("Unknown", "未知", ""):
+            title = f"进入{PHASE_LABEL_CN.get(phase, phase)}" if zh else f"Phase shift: {phase}"
+            summary = record.get("summary") or title
+            _merge_or_append_fallback_event(events, make_event(record, "phase", "important", title, summary, 0.55))
+            prev_phase = phase
+
+        if re.search(r"(cvs|critical view|安全视野|关键安全视野|两条结构|胆囊管|胆囊动脉)", text, re.IGNORECASE):
+            title = "CVS安全评估节点" if zh else "CVS safety checkpoint"
+            _merge_or_append_fallback_event(events, make_event(record, "cvs", "safety", title, record.get("summary") or title, 0.58))
+
+        if re.search(r"(大量(?:活动性)?出血|活动性出血|明显出血|喷涌出血|active bleeding|heavy bleeding|massive bleeding|profuse bleeding)", text, re.IGNORECASE):
+            title = "活动性出血" if zh else "Active bleeding"
+            _merge_or_append_fallback_event(events, make_event(record, "risk", "critical", title, record.get("summary") or title, 0.68))
+
+        if re.search(r"(出血(?:已经|已)?(?:停止|控制|解决)|止血(?:完成|成功|有效)|无活动性出血|bleeding (?:stopped|controlled|resolved)|hemostasis achieved)", text, re.IGNORECASE):
+            title = "出血已控制" if zh else "Bleeding controlled"
+            _merge_or_append_fallback_event(events, make_event(record, "resolution", "resolved", title, record.get("summary") or title, 0.62))
+
+        if re.search(r"(穿刺|穿孔|穿入|穿透|钻孔|trocar|puncture|perforat|drill)", text, re.IGNORECASE):
+            title = "穿刺/穿入动作" if zh else "Puncture or entry action"
+            _merge_or_append_fallback_event(events, make_event(record, "action", "important", title, record.get("summary") or title, 0.64))
+
+    if not events and records:
+        latest = records[-1]
+        title = "最新手术进展" if zh else "Latest surgical progress"
+        events.append(make_event(latest, "other", "normal", title, latest.get("summary") or title, 0.45))
+
+    return events[-12:]
+
+
+def _build_event_nodes_prompt(records: List[Dict[str, Any]], language: str) -> str:
+    output_language = "Chinese" if language.startswith("zh") else "English"
+    window_lines = []
+    for record in records:
+        summary = re.sub(r"\s+", " ", record.get("summary", "")).strip()
+        if len(summary) > 320:
+            summary = summary[:317] + "..."
+        window_lines.append(
+            f"- window_id={record['window_id']} display_window={record['display_window']} "
+            f"time={record['start_time']:.1f}-{record['end_time']:.1f}s "
+            f"phase={record.get('phase') or 'Unknown'} stage={record.get('stage', 2)} "
+            f"summary={summary}"
+        )
+
+    return f"""
+You will receive chronological laparoscopic cholecystectomy window summaries.
+Identify key event nodes for a clinical review timeline. Output language: {output_language}.
+
+Selection rules:
+1. Use only the provided window summaries. Do not invent findings.
+2. Merge adjacent similar windows into one event node.
+3. Prefer phase transitions, CVS safety milestones, critical actions, risks, and resolved risks.
+4. CVS milestones include: hepatocystic triangle exposure/clearing, lower gallbladder separation,
+   only two structures entering the gallbladder, clipping/cutting safety confirmation, or CVS uncertainty.
+5. Critical actions include trocar/puncture/entry, drilling/perforation-like contact, traction, dissection,
+   electrocautery, clipping, cutting, irrigation, specimen bagging, and gallbladder removal.
+6. Write event titles and summaries as surgical progress, action, safety, bleeding, or resolution.
+   Do not list visible instruments unless the instrument name is necessary to explain the action.
+7. Bleeding status is highest priority: create a critical risk event for heavy active bleeding or a clear bleeding source;
+   create a resolved event when a later window says bleeding is controlled, stopped, or hemostasis is achieved.
+   Minor oozing should only be mentioned when it affects the field or requires hemostasis.
+8. Keep 3-12 event nodes when possible. Include the latest meaningful event.
+9. window_ids must use the exact internal window_id values from the input, not display_window.
+
+Return strict JSON only, no markdown:
+{{
+  "events": [
+    {{
+      "id": "event_001",
+      "type": "phase|cvs|action|risk|resolution|visibility|other",
+      "severity": "normal|important|safety|critical|resolved",
+      "title": "short title",
+      "summary": "one concise clinical sentence",
+      "window_ids": [0, 1],
+      "representative_window_id": 1,
+      "start_time": 0.0,
+      "end_time": 10.0,
+      "confidence": 0.65
+    }}
+  ]
+}}
+
+Window summaries:
+{chr(10).join(window_lines)}
+""".strip()
+
+
+async def _call_openai_compatible_event_nodes(
+    prompt: str,
+    system_prompt: str,
+    event_cfg: Dict[str, Any],
+    max_tokens: int,
+    temperature: float,
+) -> Dict[str, Any]:
+    """Call OpenAI-compatible chat completions without requiring the openai package."""
+    api_key_env = event_cfg.get("api_key_env", "OPENAI_API_KEY")
+    api_key = event_cfg.get("api_key") or os.environ.get(api_key_env) or settings.OPENAI_API_KEY
+    if not api_key:
+        raise RuntimeError(f"{api_key_env} is not configured")
+
+    base_url = (
+        event_cfg.get("base_url")
+        or os.environ.get("OPENAI_BASE_URL")
+        or settings.OPENAI_BASE_URL
+        or "https://api.openai.com/v1"
+    ).rstrip("/")
+    model_name = event_cfg.get("model_name") or "gpt-4o-mini"
+    timeout = float(event_cfg.get("timeout", 30.0))
+    trust_env = bool(event_cfg.get("trust_env", False))
+    transport = str(event_cfg.get("transport", "curl")).lower()
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    if transport == "curl":
+        def quote_curl_config(value: str) -> str:
+            return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+
+        curl_payload = json.dumps(payload, ensure_ascii=False)
+        curl_config = "\n".join([
+            f"url = {quote_curl_config(f'{base_url}/chat/completions')}",
+            'request = "POST"',
+            f"max-time = {int(max(1, timeout))}",
+            f"header = {quote_curl_config(f'Authorization: Bearer {api_key}')}",
+            'header = "Content-Type: application/json"',
+            f"data = {quote_curl_config(curl_payload)}",
+        ]) + "\n"
+        proc = await asyncio.create_subprocess_exec(
+            "curl",
+            "-sS",
+            "-K",
+            "-",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=os.environ.copy(),
+        )
+        stdout, stderr = await proc.communicate(curl_config.encode("utf-8"))
+        if proc.returncode != 0:
+            raise RuntimeError(f"curl OpenAI-compatible event-node call failed: {stderr.decode('utf-8', 'ignore')[:1000]}")
+        try:
+            data = json.loads(stdout.decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"curl OpenAI-compatible response is not JSON: {stdout[:1000]!r}") from exc
+        if data.get("error"):
+            raise RuntimeError(f"OpenAI-compatible event-node call failed: {data.get('error')}")
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except Exception as exc:
+            raise RuntimeError(f"OpenAI-compatible response missing text: {data}") from exc
+        return {
+            "success": True,
+            "text": text,
+            "model": data.get("model") or model_name,
+        }
+
+    async with httpx.AsyncClient(timeout=timeout, trust_env=trust_env) as client:
+        response = await client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
+        if response.status_code >= 400:
+            body = response.text[:1200]
+            retry_payload = dict(payload)
+            should_retry = False
+            if "max_tokens" in body and "max_completion_tokens" in body:
+                retry_payload.pop("max_tokens", None)
+                retry_payload["max_completion_tokens"] = max_tokens
+                should_retry = True
+            if "temperature" in body and ("unsupported" in body.lower() or "not support" in body.lower()):
+                retry_payload.pop("temperature", None)
+                should_retry = True
+            if should_retry and retry_payload != payload:
+                response = await client.post(f"{base_url}/chat/completions", headers=headers, json=retry_payload)
+                body = response.text[:1200]
+            if response.status_code >= 400:
+                raise RuntimeError(f"OpenAI-compatible event-node call failed: HTTP {response.status_code}: {body}")
+
+    data = response.json()
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI-compatible response missing text: {data}") from exc
+    return {
+        "success": True,
+        "text": text,
+        "model": data.get("model") or model_name,
+    }
+
+
+@router.post("/event-nodes/{session_id}")
+async def get_event_nodes(
+    session_id: str,
+    request: EventNodesRequest,
+    db: Session = Depends(get_db)
+):
+    """Generate key event nodes from stored window summaries via text-only LLM."""
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    config = load_config()
+    event_cfg = config.get("services", {}).get("event_nodes", {})
+    translation_cfg = config.get("services", {}).get("translation", {})
+    language = (request.language or "zh").lower()
+    if not language.startswith("en"):
+        language = "zh"
+
+    configured_max = int(event_cfg.get("max_windows", 120) or 120)
+    max_windows = int(request.max_windows or configured_max)
+    max_windows = max(6, min(max_windows, 180))
+
+    raw_summaries = get_summaries_by_session(db, session["session_id"])
+    records = [
+        item for item in (_normalize_summary_for_event_nodes(s) for s in raw_summaries)
+        if item and item.get("summary")
+    ]
+    records.sort(key=lambda r: (r["window_id"], r["start_time"]))
+    if len(records) > max_windows:
+        records = records[-max_windows:]
+
+    if not records:
+        return {
+            "success": True,
+            "session_id": session_id,
+            "language": language,
+            "source": "empty",
+            "cached": False,
+            "window_count": 0,
+            "events": [],
+        }
+
+    signature = _event_nodes_signature(records)
+    cache_key = (session_id, language, max_windows, signature)
+    if not request.force and cache_key in event_node_cache:
+        cached = event_node_cache[cache_key]
+        return {
+            **cached,
+            "cached": True,
+        }
+
+    provider = event_cfg.get("provider") or translation_cfg.get("provider", "gemini")
+    model_name = event_cfg.get("model_name") or translation_cfg.get("model_name")
+    max_tokens = int(event_cfg.get("max_tokens") or 1200)
+    temperature = float(event_cfg.get("temperature", 0.0))
+
+    system_prompt = (
+        "You are a surgical event-node analyst for laparoscopic cholecystectomy. "
+        "You convert existing time-window summaries into a concise, structured key-event timeline. "
+        "You must preserve uncertainty, never add unobserved findings, and output valid JSON only."
+    )
+    prompt = _build_event_nodes_prompt(records, language)
+
+    try:
+        if not event_cfg.get("enabled", True):
+            raise RuntimeError("event node LLM disabled by config")
+
+        if provider == "glm":
+            client = get_glm_client()
+            result = await client.chat(
+                message=prompt,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                disable_thinking=True,
+            )
+        elif provider in {"openai", "gpt", "openai_compatible"}:
+            result = await _call_openai_compatible_event_nodes(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                event_cfg=event_cfg,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        else:
+            from ..services.gemini_client import GeminiClient
+            fallback_models = event_cfg.get("fallback_models") or [
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash",
+            ]
+            candidate_models = []
+            for candidate in [model_name, *fallback_models]:
+                if candidate and candidate not in candidate_models:
+                    candidate_models.append(candidate)
+
+            result = None
+            last_error = ""
+            for candidate_model in candidate_models:
+                client = GeminiClient(
+                    model_name=candidate_model,
+                    thinking_level=event_cfg.get("thinking_level", translation_cfg.get("thinking_level", "none")),
+                    max_tokens=max_tokens,
+                )
+                result = await client.chat(
+                    message=prompt,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                if result.get("success") and (result.get("text") or "").strip():
+                    model_name = candidate_model
+                    break
+                last_error = result.get("error") or f"{candidate_model} returned empty response"
+                logger.warning(f"[EventNodes] Gemini model {candidate_model} failed: {last_error}")
+            else:
+                raise RuntimeError(last_error or "all Gemini event-node models failed")
+
+        text = (result.get("text") or "").strip()
+        if not result.get("success") or not text:
+            raise RuntimeError(result.get("error") or "empty event-node response")
+
+        parsed = _parse_event_nodes_json(text)
+        events = _normalize_event_nodes(parsed.get("events", []), records, language, "llm")
+        if not events:
+            raise RuntimeError("LLM returned no usable event nodes")
+
+        response = {
+            "success": True,
+            "session_id": session_id,
+            "language": language,
+            "source": "llm",
+            "cached": False,
+            "provider": provider,
+            "model": model_name or result.get("model"),
+            "window_count": len(records),
+            "signature": signature,
+            "events": events,
+        }
+    except Exception as exc:
+        logger.warning(f"[EventNodes] Falling back for session {session_id}: {exc}")
+        response = {
+            "success": False,
+            "session_id": session_id,
+            "language": language,
+            "source": "fallback",
+            "cached": False,
+            "window_count": len(records),
+            "signature": signature,
+            "error": str(exc),
+            "events": _fallback_event_nodes(records, language, str(exc)),
+        }
+
+    if response.get("source") == "llm":
+        if len(event_node_cache) > 128:
+            event_node_cache.pop(next(iter(event_node_cache)), None)
+        event_node_cache[cache_key] = response
+    return response
 
 
 @router.get("/summary-at/{session_id}")

@@ -117,6 +117,25 @@
             "temperature": 0.0,
             "comment": "UI 摘要中英文切换的文本翻译模型：只翻译已有分析，不参与医学判断"
         },
+        "event_nodes": {
+            "enabled": true,
+            "provider": "openai",
+            "api_key_env": "OPENAI_API_KEY",
+            "model_name": "gpt-4o-mini",
+            "thinking_level": "none",
+            "max_tokens": 1200,
+            "temperature": 0.0,
+            "timeout": 30.0,
+            "transport": "curl",
+            "trust_env": true,
+            "max_windows": 120,
+            "fallback_models": [
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            ],
+            "comment": "底部关键事件节点聚合：基于已保存窗口摘要做文本LLM二级分析，不阻塞实时视频/窗口摘要主链路"
+        },
         "yolo": {
             "enabled": true,
             "model_path": "/home/user/proj/surg_agent/detection_expert/runs/yolo26s_cholec_tool/weights/best.pt",

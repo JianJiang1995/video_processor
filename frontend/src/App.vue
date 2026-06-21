@@ -133,7 +133,7 @@
               />
             </section>
 
-            <!-- 历史窗口分析 (always visible) -->
+            <!-- Key event nodes / full window history (always visible) -->
             <div
               class="video-resize-handle"
               :title="t('app.resizeHistoryTitle')"
@@ -146,10 +146,37 @@
               :style="{ height: bottomStripHeight + 'px' }"
             >
               <div class="bcs-header">
-                <span class="bcs-title">{{ t('app.historyAnalysis') }}</span>
-                <span class="bcs-count" v-if="summaries.length > 0">
+                <span class="bcs-title">{{ t('app.keyEventNodes') }}</span>
+                <span class="bcs-count" v-if="bottomViewMode === 'events' && eventNodes.length > 0">
+                  {{ t('app.eventCount', { count: eventNodes.length }) }}
+                </span>
+                <span class="bcs-count" v-else-if="bottomViewMode === 'windows' && summaries.length > 0">
                   {{ t('app.windowCount', { count: summaries.length }) }}
                 </span>
+                <div class="bcs-mode-toggle" :aria-label="t('app.bottomMode')">
+                  <button
+                    class="bcs-mode-btn"
+                    :class="{ active: bottomViewMode === 'events' }"
+                    @click="setBottomViewMode('events')"
+                  >
+                    {{ t('app.eventNodes') }}
+                  </button>
+                  <button
+                    class="bcs-mode-btn"
+                    :class="{ active: bottomViewMode === 'windows' }"
+                    @click="setBottomViewMode('windows')"
+                  >
+                    {{ t('app.allWindows') }}
+                  </button>
+                </div>
+                <button
+                  class="bcs-refresh-btn"
+                  :title="t('app.regenerateEvents')"
+                  :disabled="summaries.length === 0 || eventNodesLoading"
+                  @click="requestEventNodes({ force: true })"
+                >
+                  &#x21BB;
+                </button>
                 <button
                   class="bcs-overview-btn"
                   :disabled="summaries.length === 0"
@@ -159,8 +186,52 @@
                 </button>
               </div>
               <div
+                class="bcs-scroll event-node-scroll"
+                v-if="bottomViewMode === 'events' && sortedEventNodes.length > 0"
+                ref="bottomScrollRef"
+                :class="{ dragging: bottomScrollDragging }"
+                @pointerdown="startBottomScrollDrag"
+              >
+                <div
+                  v-for="node in sortedEventNodes"
+                  :key="node.id"
+                  class="event-node-card"
+                  :class="[
+                    `event-type-${node.type}`,
+                    `event-severity-${node.severity}`,
+                    { selected: node.window_ids?.includes(selectedWindowId) }
+                  ]"
+                  :title="node.summary"
+                  @pointerdown.stop
+                  @click="handleEventNodeClick(node)"
+                >
+                  <div class="event-node-head">
+                    <span class="event-node-kind">{{ eventNodeTypeLabel(node.type) }}</span>
+                    <span class="event-node-time">{{ eventNodeTimeLabel(node) }}</span>
+                  </div>
+                  <div class="event-node-thumb">
+                    <img
+                      v-if="eventNodeThumbnail(node)"
+                      :src="eventNodeThumbnail(node)"
+                      alt=""
+                    />
+                    <div
+                      v-else
+                      class="bcs-card-thumb-placeholder"
+                      :class="{ loading: eventNodeThumbLoading(node) }"
+                    ></div>
+                  </div>
+                  <div class="event-node-title">{{ node.title }}</div>
+                  <div class="event-node-summary">{{ node.summary }}</div>
+                  <div class="event-node-meta">
+                    <span>{{ eventNodeWindowLabel(node) }}</span>
+                    <span v-if="node.confidence != null">{{ t('app.eventConfidence', { value: Math.round(node.confidence * 100) }) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div
                 class="bcs-scroll"
-                v-if="summaries.length > 0"
+                v-else-if="bottomViewMode === 'windows' && summaries.length > 0"
                 ref="bottomScrollRef"
                 :class="{ dragging: bottomScrollDragging }"
                 @pointerdown="startBottomScrollDrag"
@@ -201,7 +272,7 @@
               </div>
               <div v-else class="bcs-empty">
                 <span class="bcs-empty-hint">
-                  {{ isProcessing ? t('app.historyLoading') : t('app.historyEmpty') }}
+                  {{ bottomEmptyText }}
                 </span>
               </div>
             </div>
@@ -302,6 +373,10 @@ const duration = ref(0)
 const isPlaying = ref(false)
 const volume = ref(0.8)
 const summaries = ref([])
+const bottomViewMode = ref(localStorage.getItem('surg_bottom_view_mode') || 'events')
+const eventNodes = ref([])
+const eventNodesLoading = ref(false)
+const eventNodesError = ref('')
 const bottomThumbnails = reactive({})
 const bottomThumbLoading = reactive({})
 const isProcessing = ref(false)
@@ -377,6 +452,9 @@ let streamEndCheckInterval = null  // Check if stream has ended
 let lastSummaryRefreshAt = 0
 let lastSummaryRefreshWindow = -1
 const translationInFlight = new Set()
+let eventNodesTimer = null
+let eventNodesRequestSeq = 0
+let eventNodesRefreshPending = false
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
 const streamEnded = ref(false)  // Whether the video stream has ended
 const streamWasActive = ref(false)  // Track if stream was ever active (for reliable end detection)
@@ -416,6 +494,18 @@ const clearBottomThumbnails = () => {
   bottomThumbQueue.length = 0
   bottomThumbQueued.clear()
   bottomThumbActive = 0
+}
+
+const clearEventNodes = () => {
+  if (eventNodesTimer) {
+    clearTimeout(eventNodesTimer)
+    eventNodesTimer = null
+  }
+  eventNodesRequestSeq += 1
+  eventNodesRefreshPending = false
+  eventNodes.value = []
+  eventNodesError.value = ''
+  eventNodesLoading.value = false
 }
 
 const fetchBottomThumbnail = async (summary) => {
@@ -582,6 +672,7 @@ const upsertSummary = (payload) => {
   }
 
   enqueueBottomThumbnail(data)
+  scheduleEventNodesRefresh()
   return data
 }
 
@@ -683,6 +774,7 @@ const handleModeSelect = (selectedMode) => {
 const handleResumeSession = (session) => {
   currentSession.value = session
   duration.value = session.duration
+  clearEventNodes()
   
   // Detect if this is a stream session based on video_path
   const isStreamSession = session.video_path && (
@@ -710,6 +802,7 @@ const handleResumeSession = (session) => {
 const handleStreamConnect = ({ session, autoAnalyze }) => {
   // Clear previous session data first
   summaries.value = []
+  clearEventNodes()
   clearBottomThumbnails()
   highlightedWindowId.value = -1
   userSelectedWindow.value = false
@@ -795,6 +888,7 @@ const goHome = () => {
   currentView.value = 'select'
   currentSession.value = null
   summaries.value = []
+  clearEventNodes()
   clearBottomThumbnails()
   isProcessing.value = false
   isPlaying.value = false
@@ -986,6 +1080,7 @@ const handleUpload = async (file) => {
     currentSession.value = response.data
     duration.value = response.data.duration
     summaries.value = []
+    clearEventNodes()
     clearBottomThumbnails()
     currentTime.value = 0
     
@@ -1005,6 +1100,7 @@ const handleLoad = async (path) => {
     currentSession.value = response.data
     duration.value = response.data.duration
     summaries.value = []
+    clearEventNodes()
     clearBottomThumbnails()
     currentTime.value = 0
     
@@ -1021,6 +1117,7 @@ const loadExistingSummaries = async (sessionId) => {
     const response = await axios.get(`/api/analysis/summaries/${sessionId}`)
     summaries.value = (response.data || []).map(cleanSummaryPayload)
     summaries.value.forEach(enqueueBottomThumbnail)
+    scheduleEventNodesRefresh(300)
   } catch (error) {
     console.error('Failed to load summaries:', error)
   }
@@ -1233,6 +1330,7 @@ const startAnalysis = async () => {
         analysisEventSource.close()
         analysisEventSource = null
         if (data.status === 'completed' && summaries.value.length > 0) {
+          requestEventNodes({ force: true })
           showOverviewToastPrompt()
         }
         return
@@ -1335,6 +1433,220 @@ const enterOverview = () => {
 const sortedSummaries = computed(() => {
   return localizedSummaries.value.slice().reverse()
 })
+
+const eventNodeDisplayWindowIds = (node) => {
+  return Array.isArray(node?.window_ids)
+    ? node.window_ids.filter(id => Number.isFinite(Number(id))).map(id => Number(id) + 1)
+    : []
+}
+
+const EVENT_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
+const EVENT_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野)/
+const EVENT_RISK_RE = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+
+const compactEventNodeText = (text, maxChars = 120) => {
+  let out = cleanUserSummaryText(text)
+    .replace(/^【[^】]*】\s*/, '')
+    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${EVENT_INSTRUMENT_RE}(?:、${EVENT_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
+    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
+    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+    .replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
+    .replace(/夹持牵拉/g, '牵拉')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '对')
+    .replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
+    .replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
+    .replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
+    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+    .replace(/视野中可见|可见/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const sentences = out
+    .split(/(?<=[。；！？!?;])/)
+    .map(s => s.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '').trim())
+    .filter(s => s && EVENT_SIGNAL_RE.test(s))
+
+  const risks = sentences.filter(s => EVENT_RISK_RE.test(s))
+  const actions = sentences.filter(s => !EVENT_RISK_RE.test(s))
+  const selected = [...risks, ...actions].slice(0, 2)
+  out = (selected.length ? selected : sentences.slice(0, 1))
+    .map(s => /[。；！？!?;]$/.test(s) ? s : `${s}。`)
+    .join('')
+
+  return (out || cleanUserSummaryText(text)).slice(0, maxChars)
+}
+
+const normalizeEventNode = (node, index) => {
+  const windowIds = Array.isArray(node?.window_ids)
+    ? node.window_ids.map(id => Number(id)).filter(id => Number.isFinite(id))
+    : []
+  const representativeId = Number.isFinite(Number(node?.representative_window_id))
+    ? Number(node.representative_window_id)
+    : (windowIds.length ? Math.max(...windowIds) : -1)
+
+  const relatedSummary = summaries.value.find(s => s.window_id === representativeId)
+    || summaries.value.find(s => windowIds.includes(s.window_id))
+  if (relatedSummary) {
+    enqueueBottomThumbnail(relatedSummary)
+  }
+
+  return {
+    id: String(node?.id || `event_${index + 1}`),
+    type: String(node?.type || 'other'),
+    severity: String(node?.severity || 'normal'),
+    title: String(node?.title || t('app.keyEventNode')).trim(),
+    summary: compactEventNodeText(node?.summary || relatedSummary?.summary || ''),
+    window_ids: windowIds,
+    representative_window_id: representativeId,
+    start_time: Number(node?.start_time ?? relatedSummary?.start_time ?? 0),
+    end_time: Number(node?.end_time ?? relatedSummary?.end_time ?? 0),
+    confidence: Number.isFinite(Number(node?.confidence)) ? Number(node.confidence) : null,
+    source: node?.source || 'llm',
+  }
+}
+
+const sortedEventNodes = computed(() => {
+  return eventNodes.value
+    .slice()
+    .sort((a, b) => {
+      const bt = Number(b.start_time ?? 0)
+      const at = Number(a.start_time ?? 0)
+      if (bt !== at) return bt - at
+      return Number(b.representative_window_id ?? 0) - Number(a.representative_window_id ?? 0)
+    })
+})
+
+const bottomEmptyText = computed(() => {
+  if (bottomViewMode.value === 'events') {
+    if (eventNodesLoading.value) return t('app.eventLoading')
+    if (eventNodesError.value) return t('app.eventFailed')
+    return isProcessing.value ? t('app.eventLoading') : t('app.eventEmpty')
+  }
+  return isProcessing.value ? t('app.historyLoading') : t('app.historyEmpty')
+})
+
+const setBottomViewMode = (modeName) => {
+  bottomViewMode.value = modeName === 'windows' ? 'windows' : 'events'
+  localStorage.setItem('surg_bottom_view_mode', bottomViewMode.value)
+  if (bottomViewMode.value === 'events') {
+    scheduleEventNodesRefresh(150)
+  }
+}
+
+const scheduleEventNodesRefresh = (delay = 2500) => {
+  if (!currentSession.value || summaries.value.length < 1) return
+  if (eventNodesTimer) {
+    clearTimeout(eventNodesTimer)
+  }
+  eventNodesTimer = setTimeout(() => {
+    eventNodesTimer = null
+    requestEventNodes()
+  }, delay)
+}
+
+const requestEventNodes = async ({ force = false } = {}) => {
+  const sid = currentSession.value?.session_id
+  if (!sid || summaries.value.length < 1) return
+  if (eventNodesLoading.value && !force) {
+    eventNodesRefreshPending = true
+    return
+  }
+
+  const seq = ++eventNodesRequestSeq
+  eventNodesLoading.value = true
+  eventNodesError.value = ''
+  try {
+    const res = await axios.post(`/api/analysis/event-nodes/${sid}`, {
+      language: language.value,
+      force,
+      max_windows: 120,
+    }, {
+      signal: getSessionSignal(),
+      timeout: 45000,
+    })
+    if (seq !== eventNodesRequestSeq || currentSession.value?.session_id !== sid) return
+    const nodes = Array.isArray(res.data?.events) ? res.data.events : []
+    eventNodes.value = nodes.map(normalizeEventNode).filter(node => node.window_ids.length > 0)
+    eventNodesError.value = res.data?.source === 'fallback' && !eventNodes.value.length
+      ? (res.data?.error || 'event-node fallback empty')
+      : ''
+  } catch (error) {
+    if (axios.isCancel(error) || error.name === 'AbortError') return
+    console.warn('[EventNodes] refresh failed:', error.message)
+    if (seq !== eventNodesRequestSeq) return
+    eventNodesError.value = error.message || 'failed'
+  } finally {
+    if (seq === eventNodesRequestSeq) {
+      eventNodesLoading.value = false
+      if (eventNodesRefreshPending) {
+        eventNodesRefreshPending = false
+        scheduleEventNodesRefresh(500)
+      }
+    }
+  }
+}
+
+const eventNodeTypeLabel = (type) => {
+  const key = {
+    phase: 'event.phase',
+    cvs: 'event.cvs',
+    action: 'event.action',
+    risk: 'event.risk',
+    resolution: 'event.resolution',
+    visibility: 'event.visibility',
+    other: 'event.other',
+  }[type] || 'event.other'
+  return t(key)
+}
+
+const eventNodeWindowLabel = (node) => {
+  const displayIds = eventNodeDisplayWindowIds(node)
+  if (!displayIds.length) return ''
+  const start = Math.min(...displayIds)
+  const end = Math.max(...displayIds)
+  return start === end ? bottomWindowLabel(start) : t('app.windowRange', { start, end })
+}
+
+const eventNodeTimeLabel = (node) => {
+  const start = formatWindowTime(node?.start_time)
+  const end = formatWindowTime(node?.end_time)
+  return start === end || end === '--:--' ? start : `${start}-${end}`
+}
+
+const eventNodeRepresentativeSummary = (node) => {
+  const wid = Number(node?.representative_window_id)
+  return summaries.value.find(s => s.window_id === wid)
+    || summaries.value.find(s => node?.window_ids?.includes(s.window_id))
+    || null
+}
+
+const eventNodeThumbnail = (node) => {
+  const summary = eventNodeRepresentativeSummary(node)
+  return summary ? bottomThumbnails[summary.window_id] : ''
+}
+
+const eventNodeThumbLoading = (node) => {
+  const summary = eventNodeRepresentativeSummary(node)
+  return summary ? !!bottomThumbLoading[summary.window_id] : false
+}
+
+const handleEventNodeClick = (node) => {
+  if (bottomScrollClickSuppressed.value) return
+  const targetWindow = Number.isFinite(Number(node?.representative_window_id))
+    ? Number(node.representative_window_id)
+    : (Array.isArray(node?.window_ids) && node.window_ids.length ? Math.max(...node.window_ids) : -1)
+  if (targetWindow < 0) return
+  selectedWindowId.value = targetWindow
+  rightPanelTab.value = 'analysis'
+  handleSeekToWindow(targetWindow)
+}
 
 const requestSummaryTranslation = async (summary) => {
   const s = cleanSummaryPayload(summary)
@@ -2071,7 +2383,10 @@ watch(currentTime, (newTime) => {
 
 watch(
   () => [language.value, summaries.value.length],
-  () => ensureEnglishSummaries()
+  () => {
+    ensureEnglishSummaries()
+    scheduleEventNodesRefresh(language.value === 'en' ? 250 : 800)
+  }
 )
 
 // Check all service statuses
@@ -2169,6 +2484,7 @@ onUnmounted(() => {
   if (overviewToastTimer) {
     clearTimeout(overviewToastTimer)
   }
+  clearEventNodes()
   clearBottomScrollDragHandlers()
   
   // Remove beforeunload handler
