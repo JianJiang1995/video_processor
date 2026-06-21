@@ -383,6 +383,8 @@ const connectCapture = async () => {
   border-radius: var(--radius-md);
   padding: 1.8rem 2rem;
   max-width: 760px;
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
   width: 100%;
   box-shadow: var(--shadow-md);
 }
@@ -661,6 +663,12 @@ const connectCapture = async () => {
   display: flex;
   gap: 1rem;
   justify-content: space-between;
+  position: sticky;
+  bottom: -1.8rem;
+  z-index: 2;
+  margin: 0 -2rem -1.8rem;
+  padding: 1rem 2rem 1.8rem;
+  background: linear-gradient(180deg, rgba(32, 32, 32, 0), var(--bg-secondary) 28%);
 }
 
 /* Connection Status */
