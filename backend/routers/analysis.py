@@ -157,12 +157,37 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
             tool_names.append(name)
     if short_action.get("detected") and not any(name in tool_names for name in ("电钩", "剪刀", "施夹器")):
         tool_names.append("电钩/尖端器械")
-    tool_text = "、".join(tool_names) if tool_names else "未见明确器械"
+
+    tool_set = set(tool_names)
+    action_parts = []
+    if "施夹器" in tool_set:
+        action_parts.append("正在进行管状结构夹闭相关操作")
+    if "剪刀" in tool_set:
+        action_parts.append("涉及剪切或切断操作")
+    if "电钩" in tool_set or "电钩/尖端器械" in tool_set:
+        action_parts.append("正在进行局部分离、电凝或尖端接触操作")
+    if "冲洗器" in tool_set:
+        action_parts.append("正在冲洗或清理术野")
+    if "双极电凝" in tool_set:
+        action_parts.append("正在进行电凝止血或凝固处理")
+    if "标本袋" in tool_set:
+        action_parts.append("进入标本装袋或取出相关步骤")
+    if not action_parts and "抓钳" in tool_set:
+        action_parts.append("正在牵拉和暴露组织")
 
     action_text = ""
     if short_action.get("detected"):
-        action_text = f" {short_action.get('description', '可见短时器械接触动作')}。"
-    return f"当前处于{phase_cn}，可见{tool_text}。{action_text}".strip()
+        action_text = short_action.get("description", "出现短时器械接触动作")
+        action_text = action_text.replace("可见", "").strip(" ，。")
+
+    parts = [f"当前处于{phase_cn}"]
+    if action_parts:
+        parts.append("，" + "；".join(dict.fromkeys(action_parts)))
+    elif phase_cn and phase_cn != "当前阶段":
+        parts.append("，暂无明确关键操作变化")
+    if action_text:
+        parts.append(f"。{action_text}")
+    return "".join(parts).rstrip("。") + "。"
 
 
 def _merge_realtime_evidence(
@@ -2327,16 +2352,22 @@ async def start_glm_summarization(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    # Check if VLM is available (Gemini or GLM based on config)
+    # Check VLM availability, but do not block the realtime pipeline. Live
+    # sessions can still emit local expert Stage 1 summaries and later refine
+    # them when VLM becomes available.
+    vlm_available = False
     try:
         vlm_client = await ensure_vlm_available()
         is_healthy = await vlm_client.check_health()
         if not is_healthy:
-            raise HTTPException(503, "VLM service not available")
-    except HTTPException:
-        raise
+            raise RuntimeError("VLM service not available")
+        vlm_available = True
     except Exception as e:
-        raise HTTPException(503, f"VLM service error: {e}")
+        logger.warning(
+            "[GLM] VLM unavailable for session %s; starting expert-only Stage 1: %s",
+            request.session_id,
+            e,
+        )
     
     # Update session status to processing
     from ..database import update_session_status
@@ -2348,9 +2379,12 @@ async def start_glm_summarization(
         surgr1_client = SurgR1Client()
         r1_healthy = await surgr1_client.check_health()
         if not r1_healthy:
-            # Check if SurgR1 continuous is already running and has frames
-            has_frames = surgr1_continuous_flags.get(request.session_id, False)
-            if not has_frames:
+            existing_frames = get_frames_by_session(db, session["session_id"]) or []
+            has_frame_rows = len(existing_frames) > 0
+            # Continue if the continuous analyzer is running or frame rows
+            # already exist. Local expert fallback can summarize those rows even
+            # when the external SurgR1 API health check is down.
+            if not surgr1_continuous_flags.get(request.session_id, False) and not has_frame_rows:
                 update_session_status(db, request.session_id, "error")
                 raise HTTPException(503, "SurgR1 服务不可用，请先启动 R1 服务（bash SurgR1_api/run.sh）")
     except HTTPException:
@@ -2385,7 +2419,9 @@ async def start_glm_summarization(
         "session_id": request.session_id,
         "processing_mode": "glm_only",
         "frames_available": frame_count,
-        "surgr1_running": surgr1_continuous_flags.get(request.session_id, False)
+        "surgr1_running": surgr1_continuous_flags.get(request.session_id, False),
+        "vlm_available": vlm_available,
+        "stage1_fallback": not vlm_available,
     }
 
 
@@ -2407,7 +2443,14 @@ async def glm_summarization_task(
     db = next(get_db())
     
     try:
-        vlm_client = await ensure_vlm_available()
+        vlm_client = None
+        try:
+            vlm_client = await ensure_vlm_available()
+            if not await vlm_client.check_health():
+                logger.warning("[GLM Task] VLM health check failed; using expert-only Stage 1")
+                vlm_client = None
+        except Exception as e:
+            logger.warning(f"[GLM Task] VLM unavailable; using expert-only Stage 1: {e}")
         processor_source = resolve_video_source(video_path).source
         
         processor = VideoProcessor(
@@ -2695,7 +2738,19 @@ async def glm_summarization_task(
 
             if is_live and playback_limited_elapsed is not None:
                 max_allowed_window = int(playback_limited_elapsed / settings.WINDOW_DURATION)
-                new_windows = [wid for wid in new_windows if wid <= max_allowed_window]
+                min_candidate_window = min(new_windows) if new_windows else None
+                # After backend/frontend restarts, playback position can reset
+                # to zero while stored frame timestamps still start at a later
+                # window. In that case the two clocks are not comparable; do
+                # not filter everything out.
+                if min_candidate_window is None or max_allowed_window >= min_candidate_window:
+                    new_windows = [wid for wid in new_windows if wid <= max_allowed_window]
+                else:
+                    logger.info(
+                        "[GLM Task] Skipping playback clamp: playback window %s < first candidate %s",
+                        max_allowed_window,
+                        min_candidate_window,
+                    )
 
             new_windows = sorted(set(new_windows))
 
@@ -2728,6 +2783,12 @@ async def glm_summarization_task(
             if not new_windows:
                 capture_stats = get_frame_capture_service().get_capture_stats(session_id) if is_live else None
                 capture_stopped = bool(capture_stats and not capture_stats.get("is_running"))
+                if (
+                    is_live
+                    and all_window_ids
+                    and not surgr1_continuous_flags.get(session_id, False)
+                ):
+                    capture_stopped = True
                 if capture_stopped:
                     remaining_windows = [
                         wid for wid in all_window_ids
@@ -3008,6 +3069,8 @@ async def glm_summarization_task(
                         config = load_config()
                         open_cfg = config.get("services", {}).get("realtime_open_vision", {})
                         if not open_cfg.get("enabled", True):
+                            return {}
+                        if vlm_client is None:
                             return {}
                         if not images:
                             return {}
@@ -3298,19 +3361,30 @@ async def glm_summarization_task(
                                         )
                                     )
                                 else:
-                                    history_context = await history_manager.build_history_context()
-                                    stage1_result = await vlm_client.integrate_experts_text_only(
-                                        expert_context=expert_text,
-                                        history_context=history_context,
-                                        temperature=0.5,
-                                        max_tokens=512,
-                                    )
-                                    if stage1_result.get("success"):
-                                        stage1_summary_text = stage1_result.get("summary", "")
-                                        stage1_phase = next(
-                                            (en for cn, en in phase_map.items() if cn in stage1_summary_text),
-                                            _canonical_phase(expert_pack.get("phase", {}).get("label", "Unknown") or "Unknown"),
+                                    if vlm_client is None:
+                                        stage1_summary_text = _expert_snapshot_summary(
+                                            expert_pack=expert_pack,
+                                            start_time=meta.get("start_time", 0),
+                                            end_time=meta.get("end_time", 0),
+                                            frame_count=len(bgr_frames),
                                         )
+                                        stage1_phase = _canonical_phase(
+                                            expert_pack.get("phase", {}).get("label", "Unknown") or "Unknown"
+                                        )
+                                    else:
+                                        history_context = await history_manager.build_history_context()
+                                        stage1_result = await vlm_client.integrate_experts_text_only(
+                                            expert_context=expert_text,
+                                            history_context=history_context,
+                                            temperature=0.5,
+                                            max_tokens=512,
+                                        )
+                                        if stage1_result.get("success"):
+                                            stage1_summary_text = stage1_result.get("summary", "")
+                                            stage1_phase = next(
+                                                (en for cn, en in phase_map.items() if cn in stage1_summary_text),
+                                                _canonical_phase(expert_pack.get("phase", {}).get("label", "Unknown") or "Unknown"),
+                                            )
                         except Exception as s1e:
                             logger.warning(f"[GLM Task] Stage 1 failed for window {window_id}: {s1e}")
 
@@ -3375,133 +3449,144 @@ async def glm_summarization_task(
                                 logger.debug(f"[GLM Task] Could not load previous Stage 1 for window {window_id}: {e}")
 
                         # ===================== Stage 2: 专家 + SurgR1 + 图像 =====================
-                        try:
-                            # 10s 窗口 / 1fps = ~10 帧；Stage 2 取 3 张（首/中/尾）给 Gemini 多模态
-                            window_images = window_data.get("images")
-                            if window_images and len(window_images) > 3:
-                                n = len(window_images)
-                                window_images = [
-                                    window_images[0],
-                                    window_images[n // 2],
-                                    window_images[-1],
-                                ]
-
-                            conflict_context = None
-                            if expert_pack.get("text"):
-                                conflict_context = expert_pack["text"]
-
-                            history_context = await history_manager.build_history_context()
-                            result = await vlm_client.integrate_analysis_results(
-                                frame_analyses=window_data.get("frame_analyses", []),
-                                images=window_images,
-                                history_context=history_context,
-                                conflict_context=conflict_context,
-                                temperature=0.7 if is_live else 0.9,
-                                max_tokens=1500,
+                        if vlm_client is None:
+                            summary_text = stage1_summary_text or _expert_snapshot_summary(
+                                expert_pack=expert_pack,
+                                start_time=meta.get("start_time", 0),
+                                end_time=meta.get("end_time", 0),
+                                frame_count=len(frame_analyses),
                             )
-
-                            if result.get("success"):
-                                summary_text = result.get("summary", "")
-                                previous_stage1_summary = stage1_summary_text
-                                existing_experts: Dict[str, Any] = {}
-                                try:
-                                    existing_summary = next(
-                                        (
-                                            s for s in get_summaries_by_session(db, db_session_id)
-                                            if (s.get("window_id") if isinstance(s, dict) else getattr(s, "window_id", None)) == window_id
-                                        ),
-                                        None,
-                                    )
-                                    if existing_summary:
-                                        existing_others = (
-                                            existing_summary.get("others")
-                                            if isinstance(existing_summary, dict)
-                                            else getattr(existing_summary, "others_data", None)
-                                        ) or {}
-                                        if isinstance(existing_others, str):
-                                            existing_others = json.loads(existing_others) if existing_others else {}
-                                        previous_stage1_summary = (
-                                            existing_others.get("stage1_summary")
-                                            or previous_stage1_summary
-                                            or (
-                                                existing_summary.get("glm_summary", "")
-                                                if isinstance(existing_summary, dict)
-                                                else getattr(existing_summary, "summary_text", "")
-                                            )
-                                        )
-                                        existing_experts = existing_others.get("experts") or {}
-                                except Exception as e:
-                                    logger.debug(f"[GLM Task] Could not merge previous realtime evidence for window {window_id}: {e}")
-
-                                short_action = expert_pack.get("short_action") or {}
-                                existing_short_action = existing_experts.get("short_action") or {}
-                                if not short_action.get("detected") and existing_short_action.get("detected"):
-                                    short_action = existing_short_action
-
-                                open_vlm = expert_pack.get("open_vlm") or {}
-                                existing_open_vlm = existing_experts.get("open_vlm") or {}
-                                if not open_vlm.get("summary") and existing_open_vlm.get("summary"):
-                                    open_vlm = existing_open_vlm
-                                    expert_pack["open_vlm"] = open_vlm
-                                expert_pack["short_action"] = short_action
-
-                                open_vlm_summary = (open_vlm or {}).get("summary", "")
-                                summary_text = _merge_realtime_evidence(
-                                    summary_text=summary_text,
-                                    stage1_summary=previous_stage1_summary,
-                                    open_vlm_summary=open_vlm_summary,
-                                    short_action=short_action,
-                                )
-                                stage1_summary_text = previous_stage1_summary or stage1_summary_text
-                                others_data_raw = result.get("others")
-                                gemini_phase = next((en for cn, en in phase_map.items() if cn in summary_text), "")
-                                r1_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
-                                dominant_phase = gemini_phase or r1_phase or stage1_phase or "Unknown"
-                                # SurgR1 CoT: 原始响应是 <think>...</think><answer>...</answer>
-                                # 拆成可读段落，每帧一块（至多 4 帧）
-                                import re as _re
-                                def _extract_cot(raw):
-                                    if not raw:
-                                        return None
-                                    tm = _re.search(r"<think>(.*?)</think>", raw, _re.DOTALL)
-                                    am = _re.search(r"<answer>(.*?)</answer>", raw, _re.DOTALL)
-                                    think = tm.group(1).strip() if tm else ""
-                                    answer = am.group(1).strip() if am else raw.strip()
-                                    return think, answer
-                                cot_blocks = []
-                                for f in frame_analyses[:4]:
-                                    raw_phase = f.get("phase", "")
-                                    if not raw_phase:
-                                        continue
-                                    think, answer = _extract_cot(raw_phase)
-                                    ts = f.get("timestamp", 0)
-                                    if think:
-                                        cot_blocks.append(f"[t={ts:.1f}s]\n推理：{think}\n判断：{answer}")
-                                    else:
-                                        cot_blocks.append(f"[t={ts:.1f}s] {answer}")
-                                surgr1_reasoning = "\n\n".join(cot_blocks)
-
-                                await history_manager.add_summary(WindowSummary(
-                                    window_id=window_id,
-                                    start_time=meta.get("start_time", 0),
-                                    end_time=meta.get("end_time", 0),
-                                    summary=summary_text[:200],
-                                    dominant_phase=dominant_phase,
-                                    tools=[],
-                                    cvs_status=""
-                                ))
-                            else:
-                                # Stage 2 失败也不吞 Stage 1 的结果
-                                summary_text = stage1_summary_text or f"[分析出错: {result.get('error', '未知错误')}]"
-                                others_data_raw = None
-                                dominant_phase = stage1_phase
-                                surgr1_reasoning = ""
-                        except Exception as inner_e:
-                            logger.error(f"[GLM Task] Stage 2 failed for window {window_id}: {inner_e}")
-                            summary_text = stage1_summary_text or f"[分析出错: {str(inner_e)}]"
                             others_data_raw = None
                             dominant_phase = stage1_phase
                             surgr1_reasoning = ""
+                        else:
+                            try:
+                            # 10s 窗口 / 1fps = ~10 帧；Stage 2 取 3 张（首/中/尾）给 Gemini 多模态
+                                window_images = window_data.get("images")
+                                if window_images and len(window_images) > 3:
+                                    n = len(window_images)
+                                    window_images = [
+                                        window_images[0],
+                                        window_images[n // 2],
+                                        window_images[-1],
+                                    ]
+
+                                conflict_context = None
+                                if expert_pack.get("text"):
+                                    conflict_context = expert_pack["text"]
+
+                                history_context = await history_manager.build_history_context()
+                                result = await vlm_client.integrate_analysis_results(
+                                    frame_analyses=window_data.get("frame_analyses", []),
+                                    images=window_images,
+                                    history_context=history_context,
+                                    conflict_context=conflict_context,
+                                    temperature=0.7 if is_live else 0.9,
+                                    max_tokens=1500,
+                                )
+
+                                if result.get("success"):
+                                    summary_text = result.get("summary", "")
+                                    previous_stage1_summary = stage1_summary_text
+                                    existing_experts: Dict[str, Any] = {}
+                                    try:
+                                        existing_summary = next(
+                                            (
+                                                s for s in get_summaries_by_session(db, db_session_id)
+                                                if (s.get("window_id") if isinstance(s, dict) else getattr(s, "window_id", None)) == window_id
+                                            ),
+                                            None,
+                                        )
+                                        if existing_summary:
+                                            existing_others = (
+                                                existing_summary.get("others")
+                                                if isinstance(existing_summary, dict)
+                                                else getattr(existing_summary, "others_data", None)
+                                            ) or {}
+                                            if isinstance(existing_others, str):
+                                                existing_others = json.loads(existing_others) if existing_others else {}
+                                            previous_stage1_summary = (
+                                                existing_others.get("stage1_summary")
+                                                or previous_stage1_summary
+                                                or (
+                                                    existing_summary.get("glm_summary", "")
+                                                    if isinstance(existing_summary, dict)
+                                                    else getattr(existing_summary, "summary_text", "")
+                                                )
+                                            )
+                                            existing_experts = existing_others.get("experts") or {}
+                                    except Exception as e:
+                                        logger.debug(f"[GLM Task] Could not merge previous realtime evidence for window {window_id}: {e}")
+
+                                    short_action = expert_pack.get("short_action") or {}
+                                    existing_short_action = existing_experts.get("short_action") or {}
+                                    if not short_action.get("detected") and existing_short_action.get("detected"):
+                                        short_action = existing_short_action
+
+                                    open_vlm = expert_pack.get("open_vlm") or {}
+                                    existing_open_vlm = existing_experts.get("open_vlm") or {}
+                                    if not open_vlm.get("summary") and existing_open_vlm.get("summary"):
+                                        open_vlm = existing_open_vlm
+                                        expert_pack["open_vlm"] = open_vlm
+                                    expert_pack["short_action"] = short_action
+
+                                    open_vlm_summary = (open_vlm or {}).get("summary", "")
+                                    summary_text = _merge_realtime_evidence(
+                                        summary_text=summary_text,
+                                        stage1_summary=previous_stage1_summary,
+                                        open_vlm_summary=open_vlm_summary,
+                                        short_action=short_action,
+                                    )
+                                    stage1_summary_text = previous_stage1_summary or stage1_summary_text
+                                    others_data_raw = result.get("others")
+                                    gemini_phase = next((en for cn, en in phase_map.items() if cn in summary_text), "")
+                                    r1_phase = result.get("consistency_analysis", {}).get("图像级一致性", {}).get("主导阶段", "Unknown")
+                                    dominant_phase = gemini_phase or r1_phase or stage1_phase or "Unknown"
+                                    # SurgR1 CoT: 原始响应是 <think>...</think><answer>...</answer>
+                                    # 拆成可读段落，每帧一块（至多 4 帧）
+                                    import re as _re
+                                    def _extract_cot(raw):
+                                        if not raw:
+                                            return None
+                                        tm = _re.search(r"<think>(.*?)</think>", raw, _re.DOTALL)
+                                        am = _re.search(r"<answer>(.*?)</answer>", raw, _re.DOTALL)
+                                        think = tm.group(1).strip() if tm else ""
+                                        answer = am.group(1).strip() if am else raw.strip()
+                                        return think, answer
+                                    cot_blocks = []
+                                    for f in frame_analyses[:4]:
+                                        raw_phase = f.get("phase", "")
+                                        if not raw_phase:
+                                            continue
+                                        think, answer = _extract_cot(raw_phase)
+                                        ts = f.get("timestamp", 0)
+                                        if think:
+                                            cot_blocks.append(f"[t={ts:.1f}s]\n推理：{think}\n判断：{answer}")
+                                        else:
+                                            cot_blocks.append(f"[t={ts:.1f}s] {answer}")
+                                    surgr1_reasoning = "\n\n".join(cot_blocks)
+
+                                    await history_manager.add_summary(WindowSummary(
+                                        window_id=window_id,
+                                        start_time=meta.get("start_time", 0),
+                                        end_time=meta.get("end_time", 0),
+                                        summary=summary_text[:200],
+                                        dominant_phase=dominant_phase,
+                                        tools=[],
+                                        cvs_status=""
+                                    ))
+                                else:
+                                    # Stage 2 失败也不吞 Stage 1 的结果
+                                    summary_text = stage1_summary_text or f"[分析出错: {result.get('error', '未知错误')}]"
+                                    others_data_raw = None
+                                    dominant_phase = stage1_phase
+                                    surgr1_reasoning = ""
+                            except Exception as inner_e:
+                                logger.error(f"[GLM Task] Stage 2 failed for window {window_id}: {inner_e}")
+                                summary_text = stage1_summary_text or f"[分析出错: {str(inner_e)}]"
+                                others_data_raw = None
+                                dominant_phase = stage1_phase
+                                surgr1_reasoning = ""
 
                         # Stage 2 others_data：保留 stage1 的 experts 数据并附加 CoT + raw others
                         others_data = {

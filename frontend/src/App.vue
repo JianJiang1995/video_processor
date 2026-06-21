@@ -1290,16 +1290,14 @@ const startAnalysis = async () => {
 
   const { surgr1Available, glmAvailable } = await ensureRequiredAnalysisServices()
 
-  // Check VLM (Gemini/GLM) availability — backend picks provider from config
+  // These status checks are advisory. The backend can still produce a local
+  // expert Stage 1 summary when cloud/local VLM health checks fail.
   if (!glmAvailable) {
-    alert('VLM 服务（Gemini）不可用，请检查 GEMINI_API_KEY 或网络代理')
-    return
+    console.warn('VLM service is unavailable; starting expert-only Stage 1 summaries.')
   }
 
-  // Check if SurgR1 is available
   if (!surgr1Available) {
-    alert('SurgR1 服务不可用，请先启动 R1 服务')
-    return
+    console.warn('SurgR1 service is unavailable; backend will use available local experts.')
   }
   
   isProcessing.value = true
