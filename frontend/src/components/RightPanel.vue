@@ -215,8 +215,9 @@ function stripPhaseHeader(t) {
 
 const INSTRUMENT_LIST_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
 const NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
-const PROGRESS_KEYWORDS = /(牵拉|暴露|分离|剥离|剪切|剪断|切断|夹闭|闭合|施夹|钛夹|胆囊|胆囊管|胆囊动脉|血管|管状结构|肝床|肝胆三角|三角区|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|残端|粘连|组织|出血|止血|渗血|凝血|视野)/
+const PROGRESS_KEYWORDS = /(牵拉|暴露|分离|剥离|剪切|剪断|切断|夹闭|闭合|施夹|钛夹|胆囊|胆囊管|胆囊动脉|血管|管状结构|肝床|肝胆三角|三角区|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|残端|粘连|组织|出血|止血|渗血|凝血|视野|起雾|雾气|烟雾|模糊|镜头|移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外)/
 const BLEEDING_KEYWORDS = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+const VISIBILITY_KEYWORDS = /(镜头移出体外|移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外|镜头起雾|起雾|雾气|烟雾|模糊|视野受遮挡|视野不清|scope moved outside|outside the body|trocar|extra-abdominal|fog|smoke|blur)/i
 const SAFETY_KEYWORDS = /(CVS|安全视野|关键安全视野|两条结构|胆囊管|胆囊动脉|管状结构|残端|夹闭|切断|critical view|cystic duct|cystic artery)/i
 const CVS_STATUS_RE = /(CVS|安全关键视野|关键安全视野|critical view of safety|critical view)/i
 const LOW_VALUE_VISUAL_RE = new RegExp(`^(?:当前)?(?:可见|见|视野中可见)${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*[。；;，,\\s]*$`)
@@ -298,6 +299,7 @@ function focusProgressText(text, maxChars = 260, maxSentences = 2) {
   if (!normalized) return ''
 
   const risk = []
+  const visibility = []
   const safety = []
   const actions = []
   const seen = new Set()
@@ -315,6 +317,8 @@ function focusProgressText(text, maxChars = 260, maxSentences = 2) {
 
     if (BLEEDING_KEYWORDS.test(sentence)) {
       risk.push(sentence)
+    } else if (VISIBILITY_KEYWORDS.test(sentence)) {
+      visibility.push(sentence)
     } else if (SAFETY_KEYWORDS.test(sentence)) {
       safety.push(sentence)
     } else {
@@ -333,6 +337,7 @@ function focusProgressText(text, maxChars = 260, maxSentences = 2) {
     }
   }
   pushFrom(risk, Math.min(maxSentences, risk.length || maxSentences))
+  pushFrom(visibility, maxSentences)
   pushFrom(safety, maxSentences)
   pushFrom(actions, maxSentences)
 
