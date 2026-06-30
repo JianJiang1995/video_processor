@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 SIMULATOR_URI = "simulator://capture-card/0"
 SIMULATED_CAPTURE_NAME = "手术室采集卡模拟源"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+DEFAULT_SIMULATOR_STREAM_URL = os.getenv("SURGR1_SIMULATOR_STREAM_URL", "http://127.0.0.1:9001/stream")
 
 
 @dataclass
@@ -52,6 +53,7 @@ def _candidate_simulator_files() -> list[Path]:
 
     root = _repo_root()
     candidates.extend([
+        root.parent / "stream_simulator" / "media" / "vid001_capture_30fps.mp4",
         root.parent / "stream_simulator" / "media" / "stable_capture_30fps.mp4",
         root.parent / "stream_simulator" / "media" / "sample_long_cfr30.mp4",
         root.parent / "stream_simulator" / "media" / "sample_long.mp4",
@@ -125,7 +127,10 @@ def get_simulator_source(stream_url: Optional[str] = None) -> Optional[ResolvedV
 def resolve_video_source(video_source: str) -> ResolvedVideoSource:
     """Resolve simulator sources to local files; leave all other sources intact."""
     if video_source.startswith("simulator://"):
-        resolved = get_simulator_source()
+        # simulator:// is the capture-card abstraction used by the app. Resolve
+        # it to the currently running simulator server's backing file first so
+        # preview, frame capture, and analysis all use the same source.
+        resolved = get_simulator_source(DEFAULT_SIMULATOR_STREAM_URL) or get_simulator_source()
         if resolved:
             resolved.original = video_source
             return resolved

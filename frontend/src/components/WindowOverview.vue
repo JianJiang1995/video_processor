@@ -331,31 +331,43 @@ const maxWindowDuration = computed(() => {
 })
 
 const OVERVIEW_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
+const OVERVIEW_NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
 const OVERVIEW_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野)/
 const OVERVIEW_RISK_RE = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
 
 function compactChineseSummary(text, maxChars = 150) {
   let out = String(text || '')
+    .replace(/太夹前|钛夹前|太夹钳|胎夹钳/g, '钛夹钳')
+    .replace(/动胆囊动脉/g, '胆囊动脉')
+    .replace(/动胆囊管/g, '胆囊管')
+    .replace(/(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))[，,]?\s*明显/g, '$1')
+    .replace(/(当前窗口|本段|术野|画面)出现/g, '$1有')
+    .replace(/出现了|出现/g, '')
     .replace(/^【[^】]*】\s*/, '')
     .replace(/当前处于[^，。；;]+[，,。；;]?\s*/g, '')
-    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${OVERVIEW_INSTRUMENT_RE}(?:、${OVERVIEW_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
-    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
-    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
-    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
-    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
-    .replace(new RegExp(`(?:${OVERVIEW_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+    .replace(/Hem[-\s]?o[-\s]?lok|Hemolok|hemlock/gi, 'Hem-o-lok')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?对/g, '钛夹钳对')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?在/g, '钛夹钳在')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${OVERVIEW_NON_CLIP_INSTRUMENT_RE}(?:、${OVERVIEW_NON_CLIP_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
     .replace(/电钩正?伸入([^，。；;]+)[，,]\s*/g, '在$1，')
     .replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
     .replace(/夹持牵拉/g, '牵拉')
     .replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
     .replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
-    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '进行')
-    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '对')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
     .replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
     .replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
     .replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
-    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
-    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
     .replace(/视野中可见|可见/g, '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -379,12 +391,16 @@ function fallbackEnglishSummary(text) {
   const parts = []
   const add = (s) => { if (s && !parts.includes(s)) parts.push(s) }
 
-  if (/hem[-\s]?o[-\s]?lok|hemolok|hemlock/i.test(src)) add('A Hem-o-lok clip is placed on the isolated tubular structure.')
+  if (/hem[-\s]?o[-\s]?lok|hemolok|hemlock/i.test(src)) add('A Hem-o-lok clip is placed on the cystic duct.')
   if (/(肝胆三角|胆囊三角|calot)/i.test(src) && /(游离|分离|电凝|剥离|点触)/.test(src)) {
     add('Dissection is performed in the hepatocystic triangle around the cystic duct.')
   }
-  if (/(胆囊管|胆囊动脉|管状结构)/.test(src) && /(夹闭|施夹|闭合)/.test(src)) add('The isolated cystic duct or cystic artery region is clipped.')
-  if (/(剪切|切断|夹断)/.test(src)) add('The clipped tubular structure is divided.')
+  if (/(胆囊管|胆囊动脉|管状结构)/.test(src) && /(夹闭|施夹|闭合)/.test(src)) {
+    add(/胆囊动脉/.test(src) ? 'The isolated cystic artery is clipped.' : 'The isolated cystic duct is clipped.')
+  }
+  if (/(剪切|切断|夹断)/.test(src)) {
+    add(/胆囊动脉/.test(src) ? 'The clipped cystic artery is divided.' : 'The clipped cystic duct is divided.')
+  }
   if (/(胆囊分离|胆囊与肝床|肝床|胆囊床)/.test(src)) add('The gallbladder is dissected from the liver bed.')
   if (/(冲吸|冲洗|吸引|清理)/.test(src)) add('Suction and irrigation are used to clear the operative field.')
   if (/(大量活动性出血|活动性出血|明显出血|持续出血)/.test(src)) add('Active bleeding is noted.')

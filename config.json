@@ -97,15 +97,20 @@
         },
         "realtime_open_vision": {
             "enabled": true,
-            "provider": "gemini",
-            "api_key_env": "GEMINI_API_KEY",
-            "model_name": "gemini-3.1-pro-preview",
-            "thinking_level": "low",
-            "max_images": 8,
-            "max_tokens": 180,
+            "provider": "openai",
+            "api_key_env": "OPENAI_API_KEY",
+            "model_name": "gpt-4o-mini",
+            "openai_fallback": true,
+            "openai_model_name": "gpt-4o-mini",
+            "transport": "curl",
+            "trust_env": true,
+            "thinking_level": "none",
+            "max_images": 4,
+            "max_tokens": 520,
             "timeout": 10.0,
-            "temperature": 0.1,
-            "comment": "实时开放视觉兜底专家：可替换模型，默认关闭 thinking，用少量压缩帧补充 YOLO/Triplet 未覆盖的器械、动作和组织描述"
+            "temperature": 0.0,
+            "response_format_json": true,
+            "comment": "实时开放视觉：每个窗口一次外部GPT视觉调用，合并判断Hem-o-lok、钛夹、施夹器、纱布、活动性出血、CVS、起雾/雾解除和镜头移出体外；thinking关闭以降低延迟"
         },
         "translation": {
             "enabled": true,

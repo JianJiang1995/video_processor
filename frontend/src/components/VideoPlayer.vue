@@ -45,7 +45,7 @@
 
         <!-- Native playback for the local capture-card simulator. Analysis still
              runs through the live simulator pipeline; preview should use the
-             browser decoder instead of an MJPEG image stream. -->
+             browser decoder instead of a JPEG frame stream. -->
         <video
           v-else-if="mode === 'stream' && isSimulatorStream"
           ref="videoRef"
@@ -324,9 +324,9 @@ const useCanvasStream = computed(() => {
 })
 
 // Computed: get the stream URL
-// Use the backend latest-frame display endpoint for every live source. It keeps
-// only the newest JPEG per source, so a brief renderer stall drops old frames
-// instead of building a playback backlog.
+// Use the backend latest-frame display endpoint for live device/RTSP/HTTP
+// sources. The simulator is intentionally excluded from this path so local
+// test playback can use the browser's native video decoder.
 const streamUrl = computed(() => {
   if (!props.session?.session_id) return ''
   if (!isLiveStream.value) return ''

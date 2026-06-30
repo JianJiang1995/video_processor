@@ -93,7 +93,7 @@
                 :windowDuration="windowDuration"
                 @timeupdate="handleTimeUpdate"
                 @play="handlePlay"
-                @pause="handlePause"
+                @pause="handleVideoPause"
                 @seek="handleSeek"
                 @upload="handleUpload"
                 @load="handleLoad"
@@ -147,8 +147,8 @@
             >
               <div class="bcs-header">
                 <span class="bcs-title">{{ t('app.keyEventNodes') }}</span>
-                <span class="bcs-count" v-if="bottomViewMode === 'events' && eventNodes.length > 0">
-                  {{ t('app.eventCount', { count: eventNodes.length }) }}
+                <span class="bcs-count" v-if="bottomViewMode === 'events' && sortedEventNodes.length > 0">
+                  {{ t('app.eventCount', { count: sortedEventNodes.length }) }}
                 </span>
                 <span class="bcs-count" v-else-if="bottomViewMode === 'windows' && summaries.length > 0">
                   {{ t('app.windowCount', { count: summaries.length }) }}
@@ -214,6 +214,7 @@
                       v-if="eventNodeThumbnail(node)"
                       :src="eventNodeThumbnail(node)"
                       alt=""
+                      @error="handleEventNodeThumbError(node, $event)"
                     />
                     <div
                       v-else
@@ -260,6 +261,7 @@
                       v-if="bottomThumbnails[s.window_id]"
                       :src="bottomThumbnails[s.window_id]"
                       alt=""
+                      @error="handleBottomThumbError(s, $event)"
                     />
                     <div
                       v-else
@@ -344,7 +346,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { apiUrl } from './utils/electronBridge.js'
 import analysisQueue from './utils/AnalysisQueue.js'
@@ -406,18 +408,22 @@ const navActiveView = ref('analysis')  // Nav rail active view
 const viewportWidth = ref(window.innerWidth)
 const viewportHeight = ref(window.innerHeight)
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
-const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.32), 560, 760)
-const maxRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.46), 760, 1040)
-const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.36), 380, 470)
-const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.56), 520, 660)
+const RIGHT_PANEL_STORAGE_KEY = 'surg_right_panel_width_v2'
+const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v2'
+const minRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.26), 480, 540)
+const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.28), 500, 680)
+const maxRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.42), 680, 960)
+const minBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.22), 300, 350)
+const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.27), 340, 400)
+const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.48), 460, 620)
 const rightPanelWidth = ref(clamp(
-  Number(localStorage.getItem('surg_right_panel_width')) || defaultRightPanelWidth(),
-  560,
+  Number(localStorage.getItem(RIGHT_PANEL_STORAGE_KEY)) || defaultRightPanelWidth(),
+  minRightPanelWidth(),
   maxRightPanelWidth()
 ))
 const bottomStripHeight = ref(clamp(
-  Number(localStorage.getItem('surg_bottom_strip_height')) || defaultBottomStripHeight(),
-  380,
+  Number(localStorage.getItem(BOTTOM_STRIP_STORAGE_KEY)) || defaultBottomStripHeight(),
+  minBottomStripHeight(),
   maxBottomStripHeight()
 ))
 const frameAnalysisPopup = ref({
@@ -480,7 +486,10 @@ const getSessionSignal = () => {
 
 const bottomThumbQueue = []
 const bottomThumbQueued = new Set()
+const bottomThumbRetries = reactive({})
+const bottomThumbFailedUrls = new Map()
 let bottomThumbActive = 0
+const BOTTOM_THUMB_CONCURRENCY = 2
 const bottomScrollRef = ref(null)
 const bottomScrollDragging = ref(false)
 const bottomScrollClickSuppressed = ref(false)
@@ -491,6 +500,8 @@ let bottomScrollUpHandler = null
 const clearBottomThumbnails = () => {
   Object.keys(bottomThumbnails).forEach(key => delete bottomThumbnails[key])
   Object.keys(bottomThumbLoading).forEach(key => delete bottomThumbLoading[key])
+  Object.keys(bottomThumbRetries).forEach(key => delete bottomThumbRetries[key])
+  bottomThumbFailedUrls.clear()
   bottomThumbQueue.length = 0
   bottomThumbQueued.clear()
   bottomThumbActive = 0
@@ -517,31 +528,59 @@ const fetchBottomThumbnail = async (summary) => {
   const endTime = Number(summary.end_time ?? summary.window_end ?? startTime + windowDuration.value)
   const midTime = Math.max(0, (startTime + endTime) / 2)
 
-  try {
+  const setThumbnail = (frame) => {
+    if (!frame || currentSession.value?.session_id !== sid) return false
+    if (frame.url) {
+      if (bottomThumbFailedUrls.get(wid)?.has(frame.url)) return false
+      bottomThumbnails[wid] = frame.url
+      delete bottomThumbRetries[wid]
+      return true
+    }
+    if (frame.image_base64) {
+      bottomThumbnails[wid] = `data:image/jpeg;base64,${frame.image_base64}`
+      delete bottomThumbRetries[wid]
+      return true
+    }
+    return false
+  }
+
+  const closestFrame = (frames, targetTime) => {
+    const badUrls = bottomThumbFailedUrls.get(wid)
+    const candidates = (frames || []).filter(frame => {
+      if (frame?.image_base64) return true
+      if (frame?.url) return !badUrls?.has(frame.url)
+      return false
+    })
+    if (!candidates.length) return null
+    return candidates.reduce((a, b) => {
+      return Math.abs((Number(b.timestamp) || 0) - targetTime) < Math.abs((Number(a.timestamp) || 0) - targetTime) ? b : a
+    }, candidates[0])
+  }
+
+  const requestBatch = async ({ start, end, maxFrames = 8, usePreview = true, target = midTime }) => {
+    const safeStart = Math.max(0, Number(start) || 0)
+    const safeEnd = Math.max(safeStart + 0.2, Number(end) || safeStart + 0.2)
     const batchRes = await axios.get(`/api/analysis/frames-batch/${sid}`, {
       params: {
-        start: Math.max(0, midTime - 1),
-        end: midTime + 1,
-        max_frames: 8,
+        start: safeStart,
+        end: safeEnd,
+        max_frames: maxFrames,
         use_url: true,
-        use_preview: true,
+        use_preview: usePreview,
       },
       signal: getSessionSignal(),
     })
-    const frames = batchRes.data?.frames || []
-    if (batchRes.data?.success && frames.length > 0) {
-      const best = frames.reduce((a, b) => {
-        return Math.abs((b.timestamp || 0) - midTime) < Math.abs((a.timestamp || 0) - midTime) ? b : a
-      }, frames[0])
-      if (best?.url) {
-        if (currentSession.value?.session_id !== sid) return
-        bottomThumbnails[wid] = best.url
-        return
-      }
-    }
+    if (!batchRes.data?.success) return false
+    return setThumbnail(closestFrame(batchRes.data?.frames || [], target))
+  }
+
+  try {
+    if (await requestBatch({ start: midTime - 1, end: midTime + 1, usePreview: true })) return
+    if (await requestBatch({ start: startTime, end: endTime, maxFrames: 10, usePreview: true })) return
+    if (await requestBatch({ start: startTime, end: endTime, maxFrames: 12, usePreview: false })) return
 
     const frameRes = await axios.get(`/api/analysis/frame-at-timestamp/${sid}`, {
-      params: { timestamp: midTime, tolerance: 5.0 },
+      params: { timestamp: midTime, tolerance: 8.0 },
       signal: getSessionSignal(),
     })
     if (frameRes.data?.success && frameRes.data.image_base64) {
@@ -555,7 +594,7 @@ const fetchBottomThumbnail = async (summary) => {
 }
 
 const pumpBottomThumbQueue = () => {
-  while (bottomThumbActive < 1 && bottomThumbQueue.length > 0) {
+  while (bottomThumbActive < BOTTOM_THUMB_CONCURRENCY && bottomThumbQueue.length > 0) {
     const summary = bottomThumbQueue.shift()
     const wid = summary?.window_id
     if (wid == null || bottomThumbnails[wid]) {
@@ -574,12 +613,28 @@ const pumpBottomThumbQueue = () => {
   }
 }
 
-const enqueueBottomThumbnail = (summary) => {
+const enqueueBottomThumbnail = (summary, priority = false) => {
   const wid = summary?.window_id
   if (wid == null || bottomThumbnails[wid] || bottomThumbQueued.has(wid)) return
   bottomThumbQueued.add(wid)
-  bottomThumbQueue.push(summary)
+  if (priority) bottomThumbQueue.unshift(summary)
+  else bottomThumbQueue.push(summary)
   pumpBottomThumbQueue()
+}
+
+const handleBottomThumbError = (summary, event = null) => {
+  const wid = summary?.window_id
+  if (wid == null) return
+  const failedUrl = event?.target?.currentSrc || event?.target?.src || bottomThumbnails[wid]
+  if (failedUrl) {
+    if (!bottomThumbFailedUrls.has(wid)) bottomThumbFailedUrls.set(wid, new Set())
+    bottomThumbFailedUrls.get(wid).add(failedUrl)
+  }
+  delete bottomThumbnails[wid]
+  const retries = Number(bottomThumbRetries[wid] || 0)
+  if (retries >= 2) return
+  bottomThumbRetries[wid] = retries + 1
+  setTimeout(() => enqueueBottomThumbnail(summary, true), 350 + retries * 700)
 }
 
 // Abort all session requests
@@ -607,6 +662,12 @@ const fetchConfig = async () => {
 
 const cleanUserSummaryText = (text) => {
   return String(text || '')
+    .replace(/太夹前|钛夹前|太夹钳|胎夹钳/g, '钛夹钳')
+    .replace(/动胆囊动脉/g, '胆囊动脉')
+    .replace(/动胆囊管/g, '胆囊管')
+    .replace(/(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))[，,]?\s*明显/g, '$1')
+    .replace(/(当前窗口|本段|术野|画面)出现/g, '$1有')
+    .replace(/出现了|出现/g, '')
     .replace(/【专家实时快照[^】]*】/g, '')
     .replace(/该段为实时快照，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
     .replace(/已基于\s*\d+\s*帧快速更新手术进程，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
@@ -616,21 +677,43 @@ const cleanUserSummaryText = (text) => {
     .replace(/(?:暂定|暂时|稳定)?检出暂未稳定检出器械/g, '未见明确器械')
     .replace(/暂未稳定检出器械/g, '未见明确器械')
     .replace(/当前判断为/g, '当前处于')
+    .replace(/[，,。；;\s]*暂无明确关键操作变化[。；;\s]*/g, '。')
+    .replace(/当前处于当前阶段[，,]/g, '当前画面')
     .replace(/(?:动作三元组提示|主要动作)[:：]\s*\[[^\n。]*。?/g, '')
     .replace(/(?:动作三元组提示|主要动作)[:：]\s*(?:\[[^\]]+\](?:-[^；。,\s]+)*[；,，、\s]*)+。?/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
+const CVS_STATUS_RE = /(CVS评估[:：]?[^。；;]*(?:[。；;]|$)|CVS(?:尚未达成|未达成|达成|已达成|确认|评估中)[^。；;]*(?:[。；;]|$)|安全关键视野[^。；;]*(?:[。；;]|$)|关键安全视野[^。；;]*(?:[。；;]|$)|critical view(?: of safety)?[^.;]*(?:[.;]|$))/gi
+const CVS_RELEVANT_RE = /(CVS|安全关键视野|关键安全视野|critical view|胆囊管|胆囊动脉|胆囊板|两条结构)/
+const CVS_ACHIEVED_RE = /(CVS(?:已经|已)?达成|CVS确认|CVS已确认|安全关键视野(?:已经|已)?确认|三要素(?:均)?(?:满足|达成)|critical view(?: of safety)? (?:achieved|confirmed))/i
+
+const stripCvsStatusText = (text) => {
+  return cleanUserSummaryText(text)
+    .replace(CVS_STATUS_RE, '')
+    .replace(/[，,]\s*[。；;]/g, '。')
+    .replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
+    .trim()
+}
+
 const cleanSummaryPayload = (payload) => {
   if (!payload || typeof payload !== 'object') return payload
-  const others = payload.others && typeof payload.others === 'object' ? payload.others : {}
+  let others = payload.others && typeof payload.others === 'object' ? payload.others : {}
+  if (typeof payload.others === 'string') {
+    try {
+      others = JSON.parse(payload.others)
+    } catch {
+      others = {}
+    }
+  }
   const windowId = payload.window_id ?? payload.windowId
   const startTime = payload.start_time ?? payload.window_start ?? payload.startTime
   const endTime = payload.end_time ?? payload.window_end ?? payload.endTime
   const summaryText = payload.summary ?? payload.glm_summary ?? payload.summary_text ?? payload.window_summary ?? ''
   return {
     ...payload,
+    others,
     window_id: windowId == null ? windowId : Number(windowId),
     start_time: startTime == null ? startTime : Number(startTime),
     end_time: endTime == null ? endTime : Number(endTime),
@@ -708,9 +791,9 @@ const localizedSummary = (summary) => {
   const s = cleanSummaryPayload(summary)
   if (!s) return s
   if (language.value === 'en' && s.summary_en) {
-    return { ...s, summary: s.summary_en }
+    return { ...s, summary: stripCvsStatusText(s.summary_en) || s.summary_en }
   }
-  return s
+  return { ...s, summary: stripCvsStatusText(s.summary) || s.summary }
 }
 
 const localizedSummaries = computed(() => summaries.value.map(localizedSummary))
@@ -813,10 +896,11 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   streamWasActive.value = false
   
   currentSession.value = session
-  duration.value = 0  // Live stream has no fixed duration
+  duration.value = Number(session.duration || 0) || 0
   currentView.value = 'main'
   isPlaying.value = true
   currentTime.value = 0
+  livePlaybackTime.value = 0
   streamStartTime.value = Date.now()  // Track when stream started
   
   // Restart service status polling when entering main view
@@ -924,8 +1008,10 @@ const handleTimeUpdate = (time) => {
   if (
     mode.value === 'stream' &&
     isSimulatorSession.value &&
+    isPlaying.value &&
+    !loopWindow.value &&
     livePlaybackTime.value > 3 &&
-    time < livePlaybackTime.value - 2
+    time < livePlaybackTime.value - 0.03
   ) {
     return
   }
@@ -970,7 +1056,7 @@ const handlePlay = () => {
   }
   isPlaying.value = true
   if (currentSession.value) {
-    if (mode.value === 'stream' && !isSimulatorSession.value) {
+    if (mode.value === 'stream') {
       // Resume stream timer
       resumeStreamTimer()
     }
@@ -988,7 +1074,7 @@ const handlePause = () => {
   }
   isPlaying.value = false
   if (currentSession.value) {
-    if (mode.value === 'stream' && !isSimulatorSession.value) {
+    if (mode.value === 'stream') {
       // Pause stream timer
       pauseStreamTimer()
     }
@@ -997,6 +1083,16 @@ const handlePause = () => {
       position: loopWindow.value ? livePlaybackTime.value : currentTime.value
     })
   }
+}
+
+const handleVideoPause = () => {
+  // The simulator preview uses a latest-frame WebSocket path for recording.
+  // Ignore renderer/native-video pause events in this mode; the bottom control
+  // bar remains the explicit user pause path.
+  if (mode.value === 'stream' && isSimulatorSession.value && !loopWindow.value) {
+    return
+  }
+  handlePause()
 }
 
 const handleSeek = (time) => {
@@ -1327,9 +1423,9 @@ const startAnalysis = async () => {
         isProcessing.value = false
         analysisEventSource.close()
         analysisEventSource = null
-        if (data.status === 'completed' && summaries.value.length > 0) {
+        if ((data.status === 'completed' || data.status === 'cancelled') && summaries.value.length > 0) {
           requestEventNodes({ force: true })
-          showOverviewToastPrompt()
+          if (data.status === 'completed') showOverviewToastPrompt()
         }
         return
       }
@@ -1439,29 +1535,38 @@ const eventNodeDisplayWindowIds = (node) => {
 }
 
 const EVENT_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
-const EVENT_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野)/
+const EVENT_NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
+const EVENT_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野|起雾|雾|烟雾|模糊|镜头|体外|手术室|腹腔外)/
 const EVENT_RISK_RE = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+const FOG_ACTIVE_RE = /(镜头)?(?:起雾|雾气|烟雾|烟雾弥漫|水汽|模糊|视野不清|视野受遮挡|视野受限|fogging|foggy|fog (?:obscures|obscured|limits|blocks)|smoke|smoky|haze|hazy|blur(?:red|ry)?|obscur(?:ed|ing))/i
+const FOG_RESOLVED_RE = /(雾(?:已|已经)?(?:去除|清除|消散|解除)|烟雾(?:已|已经)?(?:清除|消散)|视野(?:恢复|转为|变得)(?:清晰|可辨)|镜头(?:恢复|转为|变得)清晰|fog (?:cleared|resolved)|smoke (?:cleared|resolved)|view (?:restored|clear))/i
+const OUT_OF_BODY_RE = /(镜头|腹腔镜|视野|画面).{0,12}(?:移出体外|退出体外|离开腹腔|腹腔外|切换至手术室|手术室场景)|(?:体外|腹腔外|手术室场景|器械台|trocar outside|outside the body|outside-body|extracorporeal|operating room scene)/i
 
 const compactEventNodeText = (text, maxChars = 120) => {
   let out = cleanUserSummaryText(text)
     .replace(/^【[^】]*】\s*/, '')
-    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${EVENT_INSTRUMENT_RE}(?:、${EVENT_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
-    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
-    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
-    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
-    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
-    .replace(new RegExp(`(?:${EVENT_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+    .replace(/Hem[-\s]?o[-\s]?lok|Hemolok|hemlock/gi, 'Hem-o-lok')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?对/g, '钛夹钳对')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?在/g, '钛夹钳在')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${EVENT_NON_CLIP_INSTRUMENT_RE}(?:、${EVENT_NON_CLIP_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
     .replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
     .replace(/夹持牵拉/g, '牵拉')
     .replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
     .replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
-    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '进行')
-    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '对')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
     .replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
     .replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
     .replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
-    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
-    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
     .replace(/视野中可见|可见/g, '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -1481,6 +1586,38 @@ const compactEventNodeText = (text, maxChars = 120) => {
   return (out || cleanUserSummaryText(text)).slice(0, maxChars)
 }
 
+const relatedSummariesForEventNode = (node, representativeId = null, windowIds = null) => {
+  const ids = Array.isArray(windowIds)
+    ? windowIds.map(id => Number(id)).filter(id => Number.isFinite(id))
+    : (Array.isArray(node?.window_ids)
+      ? node.window_ids.map(id => Number(id)).filter(id => Number.isFinite(id))
+      : [])
+  const rep = Number.isFinite(Number(representativeId))
+    ? Number(representativeId)
+    : (Number.isFinite(Number(node?.representative_window_id))
+      ? Number(node.representative_window_id)
+      : (ids.length ? Math.max(...ids) : -1))
+
+  const orderedIds = [...new Set([
+    rep,
+    ...ids.slice().sort((a, b) => Math.abs(a - rep) - Math.abs(b - rep)),
+  ].filter(id => Number.isFinite(id) && id >= 0))]
+
+  const direct = orderedIds
+    .map(id => summaries.value.find(s => Number(s.window_id) === id))
+    .filter(Boolean)
+  if (direct.length) return direct
+
+  const start = Number(node?.start_time)
+  const end = Number(node?.end_time)
+  if (Number.isFinite(start) && Number.isFinite(end)) {
+    return summaries.value
+      .filter(s => Number(s.end_time ?? 0) >= start && Number(s.start_time ?? 0) <= end)
+      .slice(0, 4)
+  }
+  return []
+}
+
 const normalizeEventNode = (node, index) => {
   const windowIds = Array.isArray(node?.window_ids)
     ? node.window_ids.map(id => Number(id)).filter(id => Number.isFinite(id))
@@ -1489,11 +1626,12 @@ const normalizeEventNode = (node, index) => {
     ? Number(node.representative_window_id)
     : (windowIds.length ? Math.max(...windowIds) : -1)
 
-  const relatedSummary = summaries.value.find(s => s.window_id === representativeId)
-    || summaries.value.find(s => windowIds.includes(s.window_id))
-  if (relatedSummary) {
-    enqueueBottomThumbnail(relatedSummary)
-  }
+  const relatedSummaries = relatedSummariesForEventNode(node, representativeId, windowIds)
+  relatedSummaries.slice(0, 4).forEach((summary, idx) => enqueueBottomThumbnail(summary, idx === 0))
+  const relatedSummary = relatedSummaries[0] || null
+  const normalizedWindowIds = windowIds.length
+    ? windowIds
+    : (representativeId >= 0 ? [representativeId] : [])
 
   return {
     id: String(node?.id || `event_${index + 1}`),
@@ -1501,7 +1639,7 @@ const normalizeEventNode = (node, index) => {
     severity: String(node?.severity || 'normal'),
     title: String(node?.title || t('app.keyEventNode')).trim(),
     summary: compactEventNodeText(node?.summary || relatedSummary?.summary || ''),
-    window_ids: windowIds,
+    window_ids: normalizedWindowIds,
     representative_window_id: representativeId,
     start_time: Number(node?.start_time ?? relatedSummary?.start_time ?? 0),
     end_time: Number(node?.end_time ?? relatedSummary?.end_time ?? 0),
@@ -1510,10 +1648,143 @@ const normalizeEventNode = (node, index) => {
   }
 }
 
+const cvsStatusNode = computed(() => {
+  const cvsSummaries = summaries.value.filter(s => CVS_RELEVANT_RE.test(String(s.summary || '')))
+  if (!cvsSummaries.length) return null
+
+  const achieved = cvsSummaries.some(s => CVS_ACHIEVED_RE.test(String(s.summary || '')))
+  const first = cvsSummaries[0]
+  const latest = cvsSummaries[cvsSummaries.length - 1]
+  const windowIds = cvsSummaries
+    .map(s => Number(s.window_id))
+    .filter(id => Number.isFinite(id))
+
+  if (!windowIds.length) return null
+  const representativeWindowId = Number(latest.window_id)
+  const latestEnd = Number(latest.end_time ?? latest.window_end ?? 0)
+  const endTime = achieved
+    ? latestEnd
+    : Math.max(latestEnd, Number(currentTime.value || 0))
+
+  return {
+    id: 'event_cvs_status',
+    type: 'cvs',
+    severity: achieved ? 'resolved' : 'critical',
+    title: achieved ? 'CVS已达成' : 'CVS尚未达成',
+    summary: achieved
+      ? 'CVS三要素已确认，可作为夹闭/剪断前的安全节点。'
+      : 'CVS评估中：尚未确认三要素，夹闭或剪断胆囊管和胆囊动脉前需继续核查。',
+    window_ids: [...new Set(windowIds)],
+    representative_window_id: representativeWindowId,
+    start_time: Number(first.start_time ?? first.window_start ?? 0),
+    end_time: endTime,
+    confidence: 0.8,
+    source: 'cvs-status',
+    pinned: true,
+  }
+})
+
+const summaryVisibilityFlags = (summary) => {
+  const text = `${summary?.summary || ''} ${summary?.summary_en || ''}`
+  const visual = summary?.others?.visual_gpt || summary?.others?.experts?.open_vlm?.visual || {}
+  const visibility = visual?.visibility || {}
+  const status = String(visibility.status || '').toLowerCase()
+  const confidence = Number(visibility.confidence || 0)
+  const trusted = !confidence || confidence >= 0.35
+  return {
+    fogActive: trusted && (
+      Boolean(visibility.fog)
+      || ['foggy', 'blurred', 'blocked', 'smoke', 'smoky', 'hazy'].includes(status)
+      || (FOG_ACTIVE_RE.test(text) && !FOG_RESOLVED_RE.test(text))
+    ),
+    fogResolved: trusted && (
+      Boolean(visibility.fog_cleared || visibility.cleared || visibility.resolved)
+      || ['clear_after_fog', 'fog_cleared'].includes(status)
+      || FOG_RESOLVED_RE.test(text)
+    ),
+    outOfBody: trusted && (
+      Boolean(visibility.out_of_body || visibility.outside_body)
+      || status === 'out_of_body'
+      || OUT_OF_BODY_RE.test(text)
+    ),
+    confidence: confidence || null,
+  }
+}
+
+const fogStatusNode = computed(() => {
+  let fogActive = false
+  let firstActive = null
+  let latestActive = null
+  let latestResolved = null
+  const windowIds = []
+
+  summaries.value
+    .slice()
+    .sort((a, b) => Number(a.window_id ?? 0) - Number(b.window_id ?? 0))
+    .forEach((summary) => {
+      const flags = summaryVisibilityFlags(summary)
+      const wid = Number(summary.window_id)
+      if (flags.fogActive) {
+        if (!fogActive) firstActive = summary
+        fogActive = true
+        latestActive = summary
+        if (Number.isFinite(wid)) windowIds.push(wid)
+      }
+      if (flags.fogResolved) {
+        latestResolved = summary
+        fogActive = false
+        if (Number.isFinite(wid)) windowIds.push(wid)
+      }
+    })
+
+  if (!firstActive && !latestResolved) return null
+  const latest = fogActive ? latestActive : latestResolved
+  if (!latest) return null
+  const ids = [...new Set(windowIds)]
+  const zh = language.value !== 'en'
+  return {
+    id: 'event_fog_status',
+    type: 'visibility',
+    severity: fogActive ? 'critical' : 'resolved',
+    title: fogActive
+      ? (zh ? '视野起雾' : 'Fog obscures view')
+      : (zh ? '雾已去除' : 'Fog cleared'),
+    summary: fogActive
+      ? (zh ? '镜头起雾，手术视野受遮挡。' : 'Lens fogging obscures the surgical field.')
+      : (zh ? '雾已去除，腹腔视野恢复。' : 'The fog has cleared and the laparoscopic view is restored.'),
+    window_ids: ids.length ? ids : [Number(latest.window_id)],
+    representative_window_id: Number(latest.window_id),
+    start_time: Number((firstActive || latest).start_time ?? (firstActive || latest).window_start ?? 0),
+    end_time: fogActive
+      ? Math.max(Number(latest.end_time ?? latest.window_end ?? 0), Number(currentTime.value || 0))
+      : Number(latest.end_time ?? latest.window_end ?? 0),
+    confidence: 0.78,
+    source: 'visibility-status',
+    pinned: true,
+  }
+})
+
+const isFogVisibilityNode = (node) => {
+  if (node?.type !== 'visibility') return false
+  return FOG_ACTIVE_RE.test(`${node.title || ''} ${node.summary || ''}`)
+    || FOG_RESOLVED_RE.test(`${node.title || ''} ${node.summary || ''}`)
+}
+
 const sortedEventNodes = computed(() => {
-  return eventNodes.value
+  const nodes = [
+    ...(cvsStatusNode.value ? [cvsStatusNode.value] : []),
+    ...(fogStatusNode.value ? [fogStatusNode.value] : []),
+    ...eventNodes.value.filter(node => {
+      if (cvsStatusNode.value && node.type === 'cvs') return false
+      if (fogStatusNode.value && isFogVisibilityNode(node)) return false
+      return true
+    }),
+  ]
+  return nodes
     .slice()
     .sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1
+      if (!a.pinned && b.pinned) return 1
       const bt = Number(b.start_time ?? 0)
       const at = Number(a.start_time ?? 0)
       if (bt !== at) return bt - at
@@ -1534,8 +1805,17 @@ const setBottomViewMode = (modeName) => {
   bottomViewMode.value = modeName === 'windows' ? 'windows' : 'events'
   localStorage.setItem('surg_bottom_view_mode', bottomViewMode.value)
   if (bottomViewMode.value === 'events') {
+    resetEventNodeScroll()
     scheduleEventNodesRefresh(150)
   }
+}
+
+const resetEventNodeScroll = () => {
+  nextTick(() => {
+    if (bottomViewMode.value !== 'events') return
+    const el = document.querySelector('.event-node-scroll')
+    if (el) el.scrollLeft = 0
+  })
 }
 
 const scheduleEventNodesRefresh = (delay = 2500) => {
@@ -1572,6 +1852,7 @@ const requestEventNodes = async ({ force = false } = {}) => {
     if (seq !== eventNodesRequestSeq || currentSession.value?.session_id !== sid) return
     const nodes = Array.isArray(res.data?.events) ? res.data.events : []
     eventNodes.value = nodes.map(normalizeEventNode).filter(node => node.window_ids.length > 0)
+    resetEventNodeScroll()
     eventNodesError.value = res.data?.source === 'fallback' && !eventNodes.value.length
       ? (res.data?.error || 'event-node fallback empty')
       : ''
@@ -1625,14 +1906,30 @@ const eventNodeRepresentativeSummary = (node) => {
     || null
 }
 
+const eventNodeThumbnailSummary = (node) => {
+  const related = relatedSummariesForEventNode(node)
+  return related.find(summary => bottomThumbnails[summary.window_id])
+    || related[0]
+    || eventNodeRepresentativeSummary(node)
+}
+
 const eventNodeThumbnail = (node) => {
-  const summary = eventNodeRepresentativeSummary(node)
+  const summary = eventNodeThumbnailSummary(node)
   return summary ? bottomThumbnails[summary.window_id] : ''
 }
 
 const eventNodeThumbLoading = (node) => {
-  const summary = eventNodeRepresentativeSummary(node)
-  return summary ? !!bottomThumbLoading[summary.window_id] : false
+  const related = relatedSummariesForEventNode(node)
+  return related.some(summary => bottomThumbLoading[summary.window_id] || bottomThumbQueued.has(summary.window_id))
+}
+
+const handleEventNodeThumbError = (node, event = null) => {
+  const summary = eventNodeThumbnailSummary(node)
+  if (summary) {
+    handleBottomThumbError(summary, event)
+    return
+  }
+  relatedSummariesForEventNode(node).slice(0, 3).forEach(summary => handleBottomThumbError(summary))
 }
 
 const handleEventNodeClick = (node) => {
@@ -1714,7 +2011,7 @@ const refreshCurrentWindowSummary = async (time) => {
 }
 
 const videoSectionMinHeight = computed(() => {
-  return Math.max(320, viewportHeight.value - bottomStripHeight.value - 220)
+  return Math.max(360, viewportHeight.value - bottomStripHeight.value - 190)
 })
 
 const startRightPanelResize = (event) => {
@@ -1725,10 +2022,10 @@ const startRightPanelResize = (event) => {
   document.body.classList.add('is-resizing-panel')
 
   const onMove = (e) => {
-    rightPanelWidth.value = clamp(startWidth - (e.clientX - startX), 560, maxRightPanelWidth())
+    rightPanelWidth.value = clamp(startWidth - (e.clientX - startX), minRightPanelWidth(), maxRightPanelWidth())
   }
   const onUp = () => {
-    localStorage.setItem('surg_right_panel_width', String(rightPanelWidth.value))
+    localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth.value))
     document.body.classList.remove('is-resizing-panel')
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
@@ -1746,10 +2043,10 @@ const startVideoResize = (event) => {
   document.body.classList.add('is-resizing-video')
 
   const onMove = (e) => {
-    bottomStripHeight.value = clamp(startHeight - (e.clientY - startY), 380, maxBottomStripHeight())
+    bottomStripHeight.value = clamp(startHeight - (e.clientY - startY), minBottomStripHeight(), maxBottomStripHeight())
   }
   const onUp = () => {
-    localStorage.setItem('surg_bottom_strip_height', String(bottomStripHeight.value))
+    localStorage.setItem(BOTTOM_STRIP_STORAGE_KEY, String(bottomStripHeight.value))
     document.body.classList.remove('is-resizing-video')
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
@@ -1761,19 +2058,19 @@ const startVideoResize = (event) => {
 
 const resetRightPanelWidth = () => {
   rightPanelWidth.value = defaultRightPanelWidth()
-  localStorage.setItem('surg_right_panel_width', String(rightPanelWidth.value))
+  localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth.value))
 }
 
 const resetBottomStripHeight = () => {
   bottomStripHeight.value = defaultBottomStripHeight()
-  localStorage.setItem('surg_bottom_strip_height', String(bottomStripHeight.value))
+  localStorage.setItem(BOTTOM_STRIP_STORAGE_KEY, String(bottomStripHeight.value))
 }
 
 const handleViewportResize = () => {
   viewportWidth.value = window.innerWidth
   viewportHeight.value = window.innerHeight
-  rightPanelWidth.value = clamp(rightPanelWidth.value, 560, maxRightPanelWidth())
-  bottomStripHeight.value = clamp(bottomStripHeight.value, 380, maxBottomStripHeight())
+  rightPanelWidth.value = clamp(rightPanelWidth.value, minRightPanelWidth(), maxRightPanelWidth())
+  bottomStripHeight.value = clamp(bottomStripHeight.value, minBottomStripHeight(), maxBottomStripHeight())
 }
 
 const formatWindowTime = (seconds) => {
@@ -1906,14 +2203,28 @@ const startStreamTimer = () => {
   streamEnded.value = false
   streamWasActive.value = false
 
-  // 本地采集卡模拟源使用原生 <video> 预览，currentTime 由视频解码器的
-  // timeupdate 驱动。不要再用直播墙钟覆盖，否则右上角时间和当前窗口高亮
-  // 会在视频时间与墙钟时间之间来回跳。
+  const fixedDuration = isSimulatorSession.value ? Number(currentSession.value?.duration || 0) : 0
   if (isSimulatorSession.value) {
+    // The simulator preview is rendered by the native <video> element, so its
+    // currentTime is the only playback clock. Do not also write currentTime
+    // from a wall-clock timer; doing both makes the UI flip between adjacent
+    // seconds/windows near boundaries.
+    if (fixedDuration > 0) {
+      duration.value = fixedDuration
+    }
+    streamTimerInterval = setInterval(() => {
+      if (!isPlaying.value || streamEnded.value || loopWindow.value) return
+      const endAt = Number(currentSession.value?.duration || duration.value || 0)
+      if (endAt > 0 && currentTime.value >= endAt - 0.25) {
+        currentTime.value = endAt
+        livePlaybackTime.value = endAt
+        handleStreamEnded()
+      }
+    }, 500)
     startStreamEndCheck()
     return
   }
-  
+
   // [perf] 原来每 100ms 更新 currentTime，会驱动 ControlBar 的 progressPercent /
   // windowCount / currentSummary 等一串 computed 跟着重算，与 MJPEG 解码争主线程。
   // 直播的时间显示精度到 250ms 肉眼无感（秒级时间戳），但 CPU 负载显著降低。
@@ -1928,10 +2239,16 @@ const startStreamTimer = () => {
     
     // Ensure elapsed time is never negative (can happen if server/client clocks are out of sync)
     const safeElapsed = Math.max(0, elapsed)
-    currentTime.value = safeElapsed
+    const displayTime = safeElapsed
+    currentTime.value = displayTime
+    livePlaybackTime.value = displayTime
     
     // Also update duration for display purposes
-    duration.value = safeElapsed
+    duration.value = fixedDuration > 0 ? fixedDuration : safeElapsed
+
+    if (fixedDuration > 0 && safeElapsed >= fixedDuration) {
+      handleStreamEnded()
+    }
   }, 250)  // 直播时间显示刷新：250ms 足够，避免主线程与视频解码争用
   
   // Start checking if stream has ended (check every 2 seconds)
@@ -2013,18 +2330,12 @@ const startStreamEndCheck = () => {
       // This is just a status check, not critical for functionality
     }
     
-    // Backup detection: check if time is stale (not in loop mode)
-    // In loop mode, time updates are from cached frames, not stream
-    // Only trigger after 30 seconds to avoid false positives
+    // Do not infer stream end from a stale renderer clock. MJPEG/local capture
+    // can briefly stop advancing while frame capture or analysis catches up,
+    // and treating that as end-of-stream pauses the live demo mid-video. The
+    // simulator /info.video_ended flag above is the authoritative end signal.
     if (!inLoopMode && isPlaying.value && currentTime.value > 30) {
-      if (Math.abs(currentTime.value - lastKnownTime) < 0.1) {
-        staleTimeCounter++
-        if (staleTimeCounter >= STALE_TIME_THRESHOLD) {
-          console.log('[Stream] Time stale for too long, assuming stream ended')
-          handleStreamEnded()
-          return
-        }
-      } else {
+      if (Math.abs(currentTime.value - lastKnownTime) >= 0.1) {
         staleTimeCounter = 0
         lastKnownTime = currentTime.value
       }

@@ -124,11 +124,11 @@ class WindowHistoryManager:
     # 阶段转换规则表：定义每个阶段后允许出现的阶段
     ALLOWED_TRANSITIONS = {
         "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
-        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction", "Preparation"],
-        "ClippingCutting": ["GallbladderDissection", "CalotTriangleDissection"],
-        "GallbladderDissection": ["CleaningCoagulation", "GallbladderRetraction", "ClippingCutting"],
+        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction"],
+        "ClippingCutting": ["GallbladderDissection", "CleaningCoagulation"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging"],
         "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
-        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderDissection"],
+        "CleaningCoagulation": ["GallbladderPackaging"],
         "GallbladderPackaging": ["CleaningCoagulation"],  # 胆囊取出后只允许清洁凝血
     }
     
@@ -310,11 +310,11 @@ class PhaseConflictResolver:
     # 阶段转换规则（允许的转换）
     ALLOWED_TRANSITIONS = {
         "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
-        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction", "Preparation"],
-        "ClippingCutting": ["GallbladderDissection", "CalotTriangleDissection"],
-        "GallbladderDissection": ["CleaningCoagulation", "GallbladderRetraction", "ClippingCutting"],
+        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction"],
+        "ClippingCutting": ["GallbladderDissection", "CleaningCoagulation"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging"],
         "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
-        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderDissection"],
+        "CleaningCoagulation": ["GallbladderPackaging"],
         "GallbladderPackaging": ["CleaningCoagulation"],
     }
     
@@ -804,11 +804,12 @@ class GLMClient:
 你具有以下腹腔镜胆囊切除术的专业知识：
 - 手术包含7个阶段：Preparation → CalotTriangleDissection → ClippingCutting → GallbladderDissection → GallbladderRetraction → CleaningCoagulation → GallbladderPackaging
 - CVS（安全关键视角）三个标准必须全部满足才能确认CVS=TRUE：
-  1. 只有两个管状结构（胆囊管和胆囊动脉）连接到胆囊
+  1. 只有胆囊管和胆囊动脉两条目标结构连接到胆囊
   2. 肝胆三角区域已清理，可见底下肝脏
   3. 胆囊下1/3已从肝床分离
 - 常见工具：Grasper(抓钳), Hook(电钩), Scissors(剪刀), Clipper(钛夹钳), Irrigator(冲吸器), Bipolar(双极电凝)
-- 关键组织：Cystic Duct(胆囊管), Cystic Artery(胆囊动脉), Gallbladder(胆囊), Calot Triangle(Calot三角), Cystic Plate(胆囊板)"""
+- 关键组织：Cystic Duct(胆囊管), Cystic Artery(胆囊动脉), Gallbladder(胆囊), Calot Triangle(Calot三角), Cystic Plate(胆囊板)
+- 涉及夹闭或剪切时，必须在胆囊管和胆囊动脉中选择一个具体对象；证据不足时参考 Triplet 目标倾向，不要写“管状结构”、合并候选结构、斜线对象"""
                 else:
                     system_prompt = base_prompt
             else:
@@ -1286,10 +1287,15 @@ Output only the summary, no additional formatting."""
 【阶段】当前手术阶段名称
 【操作】正在进行的具体动作
 【工具】使用的器械及用途
-【CVS】安全关键视角评估（仅在肝胆三角解剖阶段时评估，其他阶段填"无"）
+【CVS】安全关键视角评估（肝胆三角解剖、夹闭切断或出现施夹/钛夹时必须评估）
 
 阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
-工具中文名：Grasper→抓钳, Hook→电钩, Scissors→剪刀, Clipper→钛夹钳, Irrigator→冲吸器, Bipolar→双极电凝"""
+	工具中文名：Grasper→抓钳, Hook→电钩, Scissors→剪刀, Clipper→钛夹钳, Hem-o-lok→钛夹, Irrigator→冲吸器, Bipolar→双极电凝
+	如果出现钛夹钳、施夹器、Hem-o-lok或金属钛夹，必须明确写出钛夹、施夹、夹闭动作，并尽量判断目标是胆囊管还是胆囊动脉。
+	禁止单独把操作对象写成“管状结构”；必须在胆囊管和胆囊动脉中选择一个具体对象，证据不足时参考 Triplet 目标倾向。
+	剪断胆囊管或胆囊动脉必须有前置证据：CVS已达成，且同一目标已经由Hem-o-lok夹、金属钛夹或钛夹钳夹闭；否则只能写剪刀在目标附近操作，不能写切断。
+	动作描述必须使用主谓宾结构，例如“抓钳牵拉胆囊颈和胆囊体以暴露肝胆三角”“电凝钩分离肝胆三角纤维脂肪组织”“钛夹钳夹闭胆囊管”。不要写“牵拉胆囊管”“牵拉组织”“相关操作”。
+	CVS三要素包括肝胆三角清理、胆囊下1/3从肝床分离、只有胆囊管和胆囊动脉两条结构进入胆囊；证据不足时写CVS评估中，不要硬判达成。"""
             logger.warning("[GLMClient] Using fallback system prompt")
         
         # 构建用户消息，强调历史上下文和阶段约束
@@ -1945,4 +1951,3 @@ async def ensure_glm_available() -> GLMClient:
         logger.warning("[GLMClient] GLM service may not be available")
     
     return client
-

@@ -205,6 +205,8 @@ function stripPhaseHeader(t) {
     .replace(/YOLO\s*(?:暂定)?(?:检出|检测出)/gi, '检出')
     .replace(/暂未稳定检出器械/g, '未见明确器械')
     .replace(/当前判断为/g, '当前处于')
+    .replace(/[，,。；;\s]*暂无明确关键操作变化[。；;\s]*/g, '。')
+    .replace(/当前处于当前阶段[，,]/g, '当前画面')
     .replace(/(?:动作三元组提示|主要动作)[:：]\s*\[[^\n。]*。?/g, '')
     .replace(/(?:动作三元组提示|主要动作)[:：]\s*(?:\[[^\]]+\](?:-[^；。,\s]+)*[；,，、\s]*)+。?/g, '')
     .replace(/\s+/g, ' ')
@@ -212,9 +214,11 @@ function stripPhaseHeader(t) {
 }
 
 const INSTRUMENT_LIST_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
+const NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
 const PROGRESS_KEYWORDS = /(牵拉|暴露|分离|剥离|剪切|剪断|切断|夹闭|闭合|施夹|钛夹|胆囊|胆囊管|胆囊动脉|血管|管状结构|肝床|肝胆三角|三角区|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|残端|粘连|组织|出血|止血|渗血|凝血|视野)/
 const BLEEDING_KEYWORDS = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
 const SAFETY_KEYWORDS = /(CVS|安全视野|关键安全视野|两条结构|胆囊管|胆囊动脉|管状结构|残端|夹闭|切断|critical view|cystic duct|cystic artery)/i
+const CVS_STATUS_RE = /(CVS|安全关键视野|关键安全视野|critical view of safety|critical view)/i
 const LOW_VALUE_VISUAL_RE = new RegExp(`^(?:当前)?(?:可见|见|视野中可见)${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*[。；;，,\\s]*$`)
 
 function splitSentences(text) {
@@ -228,44 +232,58 @@ function softenInstrumentLanguage(text) {
   let out = String(text || '')
   const instrumentList = new RegExp(`${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*`, 'g')
   const visualOnly = new RegExp(`(?:当前)?(?:可见|见|视野中可见)${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*[，,。；;]?`, 'g')
-  out = out.replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
-  out = out.replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
-  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${INSTRUMENT_LIST_RE})在([^，。；;]+)[，,]`, 'g'), '在$2，')
-  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${INSTRUMENT_LIST_RE})对([^，。；;]+)[，,]`, 'g'), '对$2，')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+  out = out.replace(/太夹前|钛夹前|太夹钳|胎夹钳/g, '钛夹钳')
+  out = out.replace(/动胆囊动脉/g, '胆囊动脉')
+  out = out.replace(/动胆囊管/g, '胆囊管')
+  out = out.replace(/(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))[，,]?\s*明显/g, '$1')
+  out = out.replace(/(当前窗口|本段|术野|画面)出现/g, '$1有')
+  out = out.replace(/出现了|出现/g, '')
+  out = out.replace(/Hem[-\s]?o[-\s]?lok|Hemolok|hemlock/gi, 'Hem-o-lok')
+  out = out.replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+  out = out.replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+  out = out.replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?对/g, '钛夹钳对')
+  out = out.replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?在/g, '钛夹钳在')
+  out = out.replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+  out = out.replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$2，')
+  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$2，')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
   out = out.replace(visualOnly, '')
   out = out.replace(/当前处于[^，。；;]+[，,]\s*/g, '')
   out = out.replace(/抓钳(?:持续)?牵拉/g, '牵拉')
   out = out.replace(/夹持牵拉/g, '牵拉')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})(?:持续)?牵拉`, 'g'), '牵拉')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})(?:进行)?分离`, 'g'), '分离')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})(?:进行)?夹闭`, 'g'), '夹闭')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})(?:持续)?牵拉`, 'g'), '牵拉')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})(?:进行)?分离`, 'g'), '分离')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})(?:进行)?夹闭`, 'g'), '夹闭')
   out = out.replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
-  out = out.replace(/使用(?:电钩|双极电凝|双极)?对组织进行点触和分离动作/g, '对组织进行电凝分离')
-  out = out.replace(/电钩对组织进行点触和分离动作/g, '对组织进行电凝分离')
+  out = out.replace(/使用电钩对组织进行点触和分离动作/g, '电钩分离组织')
+  out = out.replace(/电钩对组织进行点触和分离动作/g, '电钩分离组织')
+  out = out.replace(/使用(?:双极电凝|双极)?对组织进行点触和分离动作/g, '分离组织')
+  out = out.replace(/对组织进行尖端接触和分离/g, '分离组织')
+  out = out.replace(/尖端接触/g, '组织接触')
   out = out.replace(/电钩正?伸入([^，。；;]+)[，,]\s*/g, '在$1，')
   out = out.replace(/使用(?:剪刀|电剪|电钩|双极电凝)?对/g, '对')
   out = out.replace(/使用(?:剪刀|电剪|电钩|双极电凝)?在/g, '在')
   out = out.replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
   out = out.replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
-  out = out.replace(/使用(?:钛夹钳|施夹器)进行/g, '进行')
-  out = out.replace(/(?:钛夹钳|施夹器)对/g, '对')
-  out = out.replace(/已被多枚金属钛夹(?:夹闭|关闭)的管状结构残端/g, '已夹闭的管状结构残端')
-  out = out.replace(/已被多枚金属(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的管状结构残端')
+  out = out.replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+  out = out.replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+  out = out.replace(/已被多枚金属钛夹(?:夹闭|关闭)的管状结构残端/g, '多枚钛夹已夹闭的胆囊管残端')
+  out = out.replace(/已被多枚金属(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的胆囊管残端')
   out = out.replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
   out = out.replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
   out = out.replace(/在([^，。；;]+)[，,]\s*(?:夹闭|关闭|闭合)了?组织/g, '在$1进行夹闭处理')
   out = out.replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
-  out = out.replace(/进行钛夹的施加并闭合/g, '进行夹闭处理')
-  out = out.replace(/钛夹的施加并闭合/g, '夹闭处理')
-  out = out.replace(new RegExp(`(?:${INSTRUMENT_LIST_RE})进入视野[，,]?\\s*`, 'g'), '')
+  out = out.replace(/进行钛夹的施加并闭合/g, '进行钛夹夹闭')
+  out = out.replace(/钛夹的施加并闭合/g, '钛夹夹闭')
+  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
   out = out.replace(/(?:剪刀|电剪)进入视野[，,]?\s*/g, '')
   out = out.replace(/(?:冲洗器|吸引器|冲吸器)进入视野[，,]?\s*/g, '')
-  out = out.replace(/已夹闭并切断的管状结构残端。已夹闭的管状结构残端/g, '已夹闭并切断的管状结构残端')
-  out = out.replace(/已夹闭的管状结构残端。已夹闭并切断的管状结构残端/g, '已夹闭并切断的管状结构残端')
+  out = out.replace(/已夹闭并切断的管状结构残端。已夹闭的管状结构残端/g, '已夹闭并切断的胆囊管残端')
+  out = out.replace(/已夹闭的管状结构残端。已夹闭并切断的管状结构残端/g, '已夹闭并切断的胆囊管残端')
   out = out.replace(/视野中可见/g, '')
   out = out.replace(new RegExp(`可见${instrumentList.source}[，,]`, 'g'), '')
   out = out.replace(/可见/g, '')
@@ -287,6 +305,7 @@ function focusProgressText(text, maxChars = 260, maxSentences = 2) {
   for (const raw of splitSentences(normalized)) {
     const sentence = softenInstrumentLanguage(raw).replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
     if (!sentence) continue
+    if (CVS_STATUS_RE.test(sentence)) continue
     if (LOW_VALUE_VISUAL_RE.test(sentence)) continue
     if (!PROGRESS_KEYWORDS.test(sentence)) continue
 
@@ -321,7 +340,12 @@ function focusProgressText(text, maxChars = 260, maxSentences = 2) {
     .map(s => /[。；！？!?;]$/.test(s) ? s : `${s}。`)
     .join('')
     .slice(0, maxChars)
-  return result || normalized.slice(0, maxChars)
+  if (result) return result
+  const nonCvs = splitSentences(normalized)
+    .map(s => s.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '').trim())
+    .filter(s => s && !CVS_STATUS_RE.test(s))
+    .join('')
+  return (nonCvs || normalized).slice(0, maxChars)
 }
 
 function hasSevereBleedingText(text) {

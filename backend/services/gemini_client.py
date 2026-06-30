@@ -177,11 +177,11 @@ class WindowHistoryManager:
     # 阶段转换规则表：定义每个阶段后允许出现的阶段
     ALLOWED_TRANSITIONS = {
         "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
-        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction", "Preparation"],
-        "ClippingCutting": ["GallbladderDissection", "CalotTriangleDissection"],
-        "GallbladderDissection": ["CleaningCoagulation", "GallbladderRetraction", "ClippingCutting"],
+        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction"],
+        "ClippingCutting": ["GallbladderDissection", "CleaningCoagulation"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging"],
         "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
-        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderDissection"],
+        "CleaningCoagulation": ["GallbladderPackaging"],
         "GallbladderPackaging": ["CleaningCoagulation"],  # 胆囊取出后只允许清洁凝血
     }
     
@@ -1143,6 +1143,7 @@ class GeminiClient:
    - blur判断极其严格：标本袋半透明表面、光线反射、局部过曝均不算blur；只有整个视野被烟雾/水雾/血液大面积遮挡才算blur=Y
 5. 必须关注Hem-o-lok、纱布（仅在出现时描述）
 6. 全中文输出：禁止出现任何英文，包括括号内的英文注释
+7. 涉及夹闭、施夹、钛夹释放或剪切时，必须在胆囊管和胆囊动脉中选择一个具体对象；禁止单独写“管状结构”、合并候选结构、斜线对象。证据不足时参考 Triplet 目标倾向
 
 【输出格式】
 【xxx】（不要写"阶段"二字，如【清洁凝血】【胆囊分离】）
@@ -1151,6 +1152,7 @@ class GeminiClient:
 
 【阶段名称】准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
 【工具中文名】抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
+【关键组织】胆囊管、胆囊动脉、胆囊、肝胆三角、胆囊板。夹闭和剪切对象必须具体写成胆囊管或胆囊动脉；证据不足时参考 Triplet 目标倾向，不写候选合并对象
 
 【others说明】
 - hem_loc: 可见的Hem-o-lok数量，无则填0

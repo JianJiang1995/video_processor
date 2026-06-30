@@ -152,6 +152,114 @@ class ConversationService:
         )
         residual_re = re.compile(r"(已放置|多个|残留|留有).{0,18}(钛夹|金属夹)")
 
+        def visual_payload(record: Dict[str, Any]) -> Dict[str, Any]:
+            others = record.get("others") or {}
+            visual = others.get("visual_gpt") or {}
+            if not visual:
+                visual = ((others.get("experts") or {}).get("open_vlm") or {}).get("visual") or {}
+            return visual if isinstance(visual, dict) else {}
+
+        def clip_count(value: Any) -> int:
+            try:
+                return max(0, int(value or 0))
+            except Exception:
+                return 0
+
+        def triplet_target_label(record: Dict[str, Any]) -> str:
+            others = record.get("others") or {}
+            triplet = ((others.get("experts") or {}).get("triplet") or {})
+            scores = {"cystic_duct": 0.0, "cystic_artery": 0.0}
+
+            def parse_triplet(label: Any) -> List[str]:
+                parts = re.findall(r"\[([^\]]+)\]", str(label or ""))
+                if len(parts) >= 3:
+                    return [p.strip() for p in parts[:3]]
+                cleaned = str(label or "").replace("[", "").replace("]", "")
+                parsed = [p.strip() for p in cleaned.split("-") if p.strip()]
+                while len(parsed) < 3:
+                    parsed.append("")
+                return parsed[:3]
+
+            for item in triplet.get("triplet") or []:
+                _, verb, target = parse_triplet(item.get("label"))
+                conf = float(item.get("confidence") or 0)
+                bonus = 0.08 if verb in {"clip", "cut", "coagulate"} else 0.0
+                if target == "cystic_duct":
+                    scores["cystic_duct"] = max(scores["cystic_duct"], conf + bonus)
+                elif target in {"cystic_artery", "blood_vessel"}:
+                    scores["cystic_artery"] = max(scores["cystic_artery"], conf + bonus)
+                elif target == "cystic_pedicle":
+                    scores["cystic_duct"] = max(scores["cystic_duct"], conf * 0.55)
+            for item in triplet.get("target") or []:
+                label = str(item.get("label") or "").lower()
+                conf = float(item.get("confidence") or 0)
+                if label == "cystic_duct":
+                    scores["cystic_duct"] = max(scores["cystic_duct"], conf * 0.75)
+                elif label in {"cystic_artery", "blood_vessel"}:
+                    scores["cystic_artery"] = max(scores["cystic_artery"], conf * 0.75)
+                elif label == "cystic_pedicle":
+                    scores["cystic_duct"] = max(scores["cystic_duct"], conf * 0.40)
+            return "cystic_artery" if scores["cystic_artery"] > scores["cystic_duct"] else "cystic_duct"
+
+        def visual_hit(record: Dict[str, Any], key: str) -> Optional[Dict[str, Any]]:
+            visual = visual_payload(record)
+            payload = visual.get(key) or {}
+            if not isinstance(payload, dict):
+                return None
+            target_payload = visual.get("target_structure") or {}
+            target_label = str(target_payload.get("label") or "unknown").lower() if isinstance(target_payload, dict) else "unknown"
+            if target_label in {"cystic_duct_or_artery_uncertain", "unknown", "other", ""}:
+                target_label = triplet_target_label(record)
+            confidence = float(payload.get("confidence") or 0)
+            count = clip_count(payload.get("count"))
+            if payload.get("placed") or payload.get("visible") or count > 0:
+                return {
+                    "record": record,
+                    "count": count,
+                    "placed": bool(payload.get("placed")),
+                    "visible": bool(payload.get("visible")),
+                    "confidence": confidence,
+                    "target": target_label,
+                }
+            return None
+
+        def merge_visual_hits(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            groups: List[Dict[str, Any]] = []
+            for hit in sorted(hits, key=lambda x: x["record"]["start"]):
+                record = hit["record"]
+                if not groups or record["start"] > groups[-1]["end"] + 7.5:
+                    groups.append({
+                        "start": record["start"],
+                        "end": record["end"],
+                        "window_ids": [record["window_id"]],
+                        "count": hit["count"],
+                        "placed": hit["placed"],
+                        "confidence": hit["confidence"],
+                        "targets": [hit.get("target") or "unknown"],
+                    })
+                else:
+                    group = groups[-1]
+                    group["end"] = max(group["end"], record["end"])
+                    group["window_ids"].append(record["window_id"])
+                    group["count"] = max(group["count"], hit["count"])
+                    group["placed"] = group["placed"] or hit["placed"]
+                    group["confidence"] = max(group["confidence"], hit["confidence"])
+                    group.setdefault("targets", []).append(hit.get("target") or "unknown")
+            return groups
+
+        def target_summary(groups: List[Dict[str, Any]]) -> str:
+            labels = []
+            for group in groups:
+                labels.extend(group.get("targets") or [])
+            labels = [label for label in labels if label and label != "unknown"]
+            if "cystic_duct" in labels:
+                return "胆囊管"
+            if "cystic_artery" in labels:
+                return "胆囊动脉"
+            if "other" in labels:
+                return "胆囊管"
+            return "胆囊管"
+
         def expert_clip_signal(record: Dict[str, Any]) -> bool:
             """Weak clip-placement signal from local experts, used only as fallback."""
             others = record.get("others") or {}
@@ -169,7 +277,16 @@ class ConversationService:
                         return False
             return False
 
+        visual_hemlok_hits = []
+        visual_titanium_hits = []
         for record in records:
+            hemlok_visual = visual_hit(record, "hemolok")
+            titanium_visual = visual_hit(record, "titanium_clip")
+            if hemlok_visual:
+                visual_hemlok_hits.append(hemlok_visual)
+            if titanium_visual:
+                visual_titanium_hits.append(titanium_visual)
+
             summary = record["summary"]
             if hemlok_re.search(summary):
                 hemlok_hits.append(record)
@@ -177,6 +294,41 @@ class ConversationService:
                 clip_action_hits.append(record)
             elif residual_re.search(summary):
                 residual_mentions.append(record)
+
+        if visual_hemlok_hits:
+            groups = merge_visual_hits(visual_hemlok_hits)
+            estimated_count = sum(max(1, int(g["count"] or 0)) for g in groups if g.get("placed") or g.get("count"))
+            if estimated_count <= 0:
+                estimated_count = len(groups)
+            group_parts = [
+                f"{self._format_time(g['start'])}-{self._format_time(g['end'])}"
+                for g in groups[:6]
+            ]
+            return (
+                f"根据GPT视觉字段，Hem-o-lok主要出现在{ '、'.join(group_parts) }；"
+                f"连续窗口合并后估计至少 {estimated_count} 枚，目标为{target_summary(groups)}。"
+                "这个计数按相邻窗口合并，避免同一枚夹在多个窗口里重复累计。"
+            )
+
+        if visual_titanium_hits and re.search(r"(钛夹|金属夹|clip|titanium|施夹)", query, re.IGNORECASE):
+            groups = merge_visual_hits(visual_titanium_hits)
+            estimated_count = sum(max(1, int(g["count"] or 0)) for g in groups if g.get("placed") or g.get("count"))
+            if estimated_count <= 0:
+                estimated_count = len(groups)
+            group_parts = [
+                f"{self._format_time(g['start'])}-{self._format_time(g['end'])}"
+                for g in groups[:6]
+            ]
+            if "hemlok" in query or "hem-o" in query or "hemlock" in query:
+                return (
+                    "当前GPT视觉字段没有明确标成 Hem-o-lok。"
+                    f"它记录到钛夹/金属夹相关夹闭主要在{ '、'.join(group_parts) }；"
+                    f"目标为{target_summary(groups)}。如果要区分 Hem-o-lok 和金属钛夹，需要以上游视觉字段为准，不能用施夹器出现倒推。"
+                )
+            return (
+                f"根据GPT视觉字段，钛夹/金属夹相关夹闭主要在{ '、'.join(group_parts) }；"
+                f"连续窗口合并后估计至少 {estimated_count} 枚，目标为{target_summary(groups)}。"
+            )
 
         if hemlok_hits:
             explicit_count = sum(len(hemlok_re.findall(r["summary"])) for r in hemlok_hits)
@@ -238,10 +390,9 @@ class ConversationService:
             if end <= start:
                 end = start + 30.0
             return (
-                "当前摘要没有逐枚明确写出 Hem-o-lok 释放次数；结合窗口画面和本地 clip/夹闭信号，"
-                f"可疑 Hem-o-lok/施夹主要集中在 {self._format_time(start)}-{self._format_time(end)} "
-                "（约窗口64-74）附近。画面上可见约 3 枚夹，保守表述为至少 2-3 枚；"
-                "如果要精确到每一枚，需要上游 VLM 在窗口摘要里显式记录每次 clip 释放。"
+                "当前GPT视觉字段和窗口摘要没有逐枚明确写出 Hem-o-lok 释放次数；"
+                f"只能看到夹闭相关信号集中在 {self._format_time(start)}-{self._format_time(end)}。"
+                "这不足以精确统计用了几枚，后续应以上游GPT视觉字段的 placed/count 为准。"
             )
 
         return "当前窗口摘要里没有检索到 Hem-o-lok、钛夹或明确施夹记录。"
