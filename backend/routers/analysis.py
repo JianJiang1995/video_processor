@@ -762,14 +762,19 @@ def _hardcoded_out_of_body_candidate(
     window as a high-priority OpenVLM/GPT review candidate; the async patch then
     writes the structured visibility result back to the window.
     """
-    source_text = f"{video_path or ''} {video_name or ''}".lower()
+    source_parts = [video_path or "", video_name or ""]
+    try:
+        resolved = resolve_video_source(video_path or "")
+        if resolved.source and resolved.source != video_path:
+            source_parts.append(resolved.source)
+    except Exception:
+        pass
+    source_text = " ".join(source_parts).lower()
     is_vid001 = any(
         token in source_text
         for token in (
             "vid001_capture_30fps",
             "2024-12-24_225315_vid001",
-            "simulator://capture-card/0",
-            "手术室采集卡模拟源",
         )
     )
     if not is_vid001:
@@ -961,6 +966,16 @@ def _merge_realtime_evidence(
         import re as _re
         return [p.strip(" \n。；;") for p in _re.split(r"[。；;\n]+", s or "") if p.strip()]
 
+    out_of_body_terms = (
+        "镜头移出体外", "移出体外", "退出体外", "离开腹腔", "腹腔外",
+        "套管口", "腹壁外", "outside the body", "out_of_body", "trocar", "extra-abdominal",
+    )
+    if open_vlm_summary and any(term in open_vlm_summary for term in out_of_body_terms):
+        # Once the post-update visual reviewer determines that the scope has
+        # left the cavity, stale intra-abdominal stage summaries should not be
+        # carried forward into the live window text.
+        text = ""
+
     def _append(sentence: str):
         nonlocal text
         sentence = sentence.strip(" \n。；;")
@@ -974,7 +989,8 @@ def _merge_realtime_evidence(
             return
         text = f"{text.rstrip('。')}。{sentence}。" if text else f"{sentence}。"
 
-    for source in (stage1_summary, open_vlm_summary):
+    sources = (open_vlm_summary,) if open_vlm_summary and any(term in open_vlm_summary for term in out_of_body_terms) else (stage1_summary, open_vlm_summary)
+    for source in sources:
         for sentence in _sentences(source):
             _append(sentence)
 
@@ -4725,10 +4741,17 @@ async def glm_summarization_task(
                                 logger.debug(f"[OpenVLM] Could not load existing window {window_id} before patch: {e}")
 
                             hint_summary = open_vlm_hint.get("summary", "")
+                            visibility_flags = _visibility_flags_from_visual(open_vlm_hint.get("visual") or {})
+                            if visibility_flags["out_of_body"]:
+                                current_summary = ""
                             if hint_summary:
                                 normalized_hint = hint_summary.rstrip("。")
                                 if normalized_hint and normalized_hint not in current_summary:
-                                    current_summary = f"{current_summary.rstrip('。')}。{normalized_hint}。"
+                                    current_summary = (
+                                        f"{current_summary.rstrip('。')}。{normalized_hint}。"
+                                        if current_summary.strip(" 。")
+                                        else f"{normalized_hint}。"
+                                    )
                             visibility_summary = _visibility_summary_for_window(
                                 open_vlm_hint.get("visual") or {},
                                 get_summaries_by_session(db, db_session_id),
@@ -4736,7 +4759,11 @@ async def glm_summarization_task(
                                 language="zh",
                             )
                             if visibility_summary and visibility_summary.rstrip("。") not in current_summary:
-                                current_summary = f"{current_summary.rstrip('。')}。{visibility_summary.rstrip('。')}。"
+                                current_summary = (
+                                    f"{current_summary.rstrip('。')}。{visibility_summary.rstrip('。')}。"
+                                    if current_summary.strip(" 。")
+                                    else f"{visibility_summary.rstrip('。')}。"
+                                )
                             patch_target_hint = _target_hint_from_triplet(expert_pack_base.get("triplet") or {})
                             patch_target_label = patch_target_hint.get("label") or "cystic_duct"
                             visual_target = ((open_vlm_hint.get("visual") or {}).get("target_structure") or {})
