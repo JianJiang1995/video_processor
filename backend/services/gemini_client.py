@@ -366,7 +366,7 @@ class GeminiClient:
         api_key_env = gemini_config.get("api_key_env", "GEMINI_API_KEY")
         self.api_key = api_key or os.environ.get(api_key_env, "")
         
-        self.model_name = model_name or gemini_config.get("model_name", "gemini-3.1-pro-preview")
+        self.model_name = model_name or gemini_config.get("model_name", "gemini-2.5-flash")
         self.thinking_level = thinking_level or gemini_config.get("thinking_level", "none")
         self.max_tokens = max_tokens or gemini_config.get("max_tokens", 1000)
         self.timeout = timeout
@@ -473,7 +473,7 @@ class GeminiClient:
             return None
         
         # "none" 表示关闭思考模式
-        # gemini-3-flash-preview 不支持 thinking_level=NONE，
+        # Some Flash models do not support thinking_level=NONE,
         # 但可以通过 thinking_budget=256 有效禁用 thinking（tokens=0）
         if self.thinking_level == "none":
             # 对于强制 thinking 的模型，thinking_budget=0 完全禁用 thinking
@@ -1494,7 +1494,7 @@ Rules:
 
             response = await asyncio.to_thread(
                 self._client.models.generate_content,
-                model="gemini-3.1-pro-preview",
+                model=self.model_name,
                 contents=[prompt, img_part],
                 config=types.GenerateContentConfig(
                     temperature=0.1,

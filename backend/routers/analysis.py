@@ -19,6 +19,7 @@ from io import BytesIO
 import base64
 import httpx
 from urllib.parse import urlparse
+from pathlib import Path
 
 from ..database import (
     get_db, get_video_session, get_video_session_by_id,
@@ -81,6 +82,10 @@ summary_translation_cache: dict = {}
 # LLM-generated key event nodes for the bottom timeline UI.
 # Key: (session_id, language, max_windows, summaries_signature)
 event_node_cache: dict = {}
+
+# LLM-generated per-session clinical reports.
+# Key: (session_id, language, max_windows, summaries_signature)
+clinical_summary_cache: dict = {}
 
 # Global stream start times for time synchronization
 # Key: session_id, Value: float (unix timestamp when processing started)
@@ -404,6 +409,26 @@ def _polish_summary_wording(text: Any) -> str:
     }
     for src, dst in typo_replacements.items():
         out = out.replace(src, dst)
+    out = out.replace("正在进行凝血或止血处理", "正在进行凝血处理")
+    out = out.replace("凝血或止血处理", "凝血处理")
+    out = out.replace("已已夹闭", "已夹闭")
+    out = out.replace("已已闭合", "已闭合")
+    out = out.replace("当前处于肝胆三角解剖板", "当前处于肝胆三角解剖")
+    out = out.replace("肝胆三角解剖板", "肝胆三角解剖")
+    out = re.sub(r"(Hem-o-lok夹已)已(夹闭|闭合)", r"\1\2", out)
+    out = re.sub(r"(金属钛夹已)已(夹闭|闭合)", r"\1\2", out)
+    out = re.sub(
+        r"可见(\d+枚)?金属钛夹已可见已夹闭的?(胆囊管|胆囊动脉)残端",
+        r"可见\1金属钛夹已夹闭\2",
+        out,
+    )
+    out = re.sub(r"可见已夹闭的?(胆囊管|胆囊动脉)残端", r"已夹闭\1残端", out)
+    out = re.sub(
+        r"(可见(?:\d+枚)?金属钛夹已夹闭(胆囊管|胆囊动脉))[；;，,。]\s*已夹闭\2残端",
+        r"\1",
+        out,
+    )
+    out = re.sub(r"(已夹闭(?:胆囊管|胆囊动脉)残端)[；;，,。]\s*\1", r"\1", out)
     out = re.sub(r"(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))明显", r"\1", out)
     out = re.sub(r"(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))[，,]\s*明显", r"\1", out)
     out = re.sub(r"(当前窗口|本段|术野|画面)出现", r"\1有", out)
@@ -412,6 +437,65 @@ def _polish_summary_wording(text: Any) -> str:
     out = re.sub(r"[，,]\s*[。；;]", "。", out)
     out = re.sub(r"。{2,}", "。", out)
     return out.strip(" ，；")
+
+
+def _normalize_packaging_summary(text: Any, visual: Optional[Dict[str, Any]] = None) -> str:
+    """Suppress stale cystic-duct dissection labels once specimen bagging starts."""
+    out = _polish_summary_wording(text)
+    visual = visual or {}
+    visibility = _visibility_flags_from_visual(visual)
+    has_out_of_body = visibility["out_of_body"] or bool(OUT_OF_BODY_RE.search(out))
+    has_bag_context = bool(re.search(r"胆囊取出与装袋|标本袋|胆囊袋|装袋|取出", out))
+    has_gauze = bool(re.search(r"纱布|棉片", out))
+    has_bleeding = bool(re.search(r"出血|凝血", out))
+
+    stale_patterns = (
+        r"(?:双极电凝|电凝钩|剪刀|钳子)?(?:正在)?分离胆囊管",
+        r"(?:双极电凝|电凝钩|剪刀|钳子)?(?:正在)?分离胆囊板",
+        r"电凝钩尖端接触并分离组织",
+        r"画面以[^。；;]*牵拉胆囊[^。；;]*为主",
+        r"抓钳牵拉胆囊颈和胆囊体以暴露操作区域",
+        r"可见双极器械接触组织，尚未确认止血操作",
+        r"尚未确认止血操作",
+        r"钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉)",
+    )
+    for pattern in stale_patterns:
+        out = re.sub(rf"[，,；;。]?\s*{pattern}", "", out)
+
+    parts: List[str] = []
+    if has_out_of_body:
+        parts.append("镜头移出体外，画面切换至套管口或腹壁外场景")
+
+    if has_bag_context or "胆囊取出与装袋" in out or not parts:
+        parts.append("当前处于胆囊取出与装袋，将胆囊装入标本袋并准备取出")
+
+    if has_gauze and not any("纱布" in part for part in parts):
+        parts.append("可见纱布和棉片用于局部压迫或清理")
+    if has_bleeding and not any("凝血" in part or "出血" in part for part in parts):
+        parts.append("正在进行凝血处理")
+
+    normalized = "。".join(dict.fromkeys(part.strip(" 。；") for part in parts if part.strip(" 。；")))
+    return _polish_summary_wording(normalized + ("。" if normalized else ""))
+
+
+def _normalize_post_packaging_cleaning_summary(text: Any) -> str:
+    out = _polish_summary_wording(text)
+    stale_patterns = (
+        r"(?:双极电凝|电凝钩|剪刀|钳子)?(?:正在)?分离胆囊管",
+        r"(?:双极电凝|电凝钩|剪刀|钳子)?(?:正在)?分离胆囊板",
+        r"电凝钩尖端接触并分离组织",
+        r"画面以[^。；;]*牵拉胆囊[^。；;]*为主",
+        r"抓钳牵拉胆囊颈和胆囊体以暴露操作区域",
+        r"可见双极器械接触组织，尚未确认止血操作",
+        r"尚未确认止血操作",
+    )
+    for pattern in stale_patterns:
+        out = re.sub(rf"[，,；;。]?\s*{pattern}", "", out)
+    if re.fullmatch(r"当前处于清洁凝血。?", out.strip()):
+        out = "当前处于清洁凝血，清理术野并确认出血控制。"
+    elif not re.search(r"清理|凝血|出血|术野", out):
+        out = "当前处于清洁凝血，清理术野并确认出血控制。"
+    return _polish_summary_wording(out.rstrip(" 。；") + "。")
 
 
 def _phase_visual_context(phase_raw: str, phase: str) -> str:
@@ -444,6 +528,8 @@ def _strip_clipping_noise(text: Any) -> str:
             out = re.sub(rf"([，,；;。]?\s*)钛夹钳夹持{target}", "", out)
         if re.search(rf"钛夹钳正在夹闭{target}", out):
             out = re.sub(rf"([，,；;。]?\s*)钛夹钳夹闭{target}", "", out)
+            out = re.sub(rf"([，,；;。]?\s*)可见(?:\d+枚)?金属钛夹已夹闭{target}(?:残端)?", "", out)
+            out = re.sub(rf"([，,；;。]?\s*)已夹闭{target}残端", "", out)
     out = re.sub(r"([，,；;])\s*(?:冲吸器|剪刀|电凝钩|电钩)?分离胆囊", "", out)
     out = re.sub(r"([，,；;])\s*正在牵拉和暴露组织", "", out)
     out = re.sub(r"([，,；;])\s*未见(?:明显)?(?:活动性)?出血", "", out)
@@ -685,6 +771,17 @@ def _apply_surgical_sequence_rules(
                 out = _downgrade_cut_claim(out, target_cn)
                 applied.append(f"cut_requires_prior_clip_{target_label}")
 
+    if phase == "GallbladderPackaging":
+        normalized_packaging = _normalize_packaging_summary(out, visual)
+        if normalized_packaging and normalized_packaging != out:
+            out = normalized_packaging
+            applied.append("packaging_suppresses_stale_dissection")
+    elif phase == "CleaningCoagulation" and prior_state.get("packaging_seen"):
+        normalized_cleaning = _normalize_post_packaging_cleaning_summary(out)
+        if normalized_cleaning and normalized_cleaning != out:
+            out = normalized_cleaning
+            applied.append("post_packaging_suppresses_stale_dissection")
+
     out = re.sub(r"[，,；;]\s*[，,；;]+", "，", out)
     out = re.sub(r"[，,]\s*[。；;]", "。", out)
     out = re.sub(r"。{2,}", "。", out).strip(" ，；")
@@ -694,9 +791,11 @@ def _apply_surgical_sequence_rules(
 def _local_visibility_cue_from_bgr_frames(frames: List[Any]) -> Dict[str, Any]:
     """Fast local visibility cue for Stage 1.
 
-    This is intentionally conservative and only promotes obvious lens fog/smoke:
-    low edge detail plus low saturation/high brightness over a meaningful part
-    of the frame. OpenVLM can later refine or remove the claim.
+    This is intentionally conservative. It only uses image evidence:
+    - fog/smoke: low edge detail plus low saturation/high brightness
+    - outside-body/trocar transition candidate: large low-saturation bright
+      trocar/wall region in the laparoscope field with reduced tissue view
+    OpenVLM can later refine or remove the claim.
     """
     if not frames:
         return {"fog": False, "confidence": 0.0}
@@ -718,16 +817,44 @@ def _local_visibility_cue_from_bgr_frames(frames: List[Any]) -> Dict[str, Any]:
             gray_std = float(gray.std())
             sat_mean = float(hsv[:, :, 1].mean())
             low_sat_bright = float(np.mean((hsv[:, :, 1] < 45) & (hsv[:, :, 2] > 115)))
+            h, w = gray.shape[:2]
+            yy, xx = np.ogrid[:h, :w]
+            cx = (w - 1) / 2.0
+            cy = (h - 1) / 2.0
+            radius = np.sqrt(((xx - cx) / max(cx, 1.0)) ** 2 + ((yy - cy) / max(cy, 1.0)) ** 2)
+            inner = radius < 0.58
+            annulus = (radius >= 0.58) & (radius < 0.98)
+            nonblack = hsv[:, :, 2] > 30
+            bright_low_sat = (hsv[:, :, 1] < 55) & (hsv[:, :, 2] > 145)
+            tissue_like = (
+                (hsv[:, :, 1] > 45)
+                & (hsv[:, :, 2] > 55)
+                & (
+                    ((hsv[:, :, 0] >= 0) & (hsv[:, :, 0] <= 30))
+                    | ((hsv[:, :, 0] >= 150) & (hsv[:, :, 0] <= 179))
+                )
+            )
+            annulus_bright = float(np.mean(bright_low_sat[annulus & nonblack])) if np.any(annulus & nonblack) else 0.0
+            inner_tissue = float(np.mean(tissue_like[inner & nonblack])) if np.any(inner & nonblack) else 0.0
+            overall_bright = float(np.mean(bright_low_sat[nonblack])) if np.any(nonblack) else 0.0
+            trocar_like = bool(
+                (annulus_bright > 0.24 and overall_bright > 0.16 and inner_tissue < 0.62)
+                or (overall_bright > 0.38 and inner_tissue < 0.36)
+            )
             foggy = bool(
                 (lap_var < 1500 and sat_mean < 65 and low_sat_bright > 0.25)
                 or (lap_var < 700 and sat_mean < 85 and gray_std < 60 and low_sat_bright > 0.20)
             )
             metrics.append({
                 "foggy": foggy,
+                "trocar_like": trocar_like,
                 "lap_var": lap_var,
                 "gray_std": gray_std,
                 "sat_mean": sat_mean,
                 "low_sat_bright": low_sat_bright,
+                "annulus_bright": annulus_bright,
+                "inner_tissue": inner_tissue,
+                "overall_bright": overall_bright,
             })
         except Exception:
             continue
@@ -736,73 +863,48 @@ def _local_visibility_cue_from_bgr_frames(frames: List[Any]) -> Dict[str, Any]:
         return {"fog": False, "confidence": 0.0}
     fog_count = sum(1 for item in metrics if item["foggy"])
     fog_ratio = fog_count / max(1, len(metrics))
+    out_of_body_count = sum(1 for item in metrics if item.get("trocar_like"))
+    out_of_body_ratio = out_of_body_count / max(1, len(metrics))
     confidence = min(0.92, max(0.0, 0.35 + fog_ratio * 0.55))
-    representative = max(metrics, key=lambda item: (item["foggy"], item["low_sat_bright"], -item["lap_var"]))
+    out_confidence = min(0.94, max(0.0, 0.35 + out_of_body_ratio * 0.58))
+    representative = max(
+        metrics,
+        key=lambda item: (
+            item.get("trocar_like", False),
+            item["foggy"],
+            item.get("annulus_bright", 0.0),
+            item["low_sat_bright"],
+            -item["lap_var"],
+        ),
+    )
+    strong_transient = bool(
+        representative.get("annulus_bright", 0.0) >= 0.28
+        and representative.get("overall_bright", 0.0) >= 0.18
+        and representative.get("inner_tissue", 1.0) < 0.68
+    )
+    out_candidate = out_of_body_ratio >= 0.20 or strong_transient
+    out_confirmed = out_of_body_ratio >= 0.67 and representative.get("annulus_bright", 0.0) >= 0.28
     return {
         "fog": fog_ratio >= 0.34,
         "confidence": round(confidence if fog_ratio >= 0.34 else fog_ratio * 0.3, 3),
         "fog_ratio": round(fog_ratio, 3),
+        "out_of_body_candidate": out_candidate,
+        "out_of_body": out_confirmed,
+        "out_of_body_confidence": round(out_confidence if out_candidate else out_of_body_ratio * 0.3, 3),
+        "out_of_body_ratio": round(out_of_body_ratio, 3),
         "lap_var": round(representative["lap_var"], 1),
         "gray_std": round(representative["gray_std"], 1),
         "sat_mean": round(representative["sat_mean"], 1),
         "low_sat_bright": round(representative["low_sat_bright"], 3),
+        "annulus_bright": round(representative.get("annulus_bright", 0.0), 3),
+        "inner_tissue": round(representative.get("inner_tissue", 0.0), 3),
+        "overall_bright": round(representative.get("overall_bright", 0.0), 3),
         "summary": "镜头起雾，手术视野受遮挡。" if fog_ratio >= 0.34 else "",
-    }
-
-
-def _hardcoded_out_of_body_candidate(
-    start_time: float,
-    end_time: float,
-    video_path: str = "",
-    video_name: str = "",
-) -> Dict[str, Any]:
-    """Known VID001 removal segment cue for post-update visual review.
-
-    This is deliberately not an event-node fallback. It only marks the live
-    window as a high-priority OpenVLM/GPT review candidate; the async patch then
-    writes the structured visibility result back to the window.
-    """
-    source_parts = [video_path or "", video_name or ""]
-    try:
-        resolved = resolve_video_source(video_path or "")
-        if resolved.source and resolved.source != video_path:
-            source_parts.append(resolved.source)
-    except Exception:
-        pass
-    source_text = " ".join(source_parts).lower()
-    is_vid001 = any(
-        token in source_text
-        for token in (
-            "vid001_capture_30fps",
-            "2024-12-24_225315_vid001",
-        )
-    )
-    if not is_vid001:
-        return {"out_of_body_candidate": False}
-
-    # In the current VID001 capture-card simulation the laparoscope leaves the
-    # abdominal cavity around 09:59. The strongest visual evidence spans the red
-    # close-up frame and the trocar/abdominal-wall view immediately after it.
-    cue_start = 595.0
-    cue_end = 615.0
-    overlap = max(0.0, min(float(end_time or 0), cue_end) - max(float(start_time or 0), cue_start))
-    if overlap <= 0:
-        return {"out_of_body_candidate": False}
-
-    return {
-        "out_of_body_candidate": True,
-        "out_of_body_hardcoded": True,
-        "source": "vid001_out_of_body_interval_595_615s",
-        "confidence": 0.92 if float(start_time or 0) < 605.0 else 0.82,
-        "cue_start": cue_start,
-        "cue_end": cue_end,
-        "summary": "镜头移出体外，画面切换至套管口或腹壁外场景。",
+        "out_of_body_summary": "镜头移出体外，画面切换至套管口或腹壁外场景。" if out_confirmed else "",
         "prompt_hint": (
-            "当前窗口落在VID001测试视频约9分59秒开始的镜头移出体外候选段。"
-            "重点检查是否出现整帧红色贴近腹壁/体外组织、圆形套管口/镜头口、"
-            "腹腔解剖结构消失、镜头贴近套管或腹壁外场景。若看到这些证据，"
-            "visibility.status必须为out_of_body，out_of_body=true。"
-        ),
+            "本地视觉特征提示可能出现套管口/体外过渡：画面中低饱和高亮区域占比高，"
+            "腹腔内组织视野减少。请根据图像本身复核是否为镜头移出体外、套管口或腹壁外场景。"
+        ) if out_candidate else "",
     }
 
 
@@ -858,9 +960,7 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
     late_hemlok_context = bool(
         hemlok_clip.get("detected")
         and _safe_float(hemlok_clip.get("confidence"), 0.0) >= 0.75
-        and float(start_time or 0) >= 285.0
         and phase in {
-            "CalotTriangleDissection",
             "ClippingCutting",
             "GallbladderDissection",
             "CleaningCoagulation",
@@ -876,6 +976,13 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
             part for part in action_parts
             if not re.search(r"(分离胆囊|分离胆囊板|分离肝脏|分离腹膜|分离肝胆三角)", part)
         ]
+    if phase == "GallbladderPackaging":
+        action_parts = [
+            part for part in action_parts
+            if re.search(r"装袋|取出|标本袋|胆囊袋|凝血|出血|纱布|棉片", part)
+        ]
+        if not any(re.search(r"装袋|取出|标本袋|胆囊袋", part) for part in action_parts):
+            action_parts.append("将胆囊装入标本袋并准备取出")
     has_clip_action = any(
         term in " ".join(action_parts)
         for term in ("夹闭", "闭合", "施夹", "夹持", "Hem-o-lok", "钛夹")
@@ -908,8 +1015,10 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
     if "冲洗器" in tool_set and not has_clip_action:
         action_parts.append("正在冲洗或清理术野")
     if "双极电凝" in tool_set:
-        if phase in {"CleaningCoagulation", "GallbladderDissection"} or "出血" in action_text:
-            action_parts.append("正在进行凝血或止血处理")
+        if phase == "GallbladderPackaging":
+            pass
+        elif phase in {"CleaningCoagulation", "GallbladderDissection"} or "出血" in action_text:
+            action_parts.append("正在进行凝血处理")
         else:
             action_parts.append("可见双极器械接触组织，尚未确认止血操作")
     if "标本袋" in tool_set and phase == "GallbladderPackaging":
@@ -921,6 +1030,10 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
             action_parts.append("抓钳牵拉胆囊体以暴露胆囊床")
         else:
             action_parts.append("抓钳牵拉胆囊颈和胆囊体以暴露操作区域")
+
+    visibility_cue = expert_pack.get("local_visibility") or {}
+    if visibility_cue.get("out_of_body"):
+        return "镜头移出体外，画面切换至套管口或腹壁外场景。"
 
     parts = [f"当前处于{phase_cn}"]
     if action_parts:
@@ -934,7 +1047,6 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
     cvs_note = _cvs_realtime_note(phase, tool_set, action_text)
     if cvs_note:
         parts.append(f"。{cvs_note}")
-    visibility_cue = expert_pack.get("local_visibility") or {}
     if visibility_cue.get("fog"):
         parts.append("。镜头起雾，手术视野受遮挡")
     return _strip_clipping_noise(_sanitize_target_language("".join(parts).rstrip("。") + "。", target_label))
@@ -968,7 +1080,7 @@ def _merge_realtime_evidence(
 
     out_of_body_terms = (
         "镜头移出体外", "移出体外", "退出体外", "离开腹腔", "腹腔外",
-        "套管口", "腹壁外", "outside the body", "out_of_body", "trocar", "extra-abdominal",
+        "腹壁外", "手术室场景", "outside the body", "out_of_body", "trocar outside", "extra-abdominal",
     )
     if open_vlm_summary and any(term in open_vlm_summary for term in out_of_body_terms):
         # Once the post-update visual reviewer determines that the scope has
@@ -1355,6 +1467,15 @@ class EventNodesRequest(BaseModel):
     language: str = "zh"
     force: bool = False
     max_windows: Optional[int] = None
+
+
+class ClinicalSummaryRequest(BaseModel):
+    language: str = "zh"
+    force: bool = False
+    max_windows: Optional[int] = None
+    max_events: Optional[int] = None
+    video_title: Optional[str] = None
+    output_dir: Optional[str] = None
 
 
 @router.post("/analyze-frames-batch")
@@ -3886,27 +4007,17 @@ async def glm_summarization_task(
                             f"置信度{float(target_hint.get('confidence') or 0):.2f}，来源{target_hint.get('source')}"
                         )
                         local_visibility_cue = dict((expert_pack or {}).get("local_visibility") or {})
-                        video_name_for_hint = ""
-                        try:
-                            video_name_for_hint = str((video_session or {}).get("video_name") or "")
-                        except Exception:
-                            video_name_for_hint = ""
-                        out_of_body_candidate = _hardcoded_out_of_body_candidate(
-                            start_time=start_time,
-                            end_time=end_time,
-                            video_path=video_path,
-                            video_name=video_name_for_hint,
-                        )
-                        if out_of_body_candidate.get("out_of_body_candidate"):
-                            local_visibility_cue.update(out_of_body_candidate)
                         out_of_body_focus_line = ""
                         if local_visibility_cue.get("out_of_body_candidate"):
                             out_of_body_focus_line = (
                                 "\n【重点复核：镜头移出体外候选】"
                                 f"{local_visibility_cue.get('prompt_hint') or ''}"
-                                "这类画面不要只写成起雾/模糊；若腹腔内肝胆组织已经不可见，"
+                                "本地提示只是弱候选，不能直接当作结论。若腹腔内肝胆组织仍可见，"
+                                "只是画面边缘或前景出现套管/镜鞘/入路器械，visibility必须保持clear，"
+                                "不要写镜头移出体外，也不要设置visibility.out_of_body=true。"
+                                "只有在腹腔内组织已经不可见，"
                                 "且画面变成套管内壁、腹壁外场景、整帧红色贴近组织或手术室体外结构，"
-                                "必须输出 visibility.status=\"out_of_body\"、visibility.out_of_body=true、"
+                                "才输出 visibility.status=\"out_of_body\"、visibility.out_of_body=true、"
                                 "visibility.confidence>=0.75，并在summary写“镜头移出体外，画面切换至套管口或腹壁外场景”。"
                             )
 
@@ -3914,7 +4025,8 @@ async def glm_summarization_task(
                             "你将看到一个约5秒的腹腔镜胆囊切除术视频窗口的连续抽帧。"
                             "请只根据图像判断关键视觉事实；本地模型提示只能作为弱参考，可能误检。\n"
                             "必须把以下视觉信息合并到一次判断里：Hem-o-lok夹、金属钛夹、钛夹钳、"
-                            "剪刀切断胆囊管或胆囊动脉、纱布和棉片、活动性出血、止血状态、CVS关键安全视野、"
+                            "剪刀切断胆囊管或胆囊动脉、标本袋/胆囊袋与胆囊装袋取出、纱布和棉片、"
+                            "活动性出血、止血状态、CVS关键安全视野、"
                             "镜头起雾/烟雾/模糊、雾气解除、镜头移出体外或画面切到套管口/腹壁外/手术室场景。\n"
                             "判别规则：\n"
                             "- Hem-o-lok通常是白色、淡色、紫色塑料锁扣夹；金属钛夹通常是小型金属夹。"
@@ -3935,6 +4047,10 @@ async def glm_summarization_task(
                             "如果只看到剪刀接触但没有已夹闭证据，只能写剪刀在目标附近操作或分离组织，不能写切断。"
                             "已经切断后的同一目标，后续不要再写“正在夹闭”，只能写已夹闭残端。"
                             "- 纱布和棉片是白色片状或团状材料，不要把强反光、水泡、烟雾当作纱布。"
+                            "- 如果看到白色或半透明标本袋/胆囊袋张开、套住胆囊、钳子把胆囊推入袋内，"
+                            "summary必须写“将胆囊装入标本袋并准备取出”。"
+                            "这类画面不要写成分离胆囊管、分离胆囊板或夹闭胆囊管；Triplet若提示胆囊管分离，"
+                            "在装袋画面中应视为弱参考而不是结论。"
                             "- 出血只关注大量活动性出血、持续涌出、明确出血源或影响视野的持续渗血；"
                             "少量血染、红色组织、陈旧血液、夹闭区局部血迹不算需要上报的活动性出血。"
                             "- 视野状态需要独立判断：如果镜头起雾、烟雾、模糊或水汽遮挡使组织边界不清，"
@@ -3943,6 +4059,8 @@ async def glm_summarization_task(
                             "summary写“雾已去除，腹腔视野恢复”。"
                             "如果画面离开腹腔、出现套管口、腹壁外场景、体外器械台或手术室环境，"
                             "visibility.out_of_body=true，summary写“镜头移出体外，画面切换至套管口或腹壁外场景”。"
+                            "注意：套管/镜鞘边缘进入画面但腹腔内肝胆组织仍可见时，不属于移出体外。"
+                            "准备或入路建立阶段不要仅凭套管边缘、镜鞘边缘或穿刺器械判断out_of_body。"
                             "- 夹闭、施夹、钛夹释放、剪切发生时，target_structure.label必须在cystic_duct和cystic_artery中二选一。"
                             "视觉证据不足时参考Triplet目标倾向，不要写“管状结构”“或者”和斜线合并对象。"
                             "target_structure.confidence必须反映图像证据，不要复制Triplet置信度；"
@@ -3955,7 +4073,7 @@ async def glm_summarization_task(
                             "禁止写“牵拉胆囊管”“牵拉组织”“相关操作”等笼统或对象错误的表达。\n"
                             "输出要求：只输出一个JSON对象，不要markdown，不要解释。字段如下：\n"
                             "{\n"
-                            '  "summary": "一句中文事实摘要；看到施夹器活动、夹体、出血、纱布或CVS变化时必须非空；没有新增事实才为空字符串",\n'
+                            '  "summary": "一句中文事实摘要；看到施夹器活动、夹体、标本袋装袋、出血、纱布或CVS变化时必须非空；没有新增事实才为空字符串",\n'
                             '  "visual": {\n'
                             '    "hemolok": {"visible": false, "placed": false, "count": 0, "confidence": 0.0},\n'
                             '    "titanium_clip": {"visible": false, "placed": false, "count": 0, "confidence": 0.0},\n'
@@ -4246,23 +4364,46 @@ async def glm_summarization_task(
                                 visibility["fog"] = True
                             if visibility["status"] == "out_of_body":
                                 visibility["out_of_body"] = True
-                            if local_visibility_cue.get("out_of_body_candidate") and not visibility.get("out_of_body"):
-                                candidate_conf = _safe_float(local_visibility_cue.get("confidence"), 0.82)
+                            if local_visibility_cue.get("out_of_body") and not visibility.get("out_of_body"):
+                                candidate_conf = _safe_float(local_visibility_cue.get("out_of_body_confidence"), 0.82)
                                 model_conf = _safe_float(visibility.get("confidence"), 0.0)
-                                # VID001 has a known withdrawal segment. If the
-                                # GPT answer is absent or only weakly classifies
-                                # the same frames as fog/blur/clear, promote the
-                                # hard-coded review cue into the structured
-                                # window update instead of leaving it to the
-                                # event-node fallback.
+                                # Promote only a strong generic local image
+                                # finding, never a video-name or timestamp cue.
                                 if model_conf < 0.85 or visibility["status"] in {"clear", "foggy", "blurred", "blocked"}:
                                     visibility.update({
                                         "status": "out_of_body",
                                         "out_of_body": True,
                                         "fog": False,
                                         "confidence": max(model_conf, candidate_conf),
-                                        "evidence": local_visibility_cue.get("summary") or "VID001 9:59 hard-coded out-of-body candidate",
-                                        "hardcoded_candidate": True,
+                                        "evidence": local_visibility_cue.get("out_of_body_summary") or "local image features indicate trocar or outside-body view",
+                                        "local_visual_candidate": True,
+                                    })
+                            if visibility.get("out_of_body"):
+                                local_confirmed = bool(local_visibility_cue.get("out_of_body"))
+                                evidence_text = " ".join(
+                                    str(visibility.get(key) or "")
+                                    for key in ("evidence", "reason", "description")
+                                )
+                                external_terms = re.search(
+                                    r"(手术室|器械台|体外器械|皮肤|腹壁外皮肤|operating room|or scene|"
+                                    r"outside[- ]the[- ]body|extra[- ]abdominal|extracorporeal)",
+                                    evidence_text,
+                                    re.IGNORECASE,
+                                )
+                                packaging_context = phase_context == "GallbladderPackaging"
+                                weak_preparation_transition = (
+                                    is_preparation_context
+                                    and not local_confirmed
+                                    and not external_terms
+                                    and not packaging_context
+                                )
+                                if weak_preparation_transition:
+                                    visibility.update({
+                                        "status": "clear",
+                                        "out_of_body": False,
+                                        "fog": False,
+                                        "confidence": min(_safe_float(visibility.get("confidence"), 0.0), 0.3),
+                                        "downgraded_reason": "trocar_or_scope_edge_visible_during_preparation_with_intra_abdominal_view",
                                     })
                             base["visibility"] = visibility
                             return base
@@ -4456,6 +4597,8 @@ async def glm_summarization_task(
                                 r"[，,；;。]?\s*未见夹闭动作",
                                 r"[，,；;。]?\s*未见夹闭器具",
                                 r"[，,；;。]?\s*未见",
+                                r"[，,；;。]?\s*尚未确认止血操作",
+                                r"[，,；;。]?\s*可见双极器械接触组织，尚未确认止血操作",
                                 r"[，,；;。]?\s*视野清晰",
                             )
                             for pattern in negative_patterns:
@@ -4510,15 +4653,15 @@ async def glm_summarization_task(
                         async def _normalize_open_vision_result(result: Dict[str, Any], source_provider: str) -> Dict[str, Any]:
                             text = (result.get("text") or result.get("summary") or "").strip()
                             if not result.get("success") or not text:
-                                if local_visibility_cue.get("out_of_body_candidate"):
+                                if local_visibility_cue.get("out_of_body"):
                                     visual = _ensure_visual_defaults({
                                         "visibility": {
                                             "status": "out_of_body",
                                             "out_of_body": True,
                                             "fog": False,
-                                            "confidence": _safe_float(local_visibility_cue.get("confidence"), 0.82),
-                                            "evidence": local_visibility_cue.get("summary") or "VID001 9:59 hard-coded out-of-body candidate",
-                                            "hardcoded_candidate": True,
+                                            "confidence": _safe_float(local_visibility_cue.get("out_of_body_confidence"), 0.82),
+                                            "evidence": local_visibility_cue.get("out_of_body_summary") or "local image features indicate trocar or outside-body view",
+                                            "local_visual_candidate": True,
                                         }
                                     })
                                     summary = _visual_fallback_summary(visual).strip(" 。")
@@ -4526,7 +4669,7 @@ async def glm_summarization_task(
                                         "success": True,
                                         "summary": (summary + "。") if summary else "镜头移出体外，画面切换至套管口或腹壁外场景。",
                                         "visual": visual,
-                                        "raw": result.get("error") or "hardcoded_out_of_body_post_update",
+                                        "raw": result.get("error") or "local_out_of_body_visual_fallback",
                                         "model": result.get("model"),
                                         "provider": source_provider,
                                         "thinking_level": result.get("_thinking_level_used", thinking_level),
@@ -4871,17 +5014,6 @@ async def glm_summarization_task(
                                     lambda: run_experts_on_window(bgr_frames, reached_phases=reached),
                                 )
                                 local_visibility = _local_visibility_cue_from_bgr_frames(bgr_frames)
-                                try:
-                                    hardcoded_oob = _hardcoded_out_of_body_candidate(
-                                        start_time=meta.get("start_time", 0),
-                                        end_time=meta.get("end_time", 0),
-                                        video_path=video_path,
-                                        video_name=str((video_session or {}).get("video_name") or ""),
-                                    )
-                                    if hardcoded_oob.get("out_of_body_candidate"):
-                                        local_visibility.update(hardcoded_oob)
-                                except Exception as cue_e:
-                                    logger.debug(f"[Visibility] hard-coded out-of-body cue skipped: {cue_e}")
                                 expert_pack["local_visibility"] = local_visibility
                             expert_text = expert_pack.get("text", "【专家模型判断】(未启用)")
 
@@ -6078,8 +6210,8 @@ FOG_RESOLVED_RE = re.compile(
     re.IGNORECASE,
 )
 OUT_OF_BODY_RE = re.compile(
-    r"(镜头|腹腔镜|视野|画面).{0,12}(?:移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外|切换至手术室|手术室场景)|"
-    r"(?:体外|腹腔外|套管口|腹壁外|手术室场景|器械台|trocar|trocar outside|outside the body|outside-body|extracorporeal|operating room scene|extra-abdominal)",
+    r"(镜头|腹腔镜|视野|画面).{0,12}(?:移出体外|退出体外|离开腹腔|腹腔外|腹壁外|切换至手术室|手术室场景)|"
+    r"(?:体外|腹腔外|腹壁外|手术室场景|器械台|trocar outside|outside the body|outside-body|extracorporeal|operating room scene|extra-abdominal)",
     re.IGNORECASE,
 )
 
@@ -6297,15 +6429,127 @@ def _strip_json_fences(text: str) -> str:
     return text.strip()
 
 
+def _json_loads_with_llm_repairs(text: str) -> Any:
+    candidates = [text]
+    repaired = text
+    repaired = repaired.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    repaired = re.sub(r"}\s*(?=\{)", "},", repaired)
+    repaired = re.sub(r'([}\]])\s*\n\s*"', r'\1,\n"', repaired)
+    repaired = re.sub(r'("(?:[^"\\]|\\.)*")\s*\n\s*"', r'\1,\n"', repaired)
+    repaired = re.sub(r"\b(true|false|null)\s*\n\s*\"", r'\1,\n"', repaired)
+    repaired = re.sub(r"(-?\d+(?:\.\d+)?)\s*\n\s*\"", r'\1,\n"', repaired)
+    key_ahead = r'"(?=[A-Za-z_][A-Za-z0-9_]*"\s*:)'
+    repaired = re.sub(rf'([}}\]])\s+({key_ahead})', r'\1, \2', repaired)
+    repaired = re.sub(rf'("(?:[^"\\]|\\.)*")\s+({key_ahead})', r'\1, \2', repaired)
+    repaired = re.sub(rf"\b(true|false|null)\s+({key_ahead})", r'\1, \2', repaired)
+    repaired = re.sub(rf"(-?\d+(?:\.\d+)?)\s+({key_ahead})", r'\1, \2', repaired)
+    if repaired != text:
+        candidates.append(repaired)
+
+    last_exc: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc or ValueError("invalid JSON")
+
+
+def _extract_balanced_json_objects(text: str) -> List[str]:
+    objects: List[str] = []
+    start: Optional[int] = None
+    depth = 0
+    in_string = False
+    escape = False
+    for idx, ch in enumerate(text or ""):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                objects.append(text[start:idx + 1])
+                start = None
+    return objects
+
+
+def _extract_events_array_text(text: str) -> str:
+    match = re.search(r'"events"\s*:', text or "", flags=re.IGNORECASE)
+    if not match:
+        return ""
+    start = (text or "").find("[", match.end())
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:idx]
+    return text[start + 1:]
+
+
+def _parse_event_nodes_from_objects(text: str) -> List[Dict[str, Any]]:
+    array_text = _extract_events_array_text(text)
+    if not array_text:
+        return []
+    events: List[Dict[str, Any]] = []
+    for obj_text in _extract_balanced_json_objects(array_text):
+        try:
+            item = _json_loads_with_llm_repairs(obj_text)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    return events
+
+
 def _parse_event_nodes_json(text: str) -> Dict[str, Any]:
     cleaned = _strip_json_fences(text)
     try:
-        parsed = json.loads(cleaned)
+        parsed = _json_loads_with_llm_repairs(cleaned)
     except Exception:
+        events = _parse_event_nodes_from_objects(cleaned)
+        if events:
+            return {"events": events}
         match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
         if not match:
             raise
-        parsed = json.loads(match.group(0))
+        matched = match.group(0)
+        try:
+            parsed = _json_loads_with_llm_repairs(matched)
+        except Exception:
+            events = _parse_event_nodes_from_objects(matched)
+            if events:
+                return {"events": events}
+            raise
     if isinstance(parsed, list):
         return {"events": parsed}
     if not isinstance(parsed, dict):
@@ -6437,6 +6681,16 @@ def _normalize_event_nodes(
             )
         ):
             continue
+        if (
+            event_type == "visibility"
+            and re.search(r"(移出体外|腹腔外|腹壁外|outside|extra-abdominal|extracorporeal)", combined_event_text, re.IGNORECASE)
+            and not any(
+                OUT_OF_BODY_RE.search(w.get("summary", ""))
+                or "out_of_body" in str(w.get("visibility", "") or "")
+                for w in windows
+            )
+        ):
+            continue
 
         events.append({
             "id": str(item.get("id") or f"event_{idx:03d}"),
@@ -6560,6 +6814,45 @@ def _fallback_event_nodes(records: List[Dict[str, Any]], language: str, reason: 
     return events[-12:]
 
 
+def _ensure_required_event_nodes(events: List[Dict[str, Any]], records: List[Dict[str, Any]], language: str) -> List[Dict[str, Any]]:
+    """Add record-supported high-value events that the event-node LLM omitted."""
+    zh = language.startswith("zh")
+    merged = list(events or [])
+    combined_existing = "\n".join(f"{e.get('title', '')} {e.get('summary', '')}" for e in merged)
+
+    if not re.search(r"(标本袋|胆囊袋|装袋|取出|specimen bag|bagging|removal)", combined_existing, re.IGNORECASE):
+        pack_records = [
+            r for r in records or []
+            if re.search(r"(标本袋|胆囊袋|装袋|取出|specimen bag|bagging|removal)", r.get("summary", ""), re.IGNORECASE)
+        ]
+        if pack_records:
+            window_ids = sorted({int(r["window_id"]) for r in pack_records})
+            start_time = min(float(r.get("start_time", 0) or 0) for r in pack_records)
+            end_time = max(float(r.get("end_time", 0) or 0) for r in pack_records)
+            merged.append({
+                "id": "event_required_specimen_bagging",
+                "type": "action",
+                "severity": "important",
+                "title": "胆囊装袋取出" if zh else "Specimen bagging and removal",
+                "summary": "将胆囊装入标本袋并准备取出。" if zh else "The gallbladder is placed into a specimen bag and prepared for removal.",
+                "window_ids": window_ids,
+                "representative_window_id": window_ids[-1],
+                "start_time": start_time,
+                "end_time": end_time,
+                "confidence": 0.72,
+                "source": "record-derived",
+            })
+
+    merged.sort(key=lambda e: (float(e.get("start_time", 0) or 0), int(e.get("representative_window_id", 0) or 0)))
+    if len(merged) <= 14:
+        return merged
+
+    required_ids = {"event_required_specimen_bagging"}
+    required = [event for event in merged if event.get("id") in required_ids]
+    others = [event for event in merged if event.get("id") not in required_ids]
+    return (others[-max(0, 14 - len(required)):] + required)[-14:]
+
+
 def _visibility_status_events(records: List[Dict[str, Any]], language: str) -> List[Dict[str, Any]]:
     zh = language.startswith("zh")
     fog_active = False
@@ -6567,6 +6860,8 @@ def _visibility_status_events(records: List[Dict[str, Any]], language: str) -> L
     latest_active = None
     latest_resolved = None
     latest_out_of_body = None
+    first_out_of_body = None
+    out_of_body_ids: List[int] = []
     active_ids: List[int] = []
 
     for record in sorted(records or [], key=lambda r: (r.get("window_id", 0), r.get("start_time", 0))):
@@ -6587,7 +6882,10 @@ def _visibility_status_events(records: List[Dict[str, Any]], language: str) -> L
             latest_resolved = record
             fog_active = False
         if out_of_body:
+            if first_out_of_body is None:
+                first_out_of_body = record
             latest_out_of_body = record
+            out_of_body_ids.append(int(record["window_id"]))
 
     events: List[Dict[str, Any]] = []
     if first_active or latest_resolved:
@@ -6623,15 +6921,17 @@ def _visibility_status_events(records: List[Dict[str, Any]], language: str) -> L
             })
 
     if latest_out_of_body:
+        start_record = first_out_of_body or latest_out_of_body
+        window_ids = sorted(set(out_of_body_ids or [int(latest_out_of_body["window_id"])]))
         events.append({
             "id": "event_visibility_out_of_body",
             "type": "visibility",
             "severity": "important",
             "title": "镜头移出体外" if zh else "Scope moved outside body",
             "summary": "镜头移出体外，画面切换至套管口或腹壁外场景。" if zh else "The scope is moved outside the body and the view switches to the trocar or extra-abdominal scene.",
-            "window_ids": [int(latest_out_of_body["window_id"])],
+            "window_ids": window_ids,
             "representative_window_id": int(latest_out_of_body["window_id"]),
-            "start_time": float(latest_out_of_body.get("start_time", 0) or 0),
+            "start_time": float(start_record.get("start_time", latest_out_of_body.get("start_time", 0)) or 0),
             "end_time": float(latest_out_of_body.get("end_time", latest_out_of_body.get("start_time", 0)) or 0),
             "confidence": 0.76,
             "source": "visibility-status",
@@ -6738,6 +7038,154 @@ Return strict JSON only, no markdown:
 Window summaries:
 {chr(10).join(window_lines)}
 """.strip()
+
+
+def _compact_clinical_summary_records(records: List[Dict[str, Any]], max_windows: int) -> List[Dict[str, Any]]:
+    """Keep broad temporal coverage while avoiding a prompt full of repeated windows."""
+    rows = sorted(records or [], key=lambda r: (float(r.get("start_time", 0) or 0), int(r.get("window_id", 0) or 0)))
+    if len(rows) <= max_windows:
+        return rows
+
+    step = max(1, len(rows) // max_windows)
+    sampled = rows[::step]
+    if sampled[-1].get("window_id") != rows[-1].get("window_id"):
+        sampled.append(rows[-1])
+    return sampled[:max_windows]
+
+
+def _format_clinical_summary_records(records: List[Dict[str, Any]]) -> str:
+    lines = []
+    for record in records:
+        summary = re.sub(r"\s+", " ", str(record.get("summary", "") or "")).strip()
+        if len(summary) > 360:
+            summary = summary[:357] + "..."
+        lines.append(
+            f"- id={record.get('window_id')} "
+            f"time={float(record.get('start_time', 0) or 0):.0f}-{float(record.get('end_time', 0) or 0):.0f}s "
+            f"phase={record.get('phase') or 'Unknown'} "
+            f"visibility={record.get('visibility') or 'clear'} "
+            f"summary={summary}"
+        )
+    return "\n".join(lines)
+
+
+def _format_clinical_summary_events(events: List[Dict[str, Any]], max_events: int) -> str:
+    rows = sorted(events or [], key=lambda e: (float(e.get("start_time", 0) or 0), int(e.get("representative_window_id", 0) or 0)))
+    lines = []
+    for event in rows[:max_events]:
+        title = re.sub(r"\s+", " ", str(event.get("title", "") or "")).strip()
+        summary = re.sub(r"\s+", " ", str(event.get("summary", "") or "")).strip()
+        lines.append(
+            f"- time={float(event.get('start_time', 0) or 0):.0f}-{float(event.get('end_time', 0) or 0):.0f}s "
+            f"type={event.get('type') or 'other'} severity={event.get('severity') or 'normal'} "
+            f"{title}: {summary}"
+        )
+    return "\n".join(lines) if lines else "（无独立事件节点输入）"
+
+
+def _build_clinical_video_summary_prompt(
+    video_title: str,
+    records: List[Dict[str, Any]],
+    events: List[Dict[str, Any]],
+    language: str,
+    max_events: int,
+) -> str:
+    if language.startswith("en"):
+        return f"""
+You are generating a doctor-facing Markdown review summary for one laparoscopic cholecystectomy video.
+
+Video: {video_title}
+
+Rules:
+1. Summarize this single video only. Do not merge with any other video.
+2. Do not write a window-by-window log. Extract clinical meaning from repeated windows.
+3. Required sections: Overall impression, Key phases, Key actions, CVS / safety checks, Bleeding and visibility events, Points requiring surgeon review.
+4. Focus on cystic duct/artery clipping and division, Hem-o-lok/titanium clips, specimen bagging/removal, scope outside body, fog/smoke, active bleeding, and hemostasis.
+5. Preserve uncertainty. If the data does not prove an event, say it requires source-video review.
+6. Do not output window ids. Use at most 6 concrete time ranges in the full report.
+7. Output concise English Markdown only.
+8. For CVS, do not state that CVS was absent or unclear if the input contains CVS assessment/safety events.
+   Phrase it as a system-supported CVS assessment milestone that still requires surgeon confirmation.
+9. Key event nodes are higher priority than repeated window rows. Merge repeated fog, bleeding, cleaning,
+   and visibility records into one clinical event range; do not list many short repeated time spans.
+
+Key event nodes:
+{_format_clinical_summary_events(events, max_events)}
+
+Window summary data:
+{_format_clinical_summary_records(records)}
+""".strip()
+
+    return f"""
+请基于下面的腹腔镜胆囊切除术窗口摘要，为单个视频生成医生复盘用的 Markdown 精要总结。
+
+视频：{video_title}
+
+要求：
+1. 只总结这一个视频，不能和其他视频合并。
+2. 不要写成流水账，不要逐窗口复述；相邻重复内容要归并成阶段或临床事件。
+3. 必须包含这些小节：整体判断、关键手术阶段、关键操作、CVS/安全核查、出血与视野事件、需要医生回看的不确定点。
+4. 重点关注胆囊管/胆囊动脉夹闭和切断、Hem-o-lok/钛夹、标本袋装袋/取出、镜头移出体外、起雾/烟雾、活动性出血和凝血控制。
+5. 保留不确定性；数据不能证明的内容必须写“需回看原片确认”，不能把模型结果写成临床定论。
+6. 不要输出窗口编号或 id；全文最多出现 6 个具体时间段。
+7. 关键操作只写临床重要动作，不要重复写“可见器械”。
+8. CVS部分：如果输入中已有CVS评估/安全核查/关键安全视野事件，不要写“CVS未明确”或“未达成”这类绝对否定；
+   应写成“系统提示已形成CVS评估/安全核查节点，仍需医生回看确认三要素是否充分满足”。
+9. 关键事件节点优先于逐窗口摘要；重复出现的起雾、凝血、清理、体外视野等窗口必须合并成一个临床事件时间段，
+   不要罗列多个零碎时间点。
+10. 输出中文 Markdown，控制在 700-1000 个中文字符左右。
+
+关键事件节点：
+{_format_clinical_summary_events(events, max_events)}
+
+窗口摘要数据：
+{_format_clinical_summary_records(records)}
+""".strip()
+
+
+async def _call_clinical_summary_llm(prompt: str, language: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    provider = cfg.get("provider") or "gemini"
+    model_name = cfg.get("model_name") or "gemini-2.5-flash"
+    max_tokens = int(cfg.get("max_tokens") or 2200)
+    temperature = float(cfg.get("temperature", 0.0))
+    system_prompt = (
+        "你是资深腹腔镜胆囊切除术视频复盘助手，只输出专业、审慎的Markdown。"
+        if language.startswith("zh")
+        else "You are a senior laparoscopic cholecystectomy video review assistant. Output professional Markdown only."
+    )
+
+    if provider == "glm":
+        client = get_glm_client()
+        return await client.chat(
+            message=prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            disable_thinking=True,
+        )
+
+    if provider in {"openai", "gpt", "openai_compatible"}:
+        return await _call_openai_compatible_event_nodes(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            event_cfg=cfg,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    from ..services.gemini_client import GeminiClient
+
+    client = GeminiClient(
+        model_name=model_name,
+        thinking_level=cfg.get("thinking_level") or "none",
+        max_tokens=max_tokens,
+    )
+    return await client.chat(
+        message=prompt,
+        system_prompt=system_prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 async def _call_openai_compatible_event_nodes(
@@ -6978,6 +7426,7 @@ async def get_event_nodes(
         events = _normalize_event_nodes(parsed.get("events", []), records, language, "llm")
         if not events:
             raise RuntimeError("LLM returned no usable event nodes")
+        events = _ensure_required_event_nodes(events, records, language)
         events = _merge_visibility_status_events(events, records, language)
 
         response = {
@@ -7003,13 +7452,134 @@ async def get_event_nodes(
             "window_count": len(records),
             "signature": signature,
             "error": str(exc),
-            "events": _merge_visibility_status_events(_fallback_event_nodes(records, language, str(exc)), records, language),
+            "events": _merge_visibility_status_events(
+                _ensure_required_event_nodes(_fallback_event_nodes(records, language, str(exc)), records, language),
+                records,
+                language,
+            ),
         }
 
     if response.get("source") == "llm":
         if len(event_node_cache) > 128:
             event_node_cache.pop(next(iter(event_node_cache)), None)
         event_node_cache[cache_key] = response
+    return response
+
+
+@router.post("/clinical-summary/{session_id}")
+async def generate_clinical_video_summary(
+    session_id: str,
+    request: ClinicalSummaryRequest,
+    db: Session = Depends(get_db)
+):
+    """Generate one doctor-facing Markdown report for one analyzed video session."""
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    config = load_config()
+    summary_cfg = dict(config.get("services", {}).get("clinical_summary", {}) or {})
+    translation_cfg = config.get("services", {}).get("translation", {})
+    language = (request.language or "zh").lower()
+    if not language.startswith("en"):
+        language = "zh"
+
+    configured_max = int(summary_cfg.get("max_windows", 180) or 180)
+    max_windows = int(request.max_windows or configured_max)
+    max_windows = max(20, min(max_windows, 260))
+    max_events = int(request.max_events or summary_cfg.get("max_events", 40) or 40)
+    max_events = max(4, min(max_events, 80))
+
+    raw_summaries = get_summaries_by_session(db, session["session_id"])
+    records = [
+        item for item in (_normalize_summary_for_event_nodes(s) for s in raw_summaries)
+        if item and item.get("summary")
+    ]
+    records.sort(key=lambda r: (float(r.get("start_time", 0) or 0), int(r.get("window_id", 0) or 0)))
+    if not records:
+        raise HTTPException(400, "No window summaries are available for this session")
+
+    compact_records = _compact_clinical_summary_records(records, max_windows)
+    signature = _event_nodes_signature(compact_records)
+    cache_key = (session_id, language, max_windows, signature)
+    if not request.force and cache_key in clinical_summary_cache:
+        return {
+            **clinical_summary_cache[cache_key],
+            "cached": True,
+        }
+
+    # Event nodes are generated from the same session records; no video-name,
+    # window-number, or timestamp-specific rules are used here.
+    try:
+        event_response = await get_event_nodes(
+            session_id,
+            EventNodesRequest(language=language, force=request.force, max_windows=min(max_windows, 180)),
+            db,
+        )
+        events = list(event_response.get("events") or [])
+    except Exception as exc:
+        logger.warning(f"[ClinicalSummary] Event-node generation failed for session {session_id}: {exc}")
+        events = _merge_visibility_status_events(_fallback_event_nodes(compact_records, language, str(exc)), compact_records, language)
+
+    video_title = (
+        request.video_title
+        or session.get("video_name")
+        or session.get("video_path")
+        or session_id
+    )
+    prompt = _build_clinical_video_summary_prompt(
+        video_title=str(video_title),
+        records=compact_records,
+        events=events,
+        language=language,
+        max_events=max_events,
+    )
+
+    provider = summary_cfg.get("provider") or translation_cfg.get("provider", "gemini")
+    if "provider" not in summary_cfg:
+        summary_cfg["provider"] = provider
+    if "model_name" not in summary_cfg and translation_cfg.get("model_name"):
+        summary_cfg["model_name"] = translation_cfg.get("model_name")
+    if "thinking_level" not in summary_cfg and translation_cfg.get("thinking_level"):
+        summary_cfg["thinking_level"] = translation_cfg.get("thinking_level")
+
+    try:
+        llm_result = await _call_clinical_summary_llm(prompt, language, summary_cfg)
+        markdown = str(llm_result.get("text") or "").strip()
+        if not llm_result.get("success") or not markdown:
+            raise RuntimeError(llm_result.get("error") or "empty clinical summary response")
+    except Exception as exc:
+        logger.error(f"[ClinicalSummary] LLM failed for session {session_id}: {exc}")
+        raise HTTPException(502, f"Clinical summary LLM failed: {exc}") from exc
+
+    if not markdown.lstrip().startswith("#"):
+        heading = f"# {video_title} 临床精要总结" if language.startswith("zh") else f"# {video_title} Clinical Review Summary"
+        markdown = f"{heading}\n\n{markdown}"
+
+    safe_title = re.sub(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+", "_", str(video_title)).strip("_")[:80] or "video"
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(request.output_dir) if request.output_dir else Path("docs/clinical_summaries")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{safe_title}_{session_id}_{timestamp}_{language}.md"
+    output_path.write_text(markdown.rstrip() + "\n", encoding="utf-8")
+
+    response = {
+        "success": True,
+        "session_id": session_id,
+        "language": language,
+        "cached": False,
+        "provider": provider,
+        "model": summary_cfg.get("model_name") or llm_result.get("model"),
+        "window_count": len(records),
+        "used_window_count": len(compact_records),
+        "event_count": len(events),
+        "signature": signature,
+        "output_path": str(output_path.resolve()),
+        "markdown": markdown,
+    }
+    if len(clinical_summary_cache) > 64:
+        clinical_summary_cache.pop(next(iter(clinical_summary_cache)), None)
+    clinical_summary_cache[cache_key] = response
     return response
 
 

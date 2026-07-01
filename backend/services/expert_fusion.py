@@ -327,7 +327,8 @@ def _detect_hemlok_clip_action(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
     This is intentionally a visual cue, not a trained Hem-o-lok expert model or
     a standalone diagnosis. Surgical tissue, irrigation tips and glare can
     produce similar bright regions, so downstream summary code still combines
-    this score with phase/time/tool context before surfacing it to users.
+    this score with phase, tool context and the external VLM reviewer before
+    surfacing it to users.
     """
     frame_hits: List[Dict[str, Any]] = []
     for idx, frame in enumerate(frames_bgr):
@@ -340,7 +341,7 @@ def _detect_hemlok_clip_action(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
 
         hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
         hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-        # Hem-o-lok clips in the demo footage are pale pink/white plastic. Keep
+        # Hem-o-lok-style clips are often pale pink/white plastic. Keep
         # moderately saturated red-pink/orange bright regions and drop border
         # glare from the circular endoscopic mask.
         mask = (
