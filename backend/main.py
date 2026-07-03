@@ -97,6 +97,7 @@ async def startup_event():
                 from .services.phase_service import get_phase_service
                 from .services.triplet_service import get_triplet_service
                 from .services.yolo_service import get_yolo_service
+                from .services.clip_detector_service import get_clip_detector_service
                 # Ultralytics mutates CUDA_VISIBLE_DEVICES when loading a
                 # selected GPU. Initialize torch-native experts first so their
                 # physical cuda:N device handles are created before YOLO narrows
@@ -104,9 +105,10 @@ async def startup_event():
                 p = get_phase_service()
                 t = get_triplet_service()
                 y = get_yolo_service()
-                return bool(y), bool(p), bool(t)
-            y, p, t = await loop.run_in_executor(None, _sync_load)
-            logger.info(f"[Startup] Experts preloaded — yolo={y} phase={p} triplet={t}")
+                c = get_clip_detector_service()
+                return bool(y), bool(c), bool(p), bool(t)
+            y, c, p, t = await loop.run_in_executor(None, _sync_load)
+            logger.info(f"[Startup] Experts preloaded — yolo={y} clip_detector={c} phase={p} triplet={t}")
         except Exception as e:
             logger.warning(f"[Startup] Expert preload failed (will lazy-load): {e}")
     _asyncio.create_task(_preload_experts())

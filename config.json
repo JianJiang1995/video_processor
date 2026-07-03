@@ -160,6 +160,14 @@
             "confidence_threshold": 0.25,
             "comment": "YOLO26s tool detection - replaces SurgR1 tool_localization for real-time streams"
         },
+        "clip_detector": {
+            "enabled": true,
+            "model_path": "/home/user/proj/video_processor/video_stream_app/models/clip_detector/yolo_clip_v1/weights/best.pt",
+            "device": "cuda:1",
+            "confidence_threshold": 0.25,
+            "max_area_ratio": 0.12,
+            "comment": "Dedicated one-class deployed surgical clip detector; detects clip bodies, not clipper instruments"
+        },
         "phase": {
             "enabled": true,
             "model_path": "/home/user/proj/surg_agent/phase_expert/runs/cholec_phase/best.pt",

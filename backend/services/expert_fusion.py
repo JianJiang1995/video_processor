@@ -1,4 +1,4 @@
-"""Expert Fusion — run YOLO + Phase + Triplet on a window's frames and
+"""Expert Fusion — run YOLO + ClipDetector + Phase + Triplet on a window's frames and
 produce a compact text summary suitable for Stage-1 (text-only) Gemini integration.
 
 Call pattern (in analysis.py window loop):
@@ -8,6 +8,7 @@ Call pattern (in analysis.py window loop):
     expert_ctx = run_experts_on_window(window_frames_bgr)
     # expert_ctx["text"]  → paste into Gemini prompt
     # expert_ctx["yolo"]  → keep for frontend overlay
+    # expert_ctx["clip_detector"] → deployed surgical clip candidates
     # expert_ctx["phase"] → dominant phase
     # expert_ctx["triplet"]
 
@@ -191,6 +192,32 @@ def _aggregate_yolo(per_frame: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
         "tools": [{"label": lbl, "frames_seen": c} for lbl, c in label_counts.most_common()],
         "total_detections": total,
         "frames_analyzed": len(per_frame),
+    }
+
+
+def _aggregate_clip_detector(per_frame: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Aggregate per-frame deployed clip detections."""
+    total = 0
+    frames_seen = 0
+    max_conf = 0.0
+    top: List[Dict[str, Any]] = []
+    for frame_index, dets in enumerate(per_frame):
+        if dets:
+            frames_seen += 1
+        for det in dets:
+            total += 1
+            conf = _safe_float(det.get("confidence"), 0.0)
+            max_conf = max(max_conf, conf)
+            item = dict(det)
+            item["frame_index"] = frame_index
+            top.append(item)
+    top.sort(key=lambda d: _safe_float(d.get("confidence"), 0.0), reverse=True)
+    return {
+        "detections_total": total,
+        "frames_seen": frames_seen,
+        "frames_analyzed": len(per_frame),
+        "max_confidence": round(max_conf, 3),
+        "top_detections": top[:8],
     }
 
 
@@ -447,6 +474,7 @@ def _detect_hemlok_clip_action(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
 
 def _format_text(
     yolo: Dict[str, Any],
+    clip_detector: Dict[str, Any],
     phase: Dict[str, Any],
     triplet: Dict[str, Any],
     short_action: Optional[Dict[str, Any]] = None,
@@ -465,6 +493,13 @@ def _format_text(
         lines.append(f"[YOLO Expert] 检出工具 (帧出现次数): {tool_str}")
     else:
         lines.append("[YOLO Expert] 未检出工具")
+    if clip_detector and clip_detector.get("detections_total", 0) > 0:
+        lines.append(
+            "[Clip Detector] 检出已部署手术夹候选 "
+            f"{clip_detector.get('frames_seen', 0)}/{clip_detector.get('frames_analyzed', 0)} 帧，"
+            f"总数 {clip_detector.get('detections_total', 0)}，"
+            f"最高置信度 {clip_detector.get('max_confidence', 0):.2f}"
+        )
     if triplet and triplet.get("triplet"):
         target_hint = _triplet_target_hint(triplet)
         target_cn = "胆囊动脉" if target_hint["label"] == "cystic_artery" else "胆囊管"
@@ -497,12 +532,14 @@ def run_experts_on_window(
     Returns a dict with:
         - "text":    formatted text for Gemini prompt injection
         - "yolo":    aggregated YOLO result (frontend overlay friendly)
+        - "clip_detector": deployed surgical clip candidates
         - "phase":   aggregated Phase result (dominant label + conf)
         - "triplet": raw Triplet recognition (top-K I/V/T/IVT)
         - "available": list of experts that actually produced output
     """
     out: Dict[str, Any] = {
         "yolo": {},
+        "clip_detector": {},
         "phase": {},
         "triplet": {},
         "short_action": {},
@@ -554,6 +591,20 @@ def run_experts_on_window(
         except Exception as e:
             logger.warning(f"[ExpertFusion] YOLO skipped: {e}")
 
+    # Dedicated deployed clip detector. This is intentionally separate from
+    # the tool YOLO model: it detects clip bodies, not clipper instruments.
+    try:
+        from .clip_detector_service import get_clip_detector_service
+        clip_detector = get_clip_detector_service()
+        if clip_detector is not None and clip_detector.is_ready:
+            per_frame_clip_dets = [clip_detector.detect(f) for f in frames_bgr]
+            out["clip_detector"] = _aggregate_clip_detector(per_frame_clip_dets)
+            out["clip_detector"]["per_frame"] = per_frame_clip_dets
+            if out["clip_detector"].get("detections_total", 0) > 0:
+                out["available"].append("clip_detector")
+    except Exception as e:
+        logger.warning(f"[ExpertFusion] Clip detector skipped: {e}")
+
     try:
         short_action = _detect_short_action(frames_bgr)
         out["short_action"] = short_action
@@ -571,7 +622,7 @@ def run_experts_on_window(
         logger.warning(f"[ExpertFusion] Hem-o-lok cue skipped: {e}")
 
     out["text"] = _format_text(
-        out["yolo"], out["phase"], out["triplet"], out["short_action"], out["hemlok_clip"]
+        out["yolo"], out["clip_detector"], out["phase"], out["triplet"], out["short_action"], out["hemlok_clip"]
     )
     logger.info(f"[ExpertFusion] available={out['available']}")
     return out

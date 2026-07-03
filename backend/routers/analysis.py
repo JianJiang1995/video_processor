@@ -4940,6 +4940,7 @@ async def glm_summarization_task(
                                     "tools": expert_pack_base.get("yolo", {}).get("tools", []),
                                     "total_detections": expert_pack_base.get("yolo", {}).get("total_detections", 0),
                                 },
+                                "clip_detector": expert_pack_base.get("clip_detector", experts.get("clip_detector", {})),
                                 "short_action": expert_pack_base.get("short_action", experts.get("short_action", {})),
                                 "hemlok_clip": expert_pack_base.get("hemlok_clip", experts.get("hemlok_clip", {})),
                                 "local_visibility": expert_pack_base.get("local_visibility", experts.get("local_visibility", {})),
@@ -4956,7 +4957,7 @@ async def glm_summarization_task(
                             model_calls.setdefault("stage1_local", {
                                 "count": 0,
                                 "provider": "local",
-                                "model": "yolo+phase+triplet+opencv_cues",
+                                "model": "yolo+clip_detector+phase+triplet+opencv_cues",
                             })
                             model_calls["open_visual_gpt"] = {
                                 "count": int(open_vlm_hint.get("external_call_count") or 0),
@@ -5115,6 +5116,7 @@ async def glm_summarization_task(
                                             "tools": expert_pack.get("yolo", {}).get("tools", []),
                                             "total_detections": expert_pack.get("yolo", {}).get("total_detections", 0),
                                         },
+                                        "clip_detector": expert_pack.get("clip_detector", {}),
                                         "short_action": expert_pack.get("short_action", {}),
                                         "hemlok_clip": expert_pack.get("hemlok_clip", {}),
                                         "local_visibility": expert_pack.get("local_visibility", {}),
@@ -5125,7 +5127,7 @@ async def glm_summarization_task(
                                         "stage1_local": {
                                             "count": 0,
                                             "provider": "local",
-                                            "model": "yolo+phase+triplet+opencv_cues",
+                                            "model": "yolo+clip_detector+phase+triplet+opencv_cues",
                                         },
                                         "stage1_text_vlm": {
                                             "count": stage1_text_vlm_count,
@@ -5387,7 +5389,7 @@ async def glm_summarization_task(
                         model_calls.setdefault("stage1_local", {
                             "count": 0,
                             "provider": "local",
-                            "model": "yolo+phase+triplet+opencv_cues",
+                            "model": "yolo+clip_detector+phase+triplet+opencv_cues",
                         })
                         model_calls.setdefault("open_visual_gpt", {
                             "count": 0,
@@ -5452,6 +5454,7 @@ async def glm_summarization_task(
                                     "tools": expert_pack.get("yolo", {}).get("tools", []),
                                     "total_detections": expert_pack.get("yolo", {}).get("total_detections", 0),
                                 },
+                                "clip_detector": expert_pack.get("clip_detector", {}),
                                 "short_action": expert_pack.get("short_action", {}),
                                 "hemlok_clip": expert_pack.get("hemlok_clip", {}),
                                 "local_visibility": expert_pack.get("local_visibility", {}),
