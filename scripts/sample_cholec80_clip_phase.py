@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 
 def _parse_time(value: str) -> float:
@@ -80,6 +80,42 @@ def _safe_stem(video_path: Path, sec: float) -> str:
     return f"{stem}_{sec:08.2f}s".replace(".", "p")
 
 
+def _write_contact_sheet(output: Path, rows: List[Dict], max_images: int, thumb_width: int) -> None:
+    if max_images <= 0:
+        return
+    chosen = rows[:max_images]
+    thumbs = []
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+    except Exception:
+        font = ImageFont.load_default()
+    for row in chosen:
+        image_path = Path(str(row.get("image", "")))
+        if not image_path.exists():
+            continue
+        image = Image.open(image_path).convert("RGB")
+        ratio = thumb_width / float(image.width)
+        thumb = image.resize((thumb_width, max(1, int(image.height * ratio))), Image.Resampling.LANCZOS)
+        draw = ImageDraw.Draw(thumb)
+        label = f"{Path(str(row.get('video', ''))).stem} {float(row.get('time_sec', 0.0)):.1f}s"
+        bbox = draw.textbbox((4, 4), label, font=font)
+        draw.rectangle(bbox, fill=(0, 0, 0))
+        draw.text((4, 4), label, fill=(255, 255, 255), font=font)
+        thumbs.append(thumb)
+    if not thumbs:
+        return
+    cols = max(1, min(5, len(thumbs)))
+    rows_count = (len(thumbs) + cols - 1) // cols
+    cell_w = max(t.width for t in thumbs)
+    cell_h = max(t.height for t in thumbs)
+    sheet = Image.new("RGB", (cols * cell_w, rows_count * cell_h), (20, 20, 20))
+    for idx, thumb in enumerate(thumbs):
+        x = (idx % cols) * cell_w
+        y = (idx // cols) * cell_h
+        sheet.paste(thumb, (x, y))
+    sheet.save(output / "contact_sheet.jpg", quality=90)
+
+
 def sample(args: argparse.Namespace) -> None:
     video_dir = Path(args.video_dir)
     output = Path(args.output)
@@ -108,6 +144,7 @@ def sample(args: argparse.Namespace) -> None:
         rows = rows[: args.max_total]
 
     metadata_path = output / "frames.jsonl"
+    written_rows: List[Dict] = []
     with metadata_path.open("w", encoding="utf-8") as f:
         for idx, row in enumerate(rows, start=1):
             video = Path(row["video"])
@@ -121,6 +158,7 @@ def sample(args: argparse.Namespace) -> None:
             row = dict(row)
             row["image"] = str(image_path)
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            written_rows.append(row)
             print(f"[cholec80-sample] {idx}/{len(rows)} {video.name}@{sec:.1f}s", flush=True)
 
     summary = {
@@ -132,6 +170,7 @@ def sample(args: argparse.Namespace) -> None:
         "phase_ranges_by_video": dict(phase_counts),
     }
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_contact_sheet(output, written_rows, args.contact_sheet_max, args.contact_sheet_thumb_width)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
@@ -146,6 +185,8 @@ def main() -> None:
     parser.add_argument("--max-total", type=int, default=240)
     parser.add_argument("--max-videos", type=int, default=0)
     parser.add_argument("--seed", type=int, default=43)
+    parser.add_argument("--contact-sheet-max", type=int, default=60)
+    parser.add_argument("--contact-sheet-thumb-width", type=int, default=320)
     parser.add_argument("--clean", action="store_true")
     args = parser.parse_args()
     sample(args)

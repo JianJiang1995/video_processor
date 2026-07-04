@@ -75,11 +75,46 @@ def _pil_to_data_url(image: Image.Image, max_width: int = 1280, quality: int = 8
     return f"data:image/jpeg;base64,{encoded}"
 
 
-def _prompt() -> str:
+def _prompt(prompt_profile: str = "default") -> str:
+    if prompt_profile == "clip-focused":
+        return """You are creating high-precision object-detection training labels for deployed surgical clips in laparoscopic cholecystectomy frames.
+
+Find only visible deployed clip BODIES from this ontology:
+- hemolok_clip: deployed white/ivory opaque Hem-o-lok locking clip body. It is a thick plastic locking clip with a rigid bar/lock shape, often C/V/U shaped or a short white locking segment on a duct or vessel.
+- titanium_clip: deployed metal titanium ligating clip body. It is a small short silver/gray metallic clip, often V/U shaped, parallel-pronged, or a rigid short bright metal piece on a duct or vessel.
+- specular_highlight: isolated glare/highlight that might be confused with a clip.
+
+Do not label ordinary instruments, tissue, fat, ducts, vessels, smoke, blood stains, gauze, shadows, or long applier jaws/shafts.
+
+Clip-specific rules:
+1. Label a clip only when the released/deployed clip body itself is visible.
+2. White/ivory thick plastic locking clip body -> hemolok_clip.
+3. Thin silver/gray short metallic deployed clip body -> titanium_clip.
+4. Do not label blue, purple, green, or unknown-color polymer clips as hemolok_clip in this dataset.
+5. Do not label clip applier jaws or instrument tips as titanium_clip.
+6. Do not label bright wet reflections as titanium_clip unless the rigid short metallic clip shape is clearly visible.
+7. Use tight boxes around only the deployed clip body, not the duct, vessel, surrounding tissue, or instrument jaw.
+8. If a possible clip is too occluded or ambiguous, use confidence below 0.55 or omit it.
+9. If the frame has no clear deployed clip body, return an empty objects list.
+
+Coordinates must be normalized integers in the original image coordinate system from 0 to 1000: [x1,y1,x2,y2].
+
+Return ONLY valid JSON:
+{
+  "objects": [
+    {
+      "label": "hemolok_clip|titanium_clip|specular_highlight",
+      "box_1000": [0, 0, 1000, 1000],
+      "confidence": 0.0,
+      "reason": "brief visual reason"
+    }
+  ]
+}
+"""
     return """You are creating high-precision object-detection training labels for laparoscopic cholecystectomy frames.
 
 Find visible objects from this fixed ontology:
-- hemolok_clip: deployed plastic Hem-o-lok locking clip body, usually opaque white/ivory/green/blue/purple, thick and rounded with a lock/bar shape.
+- hemolok_clip: deployed white/ivory opaque Hem-o-lok locking clip body, thick and rounded with a lock/bar shape.
 - titanium_clip: deployed metal titanium ligating clip body, small short silver/gray metallic V/U/parallel clip pieces.
 - clip_applier: clip applier instrument jaw or shaft, including a titanium clip applier before releasing the clip.
 - gauze: surgical gauze, sponge, fabric, mesh, or bag-like material.
@@ -90,13 +125,14 @@ Find visible objects from this fixed ontology:
 High-precision rules:
 1. Return no object for tissue, fat, ducts, vessels, smoke, dark shadows, vague shapes, and old blood stains.
 2. Label hemolok_clip or titanium_clip only when the deployed clip BODY is visible. Do not confuse long jaws/shafts with a deployed clip.
-3. White/ivory thick plastic clip body is hemolok_clip. Thin silver/gray short metallic clip body is titanium_clip.
+3. White/ivory thick plastic locking clip body is hemolok_clip. Thin silver/gray short metallic clip body is titanium_clip.
 4. If a frame contains no clear ontology object, return an empty objects list.
 5. Use tight boxes around only the object body. Coordinates must be normalized integers in the original image coordinate system from 0 to 1000: [x1,y1,x2,y2].
 6. Each confidence must be between 0 and 1. Be conservative; use confidence below 0.55 for uncertain objects.
 7. For training data quality, false positives are worse than missing a hard case. If unsure, omit the object.
 8. Do not label a clip applier as a titanium clip. Clip applier jaws/shafts are much larger and longer than the released clip body.
 9. Do not label a bright wet reflection as titanium_clip unless a rigid short metallic clip shape is clearly visible.
+10. Do not merge colored polymer clips into hemolok_clip for this dataset. Blue, purple, green, or unknown-color polymer clips should be omitted unless the task explicitly adds a separate polymer_clip class.
 
 Return ONLY valid JSON:
 {
@@ -173,7 +209,15 @@ def _verification_schema() -> Dict[str, Any]:
 
 
 class OpenAIFrameAnnotator:
-    def __init__(self, model_name: str, api_key_env: str, temperature: float, max_tokens: int, base_url: str = ""):
+    def __init__(
+        self,
+        model_name: str,
+        api_key_env: str,
+        temperature: float,
+        max_tokens: int,
+        base_url: str = "",
+        prompt_profile: str = "default",
+    ):
         _load_dotenv()
         try:
             from openai import OpenAI
@@ -190,6 +234,7 @@ class OpenAIFrameAnnotator:
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.prompt_profile = prompt_profile
 
     def annotate(self, image: Image.Image) -> Dict[str, Any]:
         response = self.client.chat.completions.create(
@@ -202,7 +247,7 @@ class OpenAIFrameAnnotator:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": _prompt()},
+                        {"type": "text", "text": _prompt(self.prompt_profile)},
                         {"type": "image_url", "image_url": {"url": _pil_to_data_url(image), "detail": "high"}},
                     ],
                 },
@@ -227,6 +272,7 @@ class OpenAIResponsesFrameAnnotator:
         reasoning_effort: str = "none",
         image_detail: str = "high",
         verifier_model_name: str = "",
+        prompt_profile: str = "default",
     ):
         _load_dotenv()
         try:
@@ -247,6 +293,7 @@ class OpenAIResponsesFrameAnnotator:
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self.image_detail = image_detail
+        self.prompt_profile = prompt_profile
 
     def _create(self, *, model: str, prompt: str, image: Image.Image, schema_name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
         request: Dict[str, Any] = {
@@ -285,7 +332,7 @@ class OpenAIResponsesFrameAnnotator:
     def annotate(self, image: Image.Image) -> Dict[str, Any]:
         return self._create(
             model=self.model_name,
-            prompt=_prompt(),
+            prompt=_prompt(self.prompt_profile),
             image=image,
             schema_name="surgical_object_annotations",
             schema=_annotation_schema(),
@@ -304,6 +351,24 @@ class OpenAIResponsesFrameAnnotator:
                     "reason": obj.get("reason", ""),
                 }
             )
+        if self.prompt_profile == "clip-focused":
+            rules = """1. Keep only deployed clip BODY boxes that are good enough for detector training.
+2. Reject tissue, fat, ducts, vessels, old blood stains, shadows, smoke, glare, ordinary instruments, and long applier jaws/shafts.
+3. Hem-o-lok must be a visible deployed white/ivory plastic locking clip body. Reject blue/green/purple polymer clips for this dataset.
+4. Titanium clip must be a small short silver/gray metallic deployed clip body.
+5. If the proposed box is a reflection, use specular_highlight only when the box clearly marks glare; otherwise reject.
+6. If the box is too broad, tighten it around only the clip body if possible; otherwise reject it.
+7. If unsure, reject."""
+        else:
+            rules = """1. Keep only boxes that are good enough for detector training.
+2. Reject tissue, fat, ducts, vessels, old blood stains, shadows, smoke, glare, and ordinary instruments mislabeled as clips.
+3. Hem-o-lok must be a visible deployed white/ivory plastic locking clip body. Reject blue/green/purple polymer clips for this dataset.
+4. Titanium clip must be a small short silver/gray metallic deployed clip body. Long instrument jaws/shafts are not titanium clips.
+5. Clip applier must be the applier jaw or shaft, not the released clip body.
+6. For active_bleeding, keep only meaningful fresh flowing/pooling/spraying blood.
+7. If the label is wrong but the box contains another ontology object, use decision relabel and correct the label.
+8. If the box is too broad, tighten it if possible; otherwise reject it.
+9. If unsure, reject."""
         prompt = f"""Review proposed surgical object labels for training data.
 
 The image contains numbered boxes corresponding to the proposed objects below.
@@ -312,15 +377,7 @@ Proposed objects:
 {json.dumps(proposed, ensure_ascii=False, indent=2)}
 
 Verification rules:
-1. Keep only boxes that are good enough for detector training.
-2. Reject tissue, fat, ducts, vessels, old blood stains, shadows, smoke, glare, and ordinary instruments mislabeled as clips.
-3. Hem-o-lok must be a visible deployed plastic locking clip body. White/ivory plastic clips are Hem-o-lok; blue/green/purple plastic clips are allowed only if a rigid clip body is clear.
-4. Titanium clip must be a small short silver/gray metallic deployed clip body. Long instrument jaws/shafts are not titanium clips.
-5. Clip applier must be the applier jaw or shaft, not the released clip body.
-6. For active_bleeding, keep only meaningful fresh flowing/pooling/spraying blood.
-7. If the label is wrong but the box contains another ontology object, use decision relabel and correct the label.
-8. If the box is too broad, tighten it if possible; otherwise reject it.
-9. If unsure, reject.
+{rules}
 
 Return one verification object for every proposed source_index. Do not add new boxes in this review pass."""
         return self._create(
@@ -381,7 +438,6 @@ def _normalize_label(label: Any) -> str:
         "hem_o_lok_clip": "hemolok_clip",
         "hemolock_clip": "hemolok_clip",
         "hemlok_clip": "hemolok_clip",
-        "polymer_clip": "hemolok_clip",
         "metal_clip": "titanium_clip",
         "titanium": "titanium_clip",
         "applier": "clip_applier",
@@ -659,6 +715,7 @@ def annotate(args: argparse.Namespace) -> None:
             reasoning_effort=args.reasoning_effort,
             image_detail=args.image_detail,
             verifier_model_name=args.verifier_model,
+            prompt_profile=args.prompt_profile,
         )
     else:
         annotator = OpenAIFrameAnnotator(
@@ -667,6 +724,7 @@ def annotate(args: argparse.Namespace) -> None:
             temperature=temperature if temperature is not None else 0.0,
             max_tokens=args.max_tokens,
             base_url=args.base_url,
+            prompt_profile=args.prompt_profile,
         )
     counts = {name: 0 for name in CLASS_NAMES}
     rejected_counts = {name: 0 for name in CLASS_NAMES + ["unknown"]}
@@ -785,6 +843,7 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=1000)
     parser.add_argument("--reasoning-effort", default="none", choices=["none", "minimal", "low", "medium", "high", "xhigh"])
     parser.add_argument("--image-detail", default="high", choices=["low", "high", "auto", "original"])
+    parser.add_argument("--prompt-profile", default="default", choices=["default", "clip-focused"])
     parser.add_argument("--interval-sec", type=float, default=12.0)
     parser.add_argument("--max-frames-per-video", type=int, default=30)
     parser.add_argument("--max-total-frames", type=int, default=0)

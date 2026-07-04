@@ -133,12 +133,27 @@ def curate(args: argparse.Namespace) -> None:
 
     positives: List[Tuple[Path, Dict[str, Any], List[Dict[str, Any]]]] = []
     negatives: List[Tuple[Path, Dict[str, Any]]] = []
+    last_positive_time: Dict[Tuple[str, str], float] = {}
     for source, ann in _iter_annotations(sources):
         image_path = _source_image(source, ann)
         if not image_path.exists():
             continue
         kept = [obj for obj in ann.get("objects") or [] if _keep_clip(obj, args)]
         if kept:
+            if args.min_positive_gap_sec > 0:
+                video_key = str(ann.get("video") or image_path)
+                try:
+                    sec = float(ann.get("time_sec", 0.0))
+                except Exception:
+                    sec = 0.0
+                labels = sorted({_norm_label(obj.get("label")) for obj in kept})
+                if labels and all(
+                    abs(sec - last_positive_time.get((video_key, label), -1_000_000.0)) < args.min_positive_gap_sec
+                    for label in labels
+                ):
+                    continue
+                for label in labels:
+                    last_positive_time[(video_key, label)] = sec
             positives.append((image_path, ann, kept))
         else:
             negatives.append((image_path, ann))
@@ -179,6 +194,7 @@ def curate(args: argparse.Namespace) -> None:
         "negative_images": len(negatives),
         "objects": dict(counts),
         "white_hemolok_only": args.white_hemolok_only,
+        "min_positive_gap_sec": args.min_positive_gap_sec,
     }
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -196,6 +212,7 @@ def main() -> None:
     parser.add_argument("--titanium-max-elongation", type=float, default=5.0)
     parser.add_argument("--negative-ratio", type=float, default=2.0)
     parser.add_argument("--val-every", type=int, default=5)
+    parser.add_argument("--min-positive-gap-sec", type=float, default=0.0)
     parser.add_argument("--white-hemolok-only", action="store_true")
     parser.add_argument("--clean", action="store_true")
     args = parser.parse_args()

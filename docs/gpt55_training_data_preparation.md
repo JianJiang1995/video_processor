@@ -340,10 +340,168 @@ Cholec80 GPT-5.5 拒绝结果：
 - 钛夹验证 recall 为 0，说明现有候选集无法支撑钛夹专家。
 - 当前 `config.json` 不应指向该权重。
 
+## Clip-focused 标注与 VID001 局部密采
+
+日期：2026-07-04
+
+新增能力：
+
+- `scripts/gpt_label_surgical_objects.py`
+  - 新增 `--prompt-profile clip-focused`
+  - 只关注已释放夹体，减少普通器械、出血、组织描述对 GPT 注意力的干扰
+  - 当前定义中，`hemolok_clip` 只表示白色/象牙色 Hem-o-lok 锁扣夹
+  - 蓝色/紫色/绿色聚合物夹不再自动归并成 `hemolok_clip`
+
+- `scripts/curate_surgical_gpt_labels.py`
+  - 新增 `--min-positive-gap-sec`
+  - 用于按视频和标签稀疏连续正样本，避免 1 秒级连续帧把训练集虚高
+
+- `scripts/sample_cholec80_clip_phase.py`
+  - 新增自动 `contact_sheet.jpg`，每轮抽样后可以直接肉眼审计样本区域
+
+### Cholec80 v2 抽样
+
+路径：`datasets/cholec80_clipping_samples_v2`
+
+命令：
+
+```bash
+/home/user/proj/video_processor/.venv/bin/python scripts/sample_cholec80_clip_phase.py \
+  --video-dir /data/cholec80/cholec80/videos \
+  --output datasets/cholec80_clipping_samples_v2 \
+  --phase ClippingCutting \
+  --margin-sec 45 \
+  --interval-sec 2 \
+  --max-per-range 80 \
+  --max-total 1000 \
+  --contact-sheet-max 80 \
+  --clean
+```
+
+结果：
+
+- 覆盖 80 个 Cholec80 视频
+- 写出 1000 帧
+- 审计拼图：`datasets/cholec80_clipping_samples_v2/contact_sheet.jpg`
+
+判断：
+
+- 样本区域基本正确，集中在胆囊管/胆囊动脉处理、夹闭和切断附近。
+- Cholec80 对白色 Hem-o-lok 帮助有限；probe 中 Hem-o-lok 保留为 0。
+- Cholec80 可以提供少量钛夹候选，但小钛夹仍容易和高光/组织边缘混淆。
+
+### Clip-focused probe
+
+Cholec80 80 帧 probe：
+
+- 路径：`datasets/cholec80_gpt55_clip_phase_v2_clipfocused_probe`
+- Hem-o-lok：0
+- 钛夹：5
+- specular_highlight：63
+- rejected Hem-o-lok：3
+- rejected 钛夹：13
+
+判断：
+
+- clip-focused prompt 能提升钛夹候选发现，但很多候选仍不适合训练。
+- Cholec80 不是白色 Hem-o-lok 的主要来源。
+
+本地夹子视频 100 帧 probe：
+
+- 路径：`datasets/local_clip_videos_gpt55_clipfocused_probe`
+- Hem-o-lok：0
+- 钛夹：1
+- specular_highlight：100
+
+判断：
+
+- 这批“夹子视频”里大量是蓝色/紫色聚合物夹或高光。
+- 因为当前 white-only 定义不把 colored polymer 归入 Hem-o-lok，所以它们不能增加白色 Hem-o-lok 训练样本。
+
+VID001 5 分钟附近 1 秒级密采：
+
+- 视频：`/home/user/proj/video_processor/test_data/2024-12-24_225315_VID001.mp4`
+- 区间：260-360 秒
+- 路径：`datasets/vid001_5min_gpt55_clipfocused_probe`
+- Hem-o-lok：79
+- 钛夹：1
+- specular_highlight：29
+- rejected Hem-o-lok：28
+
+判断：
+
+- 这是本轮最有效的数据来源。
+- Hem-o-lok audit 中多数框对准白色锁扣夹体，质量明显高于泛采样。
+- 唯一保留的钛夹是误标，不能纳入钛夹训练真值。
+
+### 新 high-precision 数据集
+
+路径：`datasets/surgical_clips_gpt55_vid0015min_high_precision_v1`
+
+来源：
+
+- `datasets/surgical_objects_gpt55_v1`
+- `datasets/surgical_objects_gpt55_clips_dense_v1`
+- `datasets/cholec80_gpt55_clip_phase_v1`
+- `datasets/vid001_5min_gpt55_clipfocused_probe`
+
+筛选：
+
+- `--white-hemolok-only`
+- Hem-o-lok 置信度 >= 0.72
+- 钛夹置信度 >= 0.68
+- 正样本最小间隔：2 秒
+
+结果：
+
+- 图片：150
+- 正样本图片：50
+- 负样本图片：100
+- Hem-o-lok：64
+- 钛夹：14
+- 审计拼图：`datasets/surgical_clips_gpt55_vid0015min_high_precision_v1/audit_sheet.jpg`
+
+判断：
+
+- Hem-o-lok 样本显著增加，但仍然多来自单个 VID001 时间段，域内多样性不足。
+- 钛夹仍只有 14 个，而且部分质量偏弱。
+- 这套数据可以继续作为实验集，不是最终训练集。
+
+### 新 YOLO 试训结果
+
+训练集：`datasets/surgical_clips_gpt55_vid0015min_high_precision_v1`
+
+模型路径：`models/clip_detector/yolo_surgical_clips_gpt55_vid0015min_high_precision_v1/weights/best.pt`
+
+结果：
+
+- Early stop：epoch 50
+- Best：epoch 25
+- overall precision：0.678
+- overall recall：0.125
+- overall mAP50：0.128
+- overall mAP50-95：0.0706
+- Hem-o-lok precision：0.356
+- Hem-o-lok recall：0.250
+- Hem-o-lok mAP50：0.255
+- Hem-o-lok mAP50-95：0.141
+- 钛夹 precision：1.000
+- 钛夹 recall：0.000
+- 钛夹 mAP50：0.000
+
+预测审计图：`runs/detect/runs/detect/audit/yolo_surgical_clips_gpt55_vid0015min_high_precision_v1_val_sheet.jpg`
+
+结论：
+
+- Hem-o-lok 比上一轮明显改善，但 recall 仍过低。
+- 预测图显示模型会在白色夹附近产生低置信候选和重复框，尚不能作为稳定专家。
+- 钛夹仍不可用。
+- 这个权重不应接入主流程。
+
 ## 后续建议
 
-1. 继续使用 Cholec80，但要扩大抽样，并把 GPT 标注分为候选标注与严格复核两轮。
-2. 对小钛夹优先做人工/GPT-5.5 强模型复核，不要只靠自动 verifier 阈值。
-3. 把类别拆清楚：`hemolok_clip` 只表示白色/象牙色锁扣夹；蓝色/紫色聚合物夹单独作为 `polymer_clip`；银灰小金属夹作为 `titanium_clip`。
-4. 每类累计至少 300 到 500 个审计通过的框后，再训练正式专家。
+1. Hem-o-lok：继续围绕 VID001/VID002 和完整手术视频里真实白色夹闭段做局部密采，避免只堆连续近重复帧。
+2. 钛夹：继续使用 Cholec80 和其它真实钛夹片段，但必须做更严格的人工/GPT 复核；现有 14 个钛夹框不足以训练。
+3. Colored polymer clip：不要再混入 `hemolok_clip`；如果业务需要识别，应新增 `polymer_clip` 类。
+4. 每类累计至少 300 到 500 个审计通过且跨视频多样的框后，再训练正式专家。
 5. 在正式专家可用前，实时流程里仍应让外部/本地 VLM 做一次合并判断，不要让未成熟 YOLO 专家覆盖分析结果。
