@@ -170,3 +170,180 @@
 3. 每类至少积累 300 到 500 个高质量框后再训练检测器。
 4. 暂时不要把本轮模型或数据直接接入主流程。
 
+## Cholec80 扩展尝试
+
+数据源：`/data/cholec80/cholec80/videos`
+
+新增脚本：
+
+- `scripts/sample_cholec80_clip_phase.py`
+  - 读取 Cholec80 `*-timestamp.txt` 分期文件
+  - 默认抽取 `ClippingCutting` 阶段，并在阶段前后增加时间 margin
+  - 输出抽帧图片、`frames.jsonl` 和 `summary.json`
+
+- `scripts/gpt_label_surgical_objects.py`
+  - 新增 `--frames-jsonl`，可以直接复用已抽好的帧和时间戳
+  - 这样 Cholec80 分期抽样与 GPT 标注可以分离，便于反复调 prompt 和阈值
+
+抽帧命令：
+
+```bash
+/home/user/proj/video_processor/.venv/bin/python scripts/sample_cholec80_clip_phase.py \
+  --video-dir /data/cholec80/cholec80/videos \
+  --output datasets/cholec80_clipping_samples_v1 \
+  --phase ClippingCutting \
+  --margin-sec 40 \
+  --interval-sec 4 \
+  --max-per-range 32 \
+  --max-total 240 \
+  --clean
+```
+
+抽帧结果：
+
+- 覆盖 Cholec80 80 个视频
+- 80 个视频均存在 `ClippingCutting` 阶段
+- 写出 240 帧
+- 抽帧目录：`datasets/cholec80_clipping_samples_v1`
+- 抽帧审计图：`datasets/cholec80_clipping_samples_v1/contact_sheet.jpg`
+
+GPT-5.5 标注命令：
+
+```bash
+/home/user/proj/video_processor/.venv/bin/python scripts/gpt_label_surgical_objects.py \
+  --model gpt-5.5 \
+  --api-mode responses \
+  --reasoning-effort none \
+  --image-detail high \
+  --frames-jsonl datasets/cholec80_clipping_samples_v1/frames.jsonl \
+  --output datasets/cholec80_gpt55_clip_phase_v1 \
+  --max-total-frames 240 \
+  --min-confidence 0.50 \
+  --min-verified-confidence 0.60 \
+  --verify \
+  --write-audit \
+  --val-every 5 \
+  --clean
+```
+
+Cholec80 GPT-5.5 保留结果：
+
+- Hem-o-lok / polymer clip：3
+- 钛夹：6
+- 施夹器：70
+- 纱布：2
+- 活动性出血：24
+- 反光：13
+- 其他器械：207
+
+Cholec80 GPT-5.5 拒绝结果：
+
+- Hem-o-lok / polymer clip：8
+- 钛夹：29
+- 反光：113
+- 其他器械：30
+
+判断：
+
+- Cholec80 可以补充一些夹闭阶段画面，尤其是小金属夹和施夹器场景。
+- GPT-5.5 对小钛夹仍偏保守，很多视觉上可能正确的小夹子被二次复核拒绝。
+- 这批数据对训练有帮助，但不能直接解决 Hem-o-lok 和钛夹识别不稳定的问题。
+- 随机网页图片没有纳入训练集。原因是来源授权、域差异和手术画面上下文都不可控，容易污染检测器。
+
+## 合并 Cholec80 后的数据集
+
+### White-only 高精合并集
+
+路径：`datasets/surgical_clips_gpt55_cholec80_high_precision_v1`
+
+来源：
+
+- `datasets/surgical_objects_gpt55_v1`
+- `datasets/surgical_objects_gpt55_clips_dense_v1`
+- `datasets/cholec80_gpt55_clip_phase_v1`
+
+结果：
+
+- 图片：66
+- 正样本图片：22
+- 负样本图片：44
+- Hem-o-lok：19
+- 钛夹：14
+- 审计图：`datasets/surgical_clips_gpt55_cholec80_high_precision_v1/audit_sheet.jpg`
+
+判断：
+
+- 比原来的 white-only 集合有明显增加。
+- 但每类数量仍不足以训练可靠检测器。
+- 可以作为高精种子集，不建议直接训练上线。
+
+### Polymer candidate 合并候选集
+
+路径：`datasets/surgical_clips_gpt55_cholec80_candidate_v1`
+
+结果：
+
+- 图片：145
+- 正样本图片：58
+- 负样本图片：87
+- Hem-o-lok / polymer clip 候选：60
+- 钛夹：14
+- 审计图：`datasets/surgical_clips_gpt55_cholec80_candidate_v1/audit_sheet.jpg`
+
+判断：
+
+- 样本数比高精集合更多。
+- 包含蓝色/紫色聚合物夹，不能直接等同于业务里的白色 Hem-o-lok。
+- 如果要使用，需要先在 ontology 中明确 `hemolok_clip`、`polymer_clip`、`titanium_clip` 的边界。
+
+## YOLO 试训结果
+
+试训命令：
+
+```bash
+/home/user/proj/video_processor/.venv/bin/python scripts/train_clip_detector.py \
+  --data datasets/surgical_clips_gpt55_cholec80_candidate_v1/data.yaml \
+  --base-model models/clip_detector/pretrained/yolo11n.pt \
+  --project models/clip_detector \
+  --name yolo_surgical_clips_gpt55_cholec80_candidate_v1 \
+  --epochs 80 \
+  --imgsz 960 \
+  --batch 8 \
+  --device 1 \
+  --workers 4 \
+  --patience 25
+```
+
+结果：
+
+- Early stop：epoch 49
+- Best：epoch 24
+- overall precision：0.614
+- overall recall：0.0868
+- overall mAP50：0.0747
+- overall mAP50-95：0.0398
+- Hem-o-lok precision：0.229
+- Hem-o-lok recall：0.174
+- Hem-o-lok mAP50：0.149
+- 钛夹 precision：1.000
+- 钛夹 recall：0.000
+- 钛夹 mAP50：0.000
+
+模型路径：`models/clip_detector/yolo_surgical_clips_gpt55_cholec80_candidate_v1/weights/best.pt`
+
+预测审计图：`runs/detect/runs/detect/audit/yolo_surgical_clips_gpt55_cholec80_candidate_v1_val_sheet.jpg`
+
+结论：
+
+- 这个试训模型不可用，不能接入主流程。
+- 主要问题是有效框数量少、类别边界仍混杂、小目标标注过难。
+- 钛夹验证 recall 为 0，说明现有候选集无法支撑钛夹专家。
+- 当前 `config.json` 不应指向该权重。
+
+## 后续建议
+
+1. 继续使用 Cholec80，但要扩大抽样，并把 GPT 标注分为候选标注与严格复核两轮。
+2. 对小钛夹优先做人工/GPT-5.5 强模型复核，不要只靠自动 verifier 阈值。
+3. 把类别拆清楚：`hemolok_clip` 只表示白色/象牙色锁扣夹；蓝色/紫色聚合物夹单独作为 `polymer_clip`；银灰小金属夹作为 `titanium_clip`。
+4. 每类累计至少 300 到 500 个审计通过的框后，再训练正式专家。
+5. 在正式专家可用前，实时流程里仍应让外部/本地 VLM 做一次合并判断，不要让未成熟 YOLO 专家覆盖分析结果。

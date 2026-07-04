@@ -596,6 +596,23 @@ def _write_audit_sheets(output: Path, max_per_class: int = 40, thumb_width: int 
         sheet.save(audit_dir / f"{label}.jpg", quality=90)
 
 
+def _load_frame_samples(frames_jsonl: str) -> List[Dict[str, Any]]:
+    samples: List[Dict[str, Any]] = []
+    path = Path(frames_jsonl)
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            image_path = Path(str(row.get("image", "")))
+            if not image_path.exists():
+                continue
+            video = Path(str(row.get("video", image_path)))
+            sec = float(row.get("time_sec", 0.0))
+            samples.append({"video": video, "time_sec": sec, "image": image_path})
+    return samples
+
+
 def annotate(args: argparse.Namespace) -> None:
     output = Path(args.output)
     if output.exists() and args.clean:
@@ -618,11 +635,14 @@ def annotate(args: argparse.Namespace) -> None:
         encoding="utf-8",
     )
 
-    videos = [Path(v) for v in args.videos]
-    samples: List[Tuple[Path, float]] = []
-    for video in videos:
-        times = _sample_times(video, args.interval_sec, args.max_frames_per_video, args.start_sec, args.end_sec)
-        samples.extend((video, sec) for sec in times)
+    samples: List[Dict[str, Any]] = []
+    if args.frames_jsonl:
+        samples = _load_frame_samples(args.frames_jsonl)
+    else:
+        videos = [Path(v) for v in args.videos]
+        for video in videos:
+            times = _sample_times(video, args.interval_sec, args.max_frames_per_video, args.start_sec, args.end_sec)
+            samples.extend({"video": video, "time_sec": sec} for sec in times)
     if args.shuffle:
         random.Random(args.seed).shuffle(samples)
     if args.max_total_frames and len(samples) > args.max_total_frames:
@@ -653,7 +673,9 @@ def annotate(args: argparse.Namespace) -> None:
     empty = 0
     results_path = output / "annotations.jsonl"
     with results_path.open("a", encoding="utf-8") as out_jsonl:
-        for idx, (video, sec) in enumerate(samples, start=1):
+        for idx, sample in enumerate(samples, start=1):
+            video = Path(sample["video"])
+            sec = float(sample["time_sec"])
             stem = _safe_stem(video, sec)
             split = "val" if idx % args.val_every == 0 else "train"
             ann_path = output / "annotations" / f"{stem}.json"
@@ -663,10 +685,16 @@ def annotate(args: argparse.Namespace) -> None:
                 ann = json.loads(ann_path.read_text(encoding="utf-8"))
                 objects = ann.get("objects") or []
                 if not image_path.exists():
-                    image = _read_frame(video, sec)
+                    if sample.get("image"):
+                        image = Image.open(sample["image"]).convert("RGB")
+                    else:
+                        image = _read_frame(video, sec)
                     image.save(image_path, quality=92)
             else:
-                image = _read_frame(video, sec)
+                if sample.get("image"):
+                    image = Image.open(sample["image"]).convert("RGB")
+                else:
+                    image = _read_frame(video, sec)
                 last_error: Exception | None = None
                 objects: List[Dict[str, Any]] = []
                 rejected: List[Dict[str, Any]] = []
@@ -745,7 +773,8 @@ def annotate(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--videos", nargs="+", required=True)
+    parser.add_argument("--videos", nargs="+", default=[])
+    parser.add_argument("--frames-jsonl", default="")
     parser.add_argument("--output", default="datasets/surgical_objects_gpt_v3")
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--verifier-model", default="")
@@ -773,6 +802,8 @@ def main() -> None:
     parser.add_argument("--write-audit", action="store_true")
     parser.add_argument("--audit-max-per-class", type=int, default=40)
     args = parser.parse_args()
+    if not args.frames_jsonl and not args.videos:
+        parser.error("either --videos or --frames-jsonl is required")
     annotate(args)
 
 
