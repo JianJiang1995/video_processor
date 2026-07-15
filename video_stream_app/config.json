@@ -1,14 +1,15 @@
 {
     "description": "Video Stream Analyzer Configuration",
     "window_analysis": {
-        "provider": "gemini",
+        "provider": "glm",
+        "live_stage2_enabled": false,
         "history_window_count": 3,
         "max_output_chars": 300,
         "min_frames_ratio": 0.2,
-        "comment": "provider: VLM提供商; history_window_count: 上下文窗口数(3=只保留最近3个窗口减少prompt长度); max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.2=20%，适应实时流处理延迟)"
+        "comment": "provider: VLM提供商; live_stage2_enabled=false表示实时模式只做一次结构化本地VLM精修，避免第二次摘要调用覆盖已验证结果; history_window_count: 上下文窗口数(3=只保留最近3个窗口减少prompt长度); max_output_chars: 输出字数限制; min_frames_ratio: R1帧完成比例要求(0.2=20%，适应实时流处理延迟)"
     },
     "chat_assistant": {
-        "provider": "gemini",
+        "provider": "glm",
         "compress_window_count": 5,
         "compress_prompt_file": "prompts/compress_summary_prompt.txt",
         "max_context_summaries": 50,
@@ -24,8 +25,8 @@
             "host": "0.0.0.0"
         },
         "surgr1": {
-            "enabled": true,
-            "required": true,
+            "enabled": false,
+            "required": false,
             "port": 9003,
             "host": "localhost",
             "api_url": "http://localhost:9003",
@@ -35,21 +36,21 @@
             "max_batch_size": 20,
             "batch_timeout": 3.0,
             "target_latency": 5.0,
-            "comment": "SurgR1 API - 手术图片分析（bbox定位、动作描述、阶段识别）[核心服务，必须开启]，支持动态batch_size"
+            "comment": "Legacy SurgR1 API 已停用；实时链路使用本地 phase/triplet/YOLO/VLM。保留配置仅用于兼容旧接口"
         },
         "glm": {
-            "enabled": false,
+            "enabled": true,
             "required": false,
-            "port": 8000,
-            "host": "localhost",
-            "api_url": "http://localhost:8000/v1",
-            "model_name": "Qwen3-VL-8B",
-            "temperature": 0.7,
+            "port": 8010,
+            "host": "127.0.0.1",
+            "api_url": "http://127.0.0.1:8010/v1",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "temperature": 0.0,
             "max_tokens": 1000,
-            "max_concurrent": 16,
+            "max_concurrent": 2,
             "retry_count": 2,
             "window_merge_count": 3,
-            "comment": "DISABLED - 使用Gemini代替。VLM用于多图像分析总结"
+            "comment": "本地 GLM/Qwen vLLM 服务。当前用于替代外部 GPT/Gemini VLM 做多图像窗口分析"
         },
         "sam3": {
             "enabled": true,
@@ -87,13 +88,110 @@
             "enabled": true,
             "required": true,
             "api_key_env": "GEMINI_API_KEY",
-            "model_name": "gemini-3.1-pro-preview",
-            "thinking_level": "low",
+            "model_name": "gemini-2.5-flash",
+            "thinking_level": "none",
             "max_tokens": 2048,
             "max_concurrent": 8,
             "retry_count": 3,
             "retry_delay": 1.0,
             "comment": "Gemini 3.0 Flash API - Google多模态分析，需设置GEMINI_API_KEY环境变量 [可选服务]，max_tokens需足够大以避免中文输出被截断"
+        },
+        "realtime_open_vision": {
+            "enabled": true,
+            "provider": "glm",
+            "api_key_env": "OPENAI_API_KEY",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "openai_fallback": false,
+            "openai_model_name": "gpt-4o-mini",
+            "transport": "curl",
+            "trust_env": true,
+            "thinking_level": "none",
+            "max_images": 3,
+            "max_image_edge": 640,
+            "cvs_review_interval_windows": 2,
+            "max_tokens": 512,
+            "timeout": 90.0,
+            "retry_count": 1,
+            "temperature": 0.0,
+            "response_format_json": true,
+            "candidate_only": false,
+            "comment": "实时本地视觉：每个完整5秒窗口调用一次本地VLM，合并判断夹子、钛夹钳、剪刀、标本袋装袋、纱布、活动性出血、CVS、起雾、雾解除和镜头移出体外；thinking关闭以降低延迟"
+        },
+        "clip_vlm_review": {
+            "enabled": true,
+            "base_url": "http://127.0.0.1:8012/v1",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "max_images": 3,
+            "max_tokens": 180,
+            "timeout": 60.0,
+            "temperature": 0.0,
+            "min_confidence": 0.55,
+            "trigger_on_clip_context_only": true,
+            "comment": "本地VLM器械形态复核：在夹子候选窗口用全图统一区分已释放夹子、施夹器、剪刀、电凝钩和抓钳；经双GPU负载均衡执行"
+        },
+        "scissors_vlm_review": {
+            "enabled": true,
+            "base_url": "http://127.0.0.1:8012/v1",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "max_images": 3,
+            "max_tokens": 180,
+            "timeout": 60.0,
+            "temperature": 0.0,
+            "min_confidence": 0.75,
+            "comment": "夹闭切断窗口的本地VLM剪刀形态复核：区分双刃剪刀、电凝钩白色绝缘头、抓钳和施夹器"
+        },
+        "visibility_vlm_review": {
+            "enabled": true,
+            "base_url": "http://127.0.0.1:8012/v1",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "max_images": 3,
+            "max_tokens": 180,
+            "timeout": 60.0,
+            "temperature": 0.0,
+            "min_confidence": 0.75,
+            "comment": "装袋/取出阶段的候选窗口复核：区分腹壁外皮肤、套管过渡、腹腔内标本袋和镜头起雾"
+        },
+        "translation": {
+            "enabled": true,
+            "provider": "glm",
+            "api_key_env": "GEMINI_API_KEY",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "thinking_level": "none",
+            "max_tokens": 220,
+            "temperature": 0.0,
+            "comment": "UI 摘要中英文切换的文本翻译模型：只翻译已有分析，不参与医学判断"
+        },
+        "clinical_summary": {
+            "enabled": true,
+            "provider": "glm",
+            "evidence_grounded_output": true,
+            "api_key_env": "GEMINI_API_KEY",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "thinking_level": "none",
+            "max_tokens": 2200,
+            "max_windows": 90,
+            "max_events": 40,
+            "temperature": 0.0,
+            "comment": "离线临床精要总结：每个视频单独调用本地LLM生成候选摘要；evidence_grounded_output=true时使用经过事件/时序约束的医生版Markdown，避免小模型把未检测写成临床阴性结论"
+        },
+        "event_nodes": {
+            "enabled": true,
+            "provider": "glm",
+            "api_key_env": "OPENAI_API_KEY",
+            "model_name": "Qwen3-VL-8B-Instruct",
+            "thinking_level": "none",
+            "max_tokens": 1000,
+            "temperature": 0.0,
+      "timeout": 8.0,
+            "transport": "curl",
+            "trust_env": true,
+            "max_windows": 100,
+            "fallback_models": [
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            ],
+            "comment": "底部关键事件节点聚合：基于已保存窗口摘要做文本LLM二级分析，不阻塞实时视频/窗口摘要主链路"
         },
         "yolo": {
             "enabled": true,
@@ -101,6 +199,15 @@
             "device": "cuda:1",
             "confidence_threshold": 0.25,
             "comment": "YOLO26s tool detection - replaces SurgR1 tool_localization for real-time streams"
+        },
+        "clip_detector": {
+            "enabled": true,
+            "model_path": "/home/user/proj/video_processor/video_stream_app/models/clip_detector/yolo_clip_corrected_v2/weights/best.pt",
+            "device": "cuda:1",
+            "confidence_threshold": 0.05,
+            "imgsz": 1280,
+            "max_area_ratio": 0.12,
+            "comment": "Deployed clip detector retrained 2026-07-09 on label-corrected data (clip_detector_corrected_v2): true-clip conf roughly doubled, packaging glare high-conf FPs removed; Hem-o-lok/titanium collapsed to generic surgical clip in runtime summaries"
         },
         "phase": {
             "enabled": true,
@@ -116,14 +223,14 @@
             "comment": "Triplet Expert (LAM-Lite, ~1GB) 共用 GPU0"
         },
         "embedding": {
-            "enabled": true,
+            "enabled": false,
             "model": "gemini-embedding-2-preview",
             "persist_to_disk": true,
-            "comment": "Gemini text embedding for semantic similarity search"
+            "comment": "Disabled for local-only deployment: do not send window summaries to Gemini. Text/context search remains available until a local embedding model is configured."
         }
     },
     "video_processing": {
-        "window_duration": 10.0,
+        "window_duration": 5.0,
         "sample_interval": 1.0,
         "frame_storage": {
             "storage_base": "/home/user/proj/video_processor/video_stream_app/sessions",
@@ -138,7 +245,7 @@
             "prune_every_frames": 50,
             "comment": "帧存储配置: 本地视频按 fps 保存；实时流按 live_fps 保存并只保留 live_retention_seconds 秒，避免长时间测试打满磁盘"
         },
-        "comment": "N=10秒窗口，1秒采样一帧 → 10 帧/窗口；Stage2 Gemini 取其中 3 帧做多模态精修"
+        "comment": "N=5秒窗口，1秒采样一帧 → 5 帧/窗口；实时模式先出低延迟专家快照，OpenVision/SurgR1/Gemini 后续覆盖"
     },
     "analysis": {
         "questions": {

@@ -18,7 +18,7 @@ trap cleanup SIGINT SIGTERM
 
 # Kill existing process on the port
 echo "Checking for existing service on port $PORT..."
-PID=$(lsof -t -i:$PORT 2>/dev/null)
+PID=$(lsof -t -i:$PORT 2>/dev/null || true)
 if [ -n "$PID" ]; then
     echo "Killing existing process (PID: $PID) on port $PORT..."
     kill -9 $PID 2>/dev/null

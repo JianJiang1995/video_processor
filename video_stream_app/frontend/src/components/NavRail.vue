@@ -1,6 +1,6 @@
 <template>
   <div class="nav-rail">
-    <div class="nav-logo" @click="$emit('navigate', 'home')" title="Home">SR</div>
+    <div class="nav-logo" @click="$emit('navigate', 'home')" :title="t('nav.home')">SR</div>
 
     <button
       class="nav-btn"
@@ -8,7 +8,7 @@
       @click="$emit('navigate', 'analysis')"
     >
       <span class="nav-icon">&#x1F4F9;</span>
-      <span class="nav-tooltip">Analysis</span>
+      <span class="nav-tooltip">{{ t('nav.analysis') }}</span>
     </button>
 
     <button
@@ -17,7 +17,7 @@
       @click="$emit('navigate', 'chat')"
     >
       <span class="nav-icon">&#x1F4AC;</span>
-      <span class="nav-tooltip">Chat</span>
+      <span class="nav-tooltip">{{ t('nav.chat') }}</span>
     </button>
 
     <button
@@ -27,8 +27,18 @@
       :disabled="summaryCount === 0"
     >
       <span class="nav-icon">&#x2B1A;</span>
-      <span class="nav-tooltip">Grid Overview</span>
+      <span class="nav-tooltip">{{ t('nav.gridOverview') }}</span>
       <span v-if="summaryCount > 0" class="nav-badge">{{ summaryCount }}</span>
+    </button>
+
+    <button
+      v-if="summaryReady"
+      class="nav-btn"
+      :class="{ active: activeView === 'report' }"
+      @click="$emit('navigate', 'report')"
+    >
+      <span class="nav-icon">&#x1F4CB;</span>
+      <span class="nav-tooltip">{{ t('nav.report') }}</span>
     </button>
 
     <div class="nav-divider"></div>
@@ -38,26 +48,31 @@
       class="nav-btn analyze"
       :class="{ running: isAnalyzing }"
       @click="$emit('toggleAnalyze')"
-      :title="isAnalyzing ? 'Stop Analysis' : 'Start Analysis'"
+      :title="isAnalyzing ? t('nav.stopAnalysis') : t('nav.startAnalysis')"
     >
       <span class="nav-icon">{{ isAnalyzing ? '&#x23F9;' : '&#x25B6;' }}</span>
-      <span class="nav-tooltip">{{ isAnalyzing ? 'Stop Analysis' : 'Start Analysis' }}</span>
+      <span class="nav-tooltip">{{ isAnalyzing ? t('nav.stopAnalysis') : t('nav.startAnalysis') }}</span>
     </button>
 
     <div class="nav-spacer"></div>
 
     <button class="nav-btn" @click="$emit('navigate', 'settings')">
       <span class="nav-icon">&#x2699;</span>
-      <span class="nav-tooltip">Settings</span>
+      <span class="nav-tooltip">{{ t('nav.settings') }}</span>
     </button>
   </div>
 </template>
 
 <script setup>
+import { useI18n } from '@/i18n'
+
+const { t } = useI18n()
+
 defineProps({
   activeView: { type: String, default: 'analysis' },
   isAnalyzing: { type: Boolean, default: false },
   summaryCount: { type: Number, default: 0 },
+  summaryReady: { type: Boolean, default: false },
 })
 
 defineEmits(['navigate', 'toggleAnalyze'])

@@ -5,10 +5,10 @@
       <div class="header-left">
         <button class="back-btn" @click="$emit('back')">
           <span class="back-arrow">←</span>
-          <span>返回</span>
+          <span>{{ t('overview.back') }}</span>
         </button>
         <div class="title-group">
-          <h1 class="overview-title">窗口一览</h1>
+          <h1 class="overview-title">{{ t('overview.title') }}</h1>
           <span class="window-count-badge">
             <span class="count-num">{{ filteredSummaries.length }}</span>
             <span class="count-sep">/</span>
@@ -19,7 +19,7 @@
       <div class="header-right">
         <div v-if="isProcessing" class="processing-badge">
           <span class="processing-dot"></span>
-          <span>分析中…</span>
+          <span>{{ t('overview.processing') }}</span>
         </div>
         <div class="total-duration">
           <span class="duration-icon">⏱</span>
@@ -40,7 +40,7 @@
             v-model="filterText"
             type="text"
             class="search-input"
-            placeholder="搜索窗口内容..."
+            :placeholder="t('overview.searchPlaceholder')"
             @focus="searchFocused = true"
             @blur="searchFocused = false"
           />
@@ -58,7 +58,7 @@
           @click="showChat = !showChat"
         >
           <span class="chat-toggle-icon">💬</span>
-          <span>智能问答</span>
+          <span>{{ t('overview.smartChat') }}</span>
         </button>
       </div>
     </div>
@@ -66,7 +66,7 @@
     <!-- Main body: Grid + Chat side panel -->
     <div class="overview-body">
       <!-- Grid area -->
-      <div class="grid-area">
+      <div class="grid-area" ref="gridAreaRef">
         <!-- Empty State -->
         <div v-if="summaries.length === 0" class="empty-state">
           <div class="empty-visual">
@@ -76,8 +76,8 @@
               <path d="M36 40l3 3 5-6" stroke="var(--accent-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
             </svg>
           </div>
-          <div class="empty-text">暂无分析窗口</div>
-          <div class="empty-hint">返回主界面开始分析视频</div>
+          <div class="empty-text">{{ t('overview.noWindows') }}</div>
+          <div class="empty-hint">{{ t('overview.noWindowsHint') }}</div>
         </div>
 
         <!-- No Results -->
@@ -89,8 +89,8 @@
               <path d="M28 36h16M36 28v16" stroke="var(--error)" stroke-width="2" stroke-linecap="round" opacity="0.5" transform="rotate(45 36 36)"/>
             </svg>
           </div>
-          <div class="empty-text">没有匹配的窗口</div>
-          <div class="empty-hint">尝试其他关键词 · 当前搜索「{{ filterText }}」</div>
+          <div class="empty-text">{{ t('overview.noResults') }}</div>
+          <div class="empty-hint">{{ t('overview.noResultsHint', { query: filterText }) }}</div>
         </div>
 
         <!-- Window Grid -->
@@ -99,7 +99,7 @@
             v-for="(s, idx) in filteredSummaries"
             :key="s.window_id"
             class="window-card"
-            :style="{ animationDelay: `${idx * 40}ms` }"
+            :style="{ animationDelay: `${Math.min(idx, 8) * 20}ms` }"
             @click="handleCardClick(s)"
           >
             <!-- Thumbnail -->
@@ -110,9 +110,13 @@
                 class="thumb-img"
                 alt=""
               />
-              <div v-else class="thumb-placeholder">
+              <div v-else-if="thumbnailStatus[s.window_id] === 'loading'" class="thumb-placeholder">
                 <div class="thumb-spinner"></div>
               </div>
+              <div v-else-if="thumbnailStatus[s.window_id] === 'failed'" class="thumb-placeholder thumb-empty">
+                <span>{{ t('overview.noPreview') }}</span>
+              </div>
+              <div v-else class="thumb-placeholder thumb-pending"></div>
               <span class="card-index-overlay">#{{ s.window_id }}</span>
               <span class="card-time-overlay">
                 {{ formatTime(s.start_time) }} – {{ formatTime(s.end_time) }}
@@ -128,7 +132,7 @@
                 ></div>
               </div>
 
-              <p class="card-summary" v-html="highlightText(truncate(s.summary, 100))"></p>
+              <p class="card-summary" v-html="highlightText(truncate(displaySummary(s), 110))"></p>
             </div>
           </div>
         </div>
@@ -140,7 +144,7 @@
           <div class="chat-panel-header">
             <span class="chat-panel-title">
               <span class="chat-panel-icon">🤖</span>
-              智能问答
+              {{ t('overview.smartChat') }}
             </span>
             <button class="chat-panel-close" @click="showChat = false">✕</button>
           </div>
@@ -148,11 +152,11 @@
           <div class="chat-messages" ref="chatMessagesRef">
             <div v-if="chatMessages.length === 0" class="chat-empty">
               <div class="chat-empty-icon">💬</div>
-              <div class="chat-empty-text">关于这些分析窗口有什么想了解的？</div>
+              <div class="chat-empty-text">{{ t('overview.chatEmpty') }}</div>
               <div class="chat-empty-hints">
-                <button class="hint-chip" @click="sendChat('总结所有窗口的主要发现')">总结主要发现</button>
-                <button class="hint-chip" @click="sendChat('哪些窗口涉及关键操作步骤？')">关键操作步骤</button>
-                <button class="hint-chip" @click="sendChat('有没有需要注意的异常情况？')">异常情况</button>
+                <button class="hint-chip" @click="sendChat(t('overview.summarizeFindingsPrompt'))">{{ t('overview.summarizeFindings') }}</button>
+                <button class="hint-chip" @click="sendChat(t('overview.keyStepsPrompt'))">{{ t('overview.keySteps') }}</button>
+                <button class="hint-chip" @click="sendChat(t('overview.abnormalIssuesPrompt'))">{{ t('overview.abnormalIssues') }}</button>
               </div>
             </div>
             <div
@@ -181,7 +185,7 @@
               v-model="chatInput"
               type="text"
               class="chat-input"
-              placeholder="问一个关于视频的问题..."
+              :placeholder="t('overview.chatPlaceholder')"
               @keyup.enter="sendChat()"
               :disabled="chatLoading"
             />
@@ -228,14 +232,15 @@
                   :mode="mode"
                   :loopWindow="activeLoopWindow"
                   :streamEnded="false"
+                  :windowDuration="windowDuration"
                   @timeupdate="modalCurrentTime = $event"
                   @exitLoop="closeModal"
                   @loopLoadFailed="closeModal"
                 />
               </div>
               <div class="modal-summary-section">
-                <div class="modal-summary-label">分析摘要</div>
-                <p class="modal-summary-text">{{ activeWindow.summary }}</p>
+                <div class="modal-summary-label">{{ t('overview.analysisSummary') }}</div>
+                <p class="modal-summary-text">{{ displaySummary(activeWindow) }}</p>
               </div>
             </div>
           </div>
@@ -250,6 +255,9 @@ import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from
 import axios from 'axios'
 import { apiUrl } from '@/utils/electronBridge'
 import VideoPlayer from './VideoPlayer.vue'
+import { useI18n } from '@/i18n'
+
+const { t, language } = useI18n()
 
 const props = defineProps({
   summaries: {
@@ -264,6 +272,10 @@ const props = defineProps({
   isProcessing: {
     type: Boolean,
     default: false
+  },
+  windowDuration: {
+    type: Number,
+    default: 5
   }
 })
 
@@ -279,6 +291,7 @@ const chatInput = ref('')
 const chatMessages = ref([])
 const chatLoading = ref(false)
 const chatMessagesRef = ref(null)
+const gridAreaRef = ref(null)
 
 // Modal
 const activeWindow = ref(null)
@@ -286,6 +299,7 @@ const modalCurrentTime = ref(0)
 
 // Thumbnails
 const thumbnails = reactive({})
+const thumbnailStatus = reactive({}) // loading | loaded | failed
 const loadingThumbs = new Set()
 
 // Computed
@@ -293,7 +307,7 @@ const filteredSummaries = computed(() => {
   if (!filterText.value.trim()) return props.summaries
   const keyword = filterText.value.trim().toLowerCase()
   return props.summaries.filter(s =>
-    s.summary && s.summary.toLowerCase().includes(keyword)
+    displaySummary(s).toLowerCase().includes(keyword)
   )
 })
 
@@ -315,6 +329,108 @@ const maxWindowDuration = computed(() => {
   if (props.summaries.length === 0) return 1
   return Math.max(...props.summaries.map(s => (s.end_time || 0) - (s.start_time || 0)), 1)
 })
+
+const OVERVIEW_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
+const OVERVIEW_NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
+const OVERVIEW_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野)/
+const OVERVIEW_RISK_RE = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+
+function compactChineseSummary(text, maxChars = 150) {
+  let out = String(text || '')
+    .replace(/太夹前|钛夹前|太夹钳|胎夹钳/g, '钛夹钳')
+    .replace(/动胆囊动脉/g, '胆囊动脉')
+    .replace(/动胆囊管/g, '胆囊管')
+    .replace(/(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))[，,]?\s*明显/g, '$1')
+    .replace(/(当前窗口|本段|术野|画面)出现/g, '$1有')
+    .replace(/出现了|出现/g, '')
+    .replace(/^【[^】]*】\s*/, '')
+    .replace(/当前处于[^，。；;]+[，,。；;]?\s*/g, '')
+    .replace(/Hem[-\s]?o[-\s]?lok|Hemolok|hemlock/gi, 'Hem-o-lok')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?对/g, '钛夹钳对')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?在/g, '钛夹钳在')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${OVERVIEW_NON_CLIP_INSTRUMENT_RE}(?:、${OVERVIEW_NON_CLIP_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+    .replace(new RegExp(`(?:${OVERVIEW_NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+    .replace(/电钩正?伸入([^，。；;]+)[，,]\s*/g, '在$1，')
+    .replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
+    .replace(/夹持牵拉/g, '牵拉')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+    .replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
+    .replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
+    .replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
+    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+    .replace(/视野中可见|可见/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const sentences = out
+    .split(/(?<=[。；！？!?;])/)
+    .map(s => s.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '').trim())
+    .filter(s => s && OVERVIEW_SIGNAL_RE.test(s))
+  const risks = sentences.filter(s => OVERVIEW_RISK_RE.test(s))
+  const actions = sentences.filter(s => !OVERVIEW_RISK_RE.test(s))
+  const selected = [...risks, ...actions].slice(0, 2)
+  out = (selected.length ? selected : sentences.slice(0, 1))
+    .map(s => /[。；！？!?;]$/.test(s) ? s : `${s}。`)
+    .join('')
+  return (out || String(text || '')).slice(0, maxChars)
+}
+
+function fallbackEnglishSummary(text) {
+  const src = compactChineseSummary(text, 260)
+  const lower = src.toLowerCase()
+  const parts = []
+  const add = (s) => { if (s && !parts.includes(s)) parts.push(s) }
+
+  if (/hem[-\s]?o[-\s]?lok|hemolok|hemlock/i.test(src)) add('A Hem-o-lok clip is placed on the cystic duct.')
+  if (/(肝胆三角|胆囊三角|calot)/i.test(src) && /(游离|分离|电凝|剥离|点触)/.test(src)) {
+    add('Dissection is performed in the hepatocystic triangle around the cystic duct.')
+  }
+  if (/(胆囊管|胆囊动脉|管状结构)/.test(src) && /(夹闭|施夹|闭合)/.test(src)) {
+    add(/胆囊动脉/.test(src) ? 'The isolated cystic artery is clipped.' : 'The isolated cystic duct is clipped.')
+  }
+  if (/(剪切|切断|夹断)/.test(src)) {
+    add(/胆囊动脉/.test(src) ? 'The clipped cystic artery is divided.' : 'The clipped cystic duct is divided.')
+  }
+  if (/(胆囊分离|胆囊与肝床|肝床|胆囊床)/.test(src)) add('The gallbladder is dissected from the liver bed.')
+  if (/(冲吸|冲洗|吸引|清理)/.test(src)) add('Suction and irrigation are used to clear the operative field.')
+  if (/(大量(?:活动性)?出血|明显(?:活动性)?出血|持续(?:活动性)?出血|喷涌出血|喷射性出血|涌血|明确出血源|影响视野的持续渗血)/.test(src)) add('Active bleeding is noted.')
+  else if (/(少量出血|少量渗血|渗血|出血)/.test(src)) add('Minor local bleeding or oozing is noted.')
+  if (/(止血|凝血|无活动性出血|未见活动性出血)/.test(src)) add('Hemostasis is achieved or no active bleeding is seen.')
+  if (/(牵拉|暴露)/.test(src)) add('Traction is maintained for exposure.')
+  if (parts.length) return parts.slice(0, 2).join(' ')
+
+  return src
+    .replace(/胆囊管/g, 'cystic duct')
+    .replace(/胆囊动脉/g, 'cystic artery')
+    .replace(/肝胆三角/g, 'hepatocystic triangle')
+    .replace(/胆囊床/g, 'gallbladder bed')
+    .replace(/肝床/g, 'liver bed')
+    .replace(/钛夹/g, 'titanium clip')
+    .replace(/施夹器|施夹钳/g, 'clip applier')
+    .replace(/抓钳/g, 'grasper')
+    .replace(/电钩/g, 'electrocautery hook')
+    .replace(/剪刀/g, 'scissors')
+    .replace(/出血/g, 'bleeding')
+    .replace(/止血/g, 'hemostasis')
+}
+
+function displaySummary(summary) {
+  if (!summary) return ''
+  if (language.value === 'en') {
+    return summary.summary_en || fallbackEnglishSummary(summary.summary || '')
+  }
+  return compactChineseSummary(summary.summary || '')
+}
 
 // Methods
 function handleCardClick(summary) {
@@ -364,7 +480,7 @@ function durationPercent(s) {
 // Smart chat
 function buildContext() {
   return props.summaries.map(s =>
-    `[窗口${s.window_id} ${formatTime(s.start_time)}-${formatTime(s.end_time)}] ${s.summary}`
+    `[窗口${s.window_id} ${formatTime(s.start_time)}-${formatTime(s.end_time)}] ${displaySummary(s)}`
   ).join('\n')
 }
 
@@ -392,13 +508,13 @@ async function sendChat(preset) {
     } else {
       chatMessages.value.push({
         role: 'assistant',
-        content: response.data.error || '抱歉，暂时无法回答。'
+        content: response.data.error || t('overview.chatFallback')
       })
     }
   } catch (e) {
     chatMessages.value.push({
       role: 'assistant',
-      content: '网络错误，请稍后再试。'
+      content: t('overview.networkError')
     })
   } finally {
     chatLoading.value = false
@@ -421,11 +537,13 @@ async function scrollChatBottom() {
 //   1. 只有卡片进入视口（IntersectionObserver）才触发 loadThumbnail
 //   2. 全局最多 MAX_CONCURRENT_THUMBS 个并行请求，其余排队
 // ============================================================
+const INITIAL_THUMB_COUNT = 8
 const MAX_CONCURRENT_THUMBS = 2
 const thumbQueue = []          // FIFO of summaries waiting to be fetched
 const queuedWids = new Set()   // window_id 已经入队或正在加载，避免重复
 let activeThumbFetches = 0
 const cardElToWid = new WeakMap()  // 卡片 DOM 元素 → window_id
+const widToCardEl = new Map()      // window_id → card DOM 元素，供 observer 创建后补注册
 const widToSummary = new Map()     // window_id → summary 对象（供队列消费时反查）
 let thumbObserver = null
 
@@ -443,7 +561,7 @@ async function fetchThumbnail(summary) {
       params: {
         start,
         end,
-        max_frames: 20,
+        max_frames: 6,
         use_url: true,
         use_preview: true,
       }
@@ -455,19 +573,25 @@ async function fetchThumbnail(summary) {
       }, frames[0])
       if (best?.url) {
         thumbnails[wid] = best.url
+        thumbnailStatus[wid] = 'loaded'
         return
       }
     }
 
-    const res = await axios.get(`/api/analysis/frame-at-timestamp/${sid}`, {
-      params: { timestamp: midTime, tolerance: 5.0 }
+    // Fallback to a small, timestamped video thumbnail. Avoid pulling a full
+    // frame into the overview grid; card covers only need a compact JPEG.
+    const videoFrameRes = await axios.get(`/api/video/thumbnail/${sid}`, {
+      params: { timestamp: midTime, width: 360, quality: 62 }
     })
-    if (res.data?.success && res.data.image_base64) {
-      thumbnails[wid] = `data:image/jpeg;base64,${res.data.image_base64}`
+    if (videoFrameRes.data?.thumbnail) {
+      thumbnails[wid] = `data:image/jpeg;base64,${videoFrameRes.data.thumbnail}`
+      thumbnailStatus[wid] = 'loaded'
+      return
     }
   } catch {
-    // silent fail — card stays without thumbnail
+    // Keep the UI deterministic: do not spin forever when no frame exists.
   }
+  thumbnailStatus[wid] = 'failed'
 }
 
 function pumpThumbQueue() {
@@ -481,6 +605,7 @@ function pumpThumbQueue() {
     }
     activeThumbFetches++
     loadingThumbs.add(wid)
+    thumbnailStatus[wid] = 'loading'
     fetchThumbnail(summary).finally(() => {
       activeThumbFetches--
       loadingThumbs.delete(wid)
@@ -490,27 +615,54 @@ function pumpThumbQueue() {
   }
 }
 
-function enqueueThumbnail(summary) {
+function enqueueThumbnail(summary, priority = false) {
   if (!summary) return
   const wid = summary.window_id
   if (thumbnails[wid] || queuedWids.has(wid)) return
   widToSummary.set(wid, summary)
   queuedWids.add(wid)
-  thumbQueue.push(summary)
+  thumbnailStatus[wid] = 'queued'
+  if (priority) {
+    thumbQueue.unshift(summary)
+  } else {
+    thumbQueue.push(summary)
+  }
   pumpThumbQueue()
 }
 
 // 函数 ref：每张 card-thumb 挂载时注册到 observer
 function registerCardThumb(el, wid) {
-  if (!el) return
+  if (!el) {
+    widToCardEl.delete(wid)
+    return
+  }
+  widToCardEl.set(wid, el)
   cardElToWid.set(el, wid)
   if (thumbObserver) {
     thumbObserver.observe(el)
   }
 }
 
+function observeRegisteredCards() {
+  if (!thumbObserver) return
+  for (const [wid, el] of widToCardEl.entries()) {
+    if (thumbnails[wid] || thumbnailStatus[wid] === 'loading' || thumbnailStatus[wid] === 'queued') continue
+    thumbObserver.observe(el)
+  }
+}
+
+function primeInitialThumbnails() {
+  const firstVisible = filteredSummaries.value.slice(0, INITIAL_THUMB_COUNT)
+  for (let i = firstVisible.length - 1; i >= 0; i--) {
+    enqueueThumbnail(firstVisible[i], true)
+  }
+}
+
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  for (const s of props.summaries) {
+    widToSummary.set(s.window_id, s)
+  }
 
   // IntersectionObserver 不可用时退化为"立即加载所有"，但仍走并发队列限流
   if (typeof IntersectionObserver !== 'undefined') {
@@ -525,21 +677,30 @@ onMounted(() => {
         thumbObserver.unobserve(entry.target)
       }
     }, {
-      root: null,
-      rootMargin: '200px 0px',  // 提前 200px 预加载，滚动时基本无白屏
+      root: gridAreaRef.value || null,
+      rootMargin: '80px 0px',  // 小幅预加载；后续封面随滚动进入视口再取
       threshold: 0.01,
     })
+    nextTick().then(() => {
+      observeRegisteredCards()
+      primeInitialThumbnails()
+    })
   } else {
-    for (const s of props.summaries) enqueueThumbnail(s)
+    for (const s of props.summaries.slice(0, INITIAL_THUMB_COUNT)) enqueueThumbnail(s)
   }
 })
 
 watch(() => props.summaries.length, async () => {
   // summaries 变化（新窗口到达）时，等下一帧 DOM 更新再让 observer 去 observe 新卡片
+  for (const s of props.summaries) {
+    widToSummary.set(s.window_id, s)
+  }
   await nextTick()
+  observeRegisteredCards()
+  primeInitialThumbnails()
   // 无 IntersectionObserver 的环境下主动把新 summary 入队
   if (!thumbObserver) {
-    for (const s of props.summaries) enqueueThumbnail(s)
+    for (const s of props.summaries.slice(0, INITIAL_THUMB_COUNT)) enqueueThumbnail(s)
   }
 })
 
@@ -552,6 +713,7 @@ onUnmounted(() => {
   thumbQueue.length = 0
   queuedWids.clear()
   widToSummary.clear()
+  widToCardEl.clear()
 })
 </script>
 
@@ -834,6 +996,21 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.thumb-empty {
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent),
+    var(--bg-tertiary);
+}
+
+.thumb-pending {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent),
+    var(--bg-tertiary);
 }
 
 .thumb-spinner {

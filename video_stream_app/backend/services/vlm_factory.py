@@ -3,7 +3,7 @@ VLM Factory - Factory pattern for VLM client selection
 
 根据 config.json 中的 summarization_provider 配置自动选择使用:
 - 'glm': 本地 Qwen/GLM vLLM 服务（需要启动本地服务器）
-- 'gemini': Google Gemini 3.0 Flash API（云端，只需 API Key）
+- 'gemini': Google Gemini API（云端，只需 API Key）
 
 使用方式:
     from services.vlm_factory import get_vlm_client, ensure_vlm_available
@@ -22,6 +22,7 @@ VLM Factory - Factory pattern for VLM client selection
     )
 """
 import logging
+import os
 from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ def get_vlm_client():
     根据 config.json 中的 window_analysis.provider 配置返回对应的客户端实例。
     
     可选值:
-        - 'gemini': Google Gemini 3.0 Flash API (云端)
+        - 'gemini': Google Gemini API (云端)
         - 'qwen': 本地 Qwen3-VL-8B (vLLM)
         - 'glm': 本地 GLM-4.6V-Flash (vLLM)
     
@@ -79,8 +80,10 @@ def get_vlm_client():
     provider = get_summarization_provider()
     
     if provider == "gemini":
+        if os.environ.get("DISABLE_EXTERNAL_AI") == "1":
+            raise RuntimeError("Cloud VLM disabled by runtime environment")
         from .gemini_client import get_gemini_client
-        logger.info("[VLMFactory] Using Gemini 3.0 Flash API (cloud)")
+        logger.info("[VLMFactory] Using Gemini API (cloud)")
         return get_gemini_client()
     elif provider in ("qwen", "glm"):
         from .glm_client import get_glm_client
@@ -106,6 +109,8 @@ async def ensure_vlm_available():
     provider = get_summarization_provider()
     
     if provider == "gemini":
+        if os.environ.get("DISABLE_EXTERNAL_AI") == "1":
+            raise RuntimeError("Cloud VLM disabled by runtime environment")
         from .gemini_client import ensure_gemini_available
         return await ensure_gemini_available()
     else:
@@ -123,13 +128,22 @@ async def check_vlm_health() -> dict:
     provider = get_summarization_provider()
     
     try:
+        if provider == "gemini" and os.environ.get("DISABLE_EXTERNAL_AI") == "1":
+            return {
+                "provider": "gemini",
+                "provider_name": "Google Gemini",
+                "available": False,
+                "error": "Cloud VLM disabled by runtime environment",
+                "api_type": "cloud",
+            }
+
         client = get_vlm_client()
         is_healthy = await client.check_health()
         
         if provider == "gemini":
             return {
                 "provider": "gemini",
-                "provider_name": "Google Gemini 3.0 Flash",
+                "provider_name": "Google Gemini",
                 "available": is_healthy,
                 "model_name": client.model_name,
                 "thinking_level": getattr(client, 'thinking_level', 'low'),
@@ -187,4 +201,3 @@ def cleanup_session_resources(session_id: str) -> None:
     else:
         from .glm_client import cleanup_session_resources as glm_cleanup
         glm_cleanup(session_id)
-

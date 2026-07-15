@@ -24,8 +24,13 @@ import cv2
 logger = logging.getLogger(__name__)
 
 SIMULATOR_URI = "simulator://capture-card/0"
+# filesim://<abs_path> treats an arbitrary local file as a finite, realtime-paced
+# capture-card style source (PacedVideoCapture, stop at EOF). Used for headless
+# batch validation runs so multiple sessions can play different files in parallel.
+FILESIM_PREFIX = "filesim://"
 SIMULATED_CAPTURE_NAME = "手术室采集卡模拟源"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+DEFAULT_SIMULATOR_STREAM_URL = os.getenv("SURGR1_SIMULATOR_STREAM_URL", "http://127.0.0.1:9001/stream")
 
 
 @dataclass
@@ -36,6 +41,8 @@ class ResolvedVideoSource:
     fps: Optional[float] = None
     width: Optional[int] = None
     height: Optional[int] = None
+    duration: Optional[float] = None
+    total_frames: Optional[int] = None
 
 
 def _repo_root() -> Path:
@@ -50,6 +57,7 @@ def _candidate_simulator_files() -> list[Path]:
 
     root = _repo_root()
     candidates.extend([
+        root.parent / "stream_simulator" / "media" / "vid001_capture_30fps.mp4",
         root.parent / "stream_simulator" / "media" / "stable_capture_30fps.mp4",
         root.parent / "stream_simulator" / "media" / "sample_long_cfr30.mp4",
         root.parent / "stream_simulator" / "media" / "sample_long.mp4",
@@ -71,6 +79,8 @@ def _probe_video(path: str, fallback_fps: float = 30.0) -> Optional[ResolvedVide
     fps = float(cap.get(cv2.CAP_PROP_FPS) or fallback_fps or 30.0)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = (total_frames / fps) if fps > 0 and total_frames > 0 else 0.0
     cap.release()
     return ResolvedVideoSource(
         original=path,
@@ -79,6 +89,8 @@ def _probe_video(path: str, fallback_fps: float = 30.0) -> Optional[ResolvedVide
         fps=fps,
         width=width,
         height=height,
+        duration=duration,
+        total_frames=total_frames,
     )
 
 
@@ -118,8 +130,20 @@ def get_simulator_source(stream_url: Optional[str] = None) -> Optional[ResolvedV
 
 def resolve_video_source(video_source: str) -> ResolvedVideoSource:
     """Resolve simulator sources to local files; leave all other sources intact."""
+    if video_source.startswith(FILESIM_PREFIX):
+        backing_path = video_source[len(FILESIM_PREFIX):]
+        probed = _probe_video(backing_path)
+        if probed:
+            probed.original = video_source
+            return probed
+        logger.warning("[SimulatorSource] filesim backing file unavailable: %s", backing_path)
+        return ResolvedVideoSource(original=video_source, source=backing_path, is_simulator=True)
+
     if video_source.startswith("simulator://"):
-        resolved = get_simulator_source()
+        # simulator:// is the capture-card abstraction used by the app. Resolve
+        # it to the currently running simulator server's backing file first so
+        # preview, frame capture, and analysis all use the same source.
+        resolved = get_simulator_source(DEFAULT_SIMULATOR_STREAM_URL) or get_simulator_source()
         if resolved:
             resolved.original = video_source
             return resolved
@@ -136,7 +160,7 @@ def resolve_video_source(video_source: str) -> ResolvedVideoSource:
 
 
 class PacedVideoCapture:
-    """Small cv2.VideoCapture wrapper that reads a file at realtime FPS."""
+    """Read a file on a wall-clock timeline, dropping stale frames when late."""
 
     def __init__(self, source: str, fps: Optional[float] = None, loop: bool = True):
         self.source = source
@@ -145,26 +169,67 @@ class PacedVideoCapture:
         self.fps = max(1.0, float(fps or cap_fps or 30.0))
         self.interval = 1.0 / self.fps
         self.loop = loop
-        self._next_read: Optional[float] = None
+        self._clock_start: Optional[float] = None
+        self._source_start_frame: int = 0
+        self._last_frame_index: int = -1
+        self._last_timestamp: float = 0.0
+        self._dropped_frames: int = 0
 
     def isOpened(self):
         return self.cap.isOpened()
 
     def read(self):
         now = time.perf_counter()
-        if self._next_read is None:
-            self._next_read = now
-        elif now < self._next_read:
-            time.sleep(self._next_read - now)
+        next_source_frame = max(
+            self._last_frame_index + 1,
+            int(self.cap.get(cv2.CAP_PROP_POS_FRAMES) or 0),
+        )
+        if self._clock_start is None:
+            self._clock_start = now
+            self._source_start_frame = next_source_frame
+        else:
+            due = self._clock_start + (
+                (next_source_frame - self._source_start_frame) / self.fps
+            )
+            if now < due:
+                time.sleep(due - now)
+                now = time.perf_counter()
+
+            # Saving a full-resolution frame can occasionally take longer than
+            # one source interval. A capture card would keep advancing while
+            # the consumer is busy, so skip source frames that are already in
+            # the past instead of shifting the whole media clock backwards.
+            target_frame = self._source_start_frame + int(
+                max(0.0, now - self._clock_start) * self.fps
+            )
+            target_frame = max(next_source_frame, target_frame)
+            frames_to_skip = target_frame - next_source_frame
+            if frames_to_skip > 0:
+                if frames_to_skip <= max(8, int(self.fps * 2)):
+                    skipped = 0
+                    while skipped < frames_to_skip and self.cap.grab():
+                        skipped += 1
+                else:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                    skipped = frames_to_skip
+                self._dropped_frames += skipped
 
         ret, frame = self.cap.read()
         if not ret and self.loop:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self._next_read = time.perf_counter() + self.interval
+            self._clock_start = time.perf_counter()
+            self._source_start_frame = 0
+            self._last_frame_index = -1
+            self._last_timestamp = 0.0
             ret, frame = self.cap.read()
+        if ret:
+            # OpenCV reports the next frame index after read(); convert it back
+            # to the frame that was actually returned.
+            pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
+            self._last_frame_index = max(0, pos - 1)
+            msec = float(self.cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+            self._last_timestamp = (msec / 1000.0) if msec > 0 else (self._last_frame_index / self.fps)
 
-        base = self._next_read if self._next_read is not None else time.perf_counter()
-        self._next_read = max(base + self.interval, time.perf_counter())
         return ret, frame
 
     def grab(self):
@@ -177,8 +242,20 @@ class PacedVideoCapture:
 
     def set(self, prop, value):
         if prop == cv2.CAP_PROP_POS_FRAMES:
-            self._next_read = None
+            self._clock_start = None
+            self._source_start_frame = max(0, int(value))
+            self._last_frame_index = max(0, int(value) - 1)
+            self._last_timestamp = max(0.0, self._last_frame_index / self.fps)
         return self.cap.set(prop, value)
+
+    def last_timestamp(self) -> float:
+        return self._last_timestamp
+
+    def last_frame_index(self) -> int:
+        return self._last_frame_index
+
+    def dropped_frames(self) -> int:
+        return self._dropped_frames
 
     def release(self):
         return self.cap.release()

@@ -46,7 +46,7 @@
           <div class="tooltip-header">
             <span class="tooltip-window">
               <span class="lock-icon" v-if="isTooltipLocked">📌</span>
-              窗口 {{ hoveredWindowSummary.window_id + 1 }}
+              {{ t('control.window') }} {{ hoveredWindowSummary.window_id + 1 }}
             </span>
             <button v-if="isTooltipLocked" class="tooltip-close" @click.stop="closeTooltip">✕</button>
             <span v-else class="tooltip-time">{{ formatTime(hoveredWindowSummary.start_time) }} - {{ formatTime(hoveredWindowSummary.end_time) }}</span>
@@ -57,8 +57,8 @@
           <div class="tooltip-content">
             {{ hoveredWindowSummary.summary }}
           </div>
-          <div class="tooltip-hint" v-if="!isTooltipLocked">点击固定显示</div>
-          <div class="tooltip-hint" v-else>再次点击窗口或按 ✕ 关闭</div>
+          <div class="tooltip-hint" v-if="!isTooltipLocked">{{ t('control.clickPin') }}</div>
+          <div class="tooltip-hint" v-else>{{ t('control.clickClose') }}</div>
         </div>
         
         <!-- Playhead -->
@@ -83,7 +83,7 @@
       <button 
         class="control-btn" 
         @click="skipBack" 
-        title="后退5秒"
+        :title="t('control.back5')"
       >
         ⏪
       </button>
@@ -95,19 +95,19 @@
       <button 
         class="control-btn" 
         @click="skipForward" 
-        title="前进5秒"
+        :title="t('control.forward5')"
       >
         ⏩
       </button>
       
       <!-- Time Display -->
       <div class="time-display">
-        <span v-if="isLive" class="live-badge">🔴 LIVE</span>
+        <span v-if="isLive" class="live-badge">🔴 {{ t('control.live') }}</span>
         <span class="time-current">{{ formatTime(currentTime) }}</span>
         <span v-if="!isLive"> / </span>
         <span v-if="!isLive">{{ formatTime(duration) }}</span>
         <span class="window-display" v-if="currentWindowId >= 0">
-          · 窗口 {{ currentWindowId + 1 }}
+          · {{ t('control.window') }} {{ currentWindowId + 1 }}
         </span>
       </div>
       
@@ -116,7 +116,7 @@
       <!-- Analysis Service Status -->
       <div class="analysis-services">
         <!-- SurgR1: 医生机器人图标 -->
-        <div class="service-badge" :class="{ available: surgr1Status.available, processing: surgr1Processing.running }" :title="surgr1Processing.running ? `SurgR1 处理中 (${surgr1Processing.framesAnalyzed} 帧)` : 'SurgR1 手术图像分析'">
+        <div class="service-badge" :class="{ available: surgr1Status.available, processing: surgr1Processing.running }" :title="surgr1Processing.running ? t('control.surgr1Processing', { count: surgr1Processing.framesAnalyzed }) : t('control.surgr1Title')">
           <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <!-- 机器人头部 -->
             <rect x="6" y="7" width="12" height="10" rx="2" />
@@ -142,7 +142,7 @@
         </div>
         
         <!-- LLM: 大脑/神经网络图标 -->
-        <div class="service-badge" :class="{ available: glmStatus.available }" title="LLM 智能总结">
+        <div class="service-badge" :class="{ available: glmStatus.available }" :title="t('control.llmTitle')">
           <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <!-- 大脑轮廓 -->
             <path d="M12 4C8 4 5 6.5 5 10C5 12 6 13.5 6.5 14.5C6 15.5 5.5 17 6.5 18.5C7.5 20 9 20.5 10.5 20C11 20.5 11.5 21 12 21" />
@@ -163,7 +163,7 @@
         </div>
         
         <!-- ASR: 麦克风图标 -->
-        <div class="service-badge" :class="{ available: asrStatus.available }" title="ASR 语音识别">
+        <div class="service-badge" :class="{ available: asrStatus.available }" :title="t('control.asrTitle')">
           <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <!-- 麦克风主体 -->
             <rect x="9" y="4" width="6" height="10" rx="3" />
@@ -179,7 +179,7 @@
         </div>
         
         <!-- TTS: 扬声器+声波图标 -->
-        <div class="service-badge" :class="{ available: ttsStatus.available }" title="TTS 语音合成">
+        <div class="service-badge" :class="{ available: ttsStatus.available }" :title="t('control.ttsTitle')">
           <svg class="service-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <!-- 扬声器主体 -->
             <path d="M4 9V15H8L14 20V4L8 9H4Z" fill="currentColor" opacity="0.2" />
@@ -198,9 +198,9 @@
         class="btn btn-primary analyze-btn"
         @click="$emit('analyze')"
         :disabled="(mode === 'local' && !duration) || !surgr1Status.available"
-        :title="!surgr1Status.available ? '需要 SurgR1 服务' : ''"
+        :title="!surgr1Status.available ? t('control.needSurgr1') : ''"
       >
-        {{ isLive ? '开始分析' : '🔍 开始分析' }}
+        {{ isLive ? t('control.startAnalysis') : `🔍 ${t('control.startAnalysis')}` }}
       </button>
       
       <!-- Stop Analyze Button -->
@@ -210,12 +210,12 @@
         @click="$emit('stopAnalyze')"
       >
         <span class="btn-spinner"></span>
-        ⏹ 停止分析
+        ⏹ {{ t('control.stopAnalysis') }}
       </button>
       
       <!-- Volume Control -->
       <div class="volume-control">
-        <button class="control-btn" @click="toggleMute">
+        <button class="control-btn" @click="toggleMute" :title="t('control.volume')">
           {{ isMuted ? '🔇' : volume > 0.5 ? '🔊' : '🔉' }}
         </button>
         <input
@@ -234,6 +234,9 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from '@/i18n'
+
+const { t } = useI18n()
 
 const props = defineProps({
   currentTime: {
@@ -371,7 +374,21 @@ const windowCount = computed(() => {
 })
 
 const currentWindowId = computed(() => {
-  return Math.floor(props.currentTime / props.windowDuration)
+  const rawWindowId = Math.floor(Math.max(0, props.currentTime) / props.windowDuration)
+  // `windowCount` intentionally stays zero for live mode because live streams
+  // do not render fixed progress segments. The capture-card simulator is a
+  // finite live source, though, so derive a separate display bound from its
+  // duration and any summaries already received.
+  const durationWindowCount = Math.ceil(Math.max(0, props.duration || 0) / props.windowDuration)
+  const summaryWindowCount = props.summaries.reduce(
+    (count, summary) => Math.max(count, Number(summary?.window_id ?? -1) + 1),
+    0
+  )
+  const totalWindows = Math.max(durationWindowCount, summaryWindowCount)
+  // At an exact finite EOF (for example 100.0s with 5s windows), floor()
+  // points one slot beyond the final 95-100s window. Clamp the display to the
+  // last real window so the control bar agrees with the analysis panel.
+  return totalWindows > 0 ? Math.min(rawWindowId, totalWindows - 1) : rawWindowId
 })
 
 const togglePlay = () => {

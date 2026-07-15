@@ -8,8 +8,8 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:8001}"
 
 if [ -z "${DISPLAY:-}" ]; then
-    echo "ERROR: DISPLAY is not set. Run this on the Ubuntu desktop session, or connect with VNC/NoMachine/X11 forwarding."
-    echo "Example on a physical desktop: export DISPLAY=:0"
+    echo "ERROR: DISPLAY is not set. Run this from the local Ubuntu desktop session."
+    echo "Example: export DISPLAY=:0 (or use the display number of the active local session)"
     exit 1
 fi
 

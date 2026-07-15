@@ -15,17 +15,6 @@
       />
     </div>
 
-    <!-- Window Overview Mode -->
-    <WindowOverview
-      v-else-if="currentView === 'overview'"
-      :summaries="summaries"
-      :session="currentSession"
-      :mode="mode"
-      :isProcessing="isProcessing"
-      @back="handleOverviewBack"
-      @seekToWindow="handleOverviewSeekToWindow"
-    />
-
     <!-- Main Video Analyzer View -->
     <template v-else>
       <!-- Nav Rail (left) -->
@@ -33,6 +22,7 @@
         :activeView="navActiveView"
         :isAnalyzing="isProcessing"
         :summaryCount="summaries.length"
+        :summaryReady="summaryReady"
         @navigate="handleNavigation"
         @toggleAnalyze="toggleAnalysis"
       />
@@ -48,10 +38,12 @@
 
           <div class="header-center">
             <span class="mode-badge" :class="mode">
-              {{ mode === 'local' ? '&#x1F4C1; 本地视频' : '&#x1F4E1; 实时视频流' }}
+              {{ replayMode
+                ? `⏱ ${t('app.offlineReplay')}`
+                : (mode === 'local' ? `📁 ${t('app.localVideo')}` : `📡 ${t('app.liveStream')}`) }}
             </span>
             <span v-if="currentSession" class="header-session-id">
-              Session {{ currentSession.session_id?.substring(0, 8) || '' }}
+              {{ t('app.session') }} {{ currentSession.session_id?.substring(0, 8) || '' }}
             </span>
             <span v-if="currentSession" class="session-name">
               {{ currentSession.video_name }}
@@ -59,8 +51,32 @@
           </div>
 
           <div class="header-actions">
+            <button
+              v-if="summaryReady"
+              class="btn summary-ready-btn"
+              @click="handleNavigation('report')"
+            >
+              <span aria-hidden="true">&#x1F4C4;</span>
+              {{ t('app.videoSummary') }}
+            </button>
+            <div class="language-switch" :aria-label="t('lang.label')">
+              <button
+                class="language-option"
+                :class="{ active: language === 'zh' }"
+                @click="setLanguage('zh')"
+              >
+                {{ t('lang.zh') }}
+              </button>
+              <button
+                class="language-option"
+                :class="{ active: language === 'en' }"
+                @click="setLanguage('en')"
+              >
+                {{ t('lang.en') }}
+              </button>
+            </div>
             <button class="btn btn-secondary" @click="goHome">
-              &#x2190; 返回
+              &#x2190; {{ t('app.back') }}
             </button>
           </div>
         </header>
@@ -84,9 +100,12 @@
                 :sam3Available="sam3Status.available"
                 :loopWindow="loopWindow"
                 :streamEnded="streamEnded"
+                :resumeNonce="playbackResumeNonce"
+                :windowDuration="windowDuration"
                 @timeupdate="handleTimeUpdate"
                 @play="handlePlay"
-                @pause="handlePause"
+                @pause="handleVideoPause"
+                @ended="handleVideoEnded"
                 @seek="handleSeek"
                 @upload="handleUpload"
                 @load="handleLoad"
@@ -102,7 +121,7 @@
                 :mode="mode"
                 :isLive="mode === 'stream'"
                 :analyzedWindows="analyzedWindows"
-                :summaries="summaries"
+                :summaries="localizedSummaries"
                 :highlightedWindowId="highlightedWindowId"
                 :isAnalyzing="isProcessing"
                 :surgr1Status="surgr1Status"
@@ -126,10 +145,10 @@
               />
             </section>
 
-            <!-- 历史窗口分析 (always visible) -->
+            <!-- Key event nodes / full window history (always visible) -->
             <div
               class="video-resize-handle"
-              title="拖拽调整历史区高度，双击复位"
+              :title="t('app.resizeHistoryTitle')"
               @pointerdown="startVideoResize"
               @dblclick="resetBottomStripHeight"
             ></div>
@@ -139,21 +158,93 @@
               :style="{ height: bottomStripHeight + 'px' }"
             >
               <div class="bcs-header">
-                <span class="bcs-title">历史窗口分析</span>
-                <span class="bcs-count" v-if="summaries.length > 0">
-                  {{ summaries.length }} 个窗口
+                <span class="bcs-title">{{ t('app.keyEventNodes') }}</span>
+                <span class="bcs-count" v-if="bottomViewMode === 'events' && sortedEventNodes.length > 0">
+                  {{ t('app.eventCount', { count: sortedEventNodes.length }) }}
                 </span>
+                <span class="bcs-count" v-else-if="bottomViewMode === 'windows' && summaries.length > 0">
+                  {{ t('app.windowCount', { count: summaries.length }) }}
+                </span>
+                <div class="bcs-mode-toggle" :aria-label="t('app.bottomMode')">
+                  <button
+                    class="bcs-mode-btn"
+                    :class="{ active: bottomViewMode === 'events' }"
+                    @click="setBottomViewMode('events')"
+                  >
+                    {{ t('app.eventNodes') }}
+                  </button>
+                  <button
+                    class="bcs-mode-btn"
+                    :class="{ active: bottomViewMode === 'windows' }"
+                    @click="setBottomViewMode('windows')"
+                  >
+                    {{ t('app.allWindows') }}
+                  </button>
+                </div>
+                <button
+                  class="bcs-refresh-btn"
+                  :title="t('app.regenerateEvents')"
+                  :disabled="summaries.length === 0 || eventNodesLoading"
+                  @click="requestEventNodes({ force: true })"
+                >
+                  &#x21BB;
+                </button>
                 <button
                   class="bcs-overview-btn"
                   :disabled="summaries.length === 0"
                   @click="enterOverview"
                 >
-                  &#x2B1A; 网格视图
+                  &#x2B1A; {{ t('app.gridView') }}
                 </button>
               </div>
               <div
+                class="bcs-scroll event-node-scroll"
+                v-if="bottomViewMode === 'events' && sortedEventNodes.length > 0"
+                ref="bottomScrollRef"
+                :class="{ dragging: bottomScrollDragging }"
+                @pointerdown="startBottomScrollDrag"
+              >
+                <div
+                  v-for="node in sortedEventNodes"
+                  :key="node.id"
+                  class="event-node-card"
+                  :class="[
+                    `event-type-${node.type}`,
+                    `event-severity-${node.severity}`,
+                    { selected: node.window_ids?.includes(selectedWindowId) }
+                  ]"
+                  :title="node.summary"
+                  @pointerdown.stop
+                  @click="handleEventNodeClick(node)"
+                >
+                  <div class="event-node-head">
+                    <span class="event-node-kind">{{ eventNodeTypeLabel(node.type) }}</span>
+                    <span class="event-node-time">{{ eventNodeTimeLabel(node) }}</span>
+                  </div>
+                  <div class="event-node-thumb">
+                    <img
+                      v-if="eventNodeThumbnail(node)"
+                      :src="eventNodeThumbnail(node)"
+                      alt=""
+                      @error="handleEventNodeThumbError(node, $event)"
+                    />
+                    <div
+                      v-else
+                      class="bcs-card-thumb-placeholder"
+                      :class="{ loading: eventNodeThumbLoading(node) }"
+                    ></div>
+                  </div>
+                  <div class="event-node-title">{{ node.title }}</div>
+                  <div class="event-node-summary">{{ node.summary }}</div>
+                  <div class="event-node-meta">
+                    <span>{{ eventNodeWindowLabel(node) }}</span>
+                    <span v-if="node.confidence != null">{{ t('app.eventConfidence', { value: Math.round(node.confidence * 100) }) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div
                 class="bcs-scroll"
-                v-if="summaries.length > 0"
+                v-else-if="bottomViewMode === 'windows' && summaries.length > 0"
                 ref="bottomScrollRef"
                 :class="{ dragging: bottomScrollDragging }"
                 @pointerdown="startBottomScrollDrag"
@@ -168,10 +259,11 @@
                     resolved: isBleedingResolvedSummary(s),
                   }"
                   :title="s.summary"
+                  @pointerdown.stop
                   @click="handleBottomCardClick(s)"
                 >
                   <div class="bcs-card-top">
-                    <span class="bcs-card-win">窗口{{ toChineseNumeral(s.window_id + 1) }}</span>
+                    <span class="bcs-card-win">{{ bottomWindowLabel(s.window_id + 1) }}</span>
                     <span class="bcs-card-time">
                       {{ formatWindowTime(s.start_time) }}
                     </span>
@@ -181,6 +273,7 @@
                       v-if="bottomThumbnails[s.window_id]"
                       :src="bottomThumbnails[s.window_id]"
                       alt=""
+                      @error="handleBottomThumbError(s, $event)"
                     />
                     <div
                       v-else
@@ -193,8 +286,7 @@
               </div>
               <div v-else class="bcs-empty">
                 <span class="bcs-empty-hint">
-                  {{ isProcessing ? '分析进行中，窗口总结将在此逐条出现…'
-                                  : '点击「开始分析」后，各窗口的手术总结会按时间顺序显示在这里。' }}
+                  {{ bottomEmptyText }}
                 </span>
               </div>
             </div>
@@ -203,7 +295,7 @@
           <!-- Right Panel (Analysis/Chat tabs) -->
           <div
             class="right-panel-resize-handle"
-            title="拖拽调整右侧面板宽度，双击复位"
+            :title="t('app.resizeRightPanelTitle')"
             @pointerdown="startRightPanelResize"
             @dblclick="resetRightPanelWidth"
           ></div>
@@ -211,8 +303,8 @@
           <RightPanel
             v-model:activeTab="rightPanelTab"
             :style="{ width: rightPanelWidth + 'px' }"
-            :summaries="summaries"
-            :currentSummary="currentSummary"
+            :summaries="localizedSummaries"
+            :currentSummary="localizedCurrentSummary"
             :selectedWindowId="selectedWindowId"
             :sessionId="currentSession?.session_id || ''"
             :isProcessing="isProcessing"
@@ -243,19 +335,40 @@
       <!-- Overview Toast -->
       <Transition name="toast">
         <div v-if="showOverviewToast" class="overview-toast">
-          <span class="overview-toast-text">分析完成</span>
-          <button class="overview-toast-btn" @click="enterOverview">进入一览模式 &#x2192;</button>
+          <span class="overview-toast-text">{{ t('app.analysisComplete') }}</span>
+          <button class="overview-toast-btn" @click="enterOverview">{{ t('app.enterOverview') }} &#x2192;</button>
           <button class="overview-toast-dismiss" @click="showOverviewToast = false">&#x2715;</button>
         </div>
       </Transition>
+
+      <!-- Window Overview Mode: overlay the main view so live playback stays mounted. -->
+      <WindowOverview
+        v-if="currentView === 'overview'"
+        class="overview-layer"
+        :summaries="localizedSummaries"
+        :session="currentSession"
+        :mode="mode"
+        :isProcessing="isProcessing"
+        :windowDuration="windowDuration"
+        @back="handleOverviewBack"
+        @seekToWindow="handleOverviewSeekToWindow"
+      />
+
+      <ClinicalReportView
+        v-if="currentView === 'report'"
+        :session="currentSession"
+        :language="language"
+        :initialReport="replayReport"
+        @back="handleReportBack"
+      />
     </template>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
-import { apiUrl } from './utils/electronBridge.js'
+import { apiUrl, isElectron, loadReplayBundle } from './utils/electronBridge.js'
 import analysisQueue from './utils/AnalysisQueue.js'
 import ModeSelector from './components/ModeSelector.vue'
 import StreamInput from './components/StreamInput.vue'
@@ -265,11 +378,15 @@ import SummaryPanel from './components/SummaryPanel.vue'
 import VoiceChat from './components/VoiceChat.vue'
 import FrameAnalysisPopup from './components/FrameAnalysisPopup.vue'
 import WindowOverview from './components/WindowOverview.vue'
+import ClinicalReportView from './components/ClinicalReportView.vue'
 import NavRail from './components/NavRail.vue'
 import RightPanel from './components/RightPanel.vue'
+import { useI18n } from './i18n.js'
+
+const { language, setLanguage, t } = useI18n()
 
 // View state
-const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview'
+const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview', 'report'
 const mode = ref('local')  // 'local' or 'stream'
 
 // State
@@ -279,6 +396,17 @@ const duration = ref(0)
 const isPlaying = ref(false)
 const volume = ref(0.8)
 const summaries = ref([])
+const replayMode = ref(false)
+const replayAllSummaries = ref([])
+const replayAllEvents = ref([])
+const replayReport = ref(null)
+const replayFinalUpdateDelay = ref(1.25)
+let replaySummarySignature = ''
+let replayEventSignature = ''
+const bottomViewMode = ref(localStorage.getItem('surg_bottom_view_mode') || 'events')
+const eventNodes = ref([])
+const eventNodesLoading = ref(false)
+const eventNodesError = ref('')
 const bottomThumbnails = reactive({})
 const bottomThumbLoading = reactive({})
 const isProcessing = ref(false)
@@ -291,8 +419,14 @@ const showSam3 = ref(false)  // Toggle for SAM3 segmented view
 
 // Loop playback state - when set, video will loop within this window
 const loopWindow = ref(null)  // { window_id, start_time, end_time }
+const livePlaybackTime = ref(0)
+const loopReturnTime = ref(null)
+const loopWasPlaying = ref(false)
+const playbackResumeNonce = ref(0)
 // Flag to prevent clearing loopWindow during loop-triggered seeks
 let isLoopSeek = false
+let detachedPlaybackWallStart = null
+let detachedPlaybackBaseTime = 0
 const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime due to processing delay)
 
 // New E3 layout state
@@ -302,18 +436,22 @@ const navActiveView = ref('analysis')  // Nav rail active view
 const viewportWidth = ref(window.innerWidth)
 const viewportHeight = ref(window.innerHeight)
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
-const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.32), 560, 760)
-const maxRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.46), 760, 1040)
-const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.36), 380, 470)
-const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.56), 520, 660)
+const RIGHT_PANEL_STORAGE_KEY = 'surg_right_panel_width_v2'
+const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v3'
+const minRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.26), 480, 540)
+const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.28), 500, 680)
+const maxRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.42), 680, 960)
+const minBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.24), 360, 420)
+const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.30), 430, 520)
+const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.50), 520, 700)
 const rightPanelWidth = ref(clamp(
-  Number(localStorage.getItem('surg_right_panel_width')) || defaultRightPanelWidth(),
-  560,
+  Number(localStorage.getItem(RIGHT_PANEL_STORAGE_KEY)) || defaultRightPanelWidth(),
+  minRightPanelWidth(),
   maxRightPanelWidth()
 ))
 const bottomStripHeight = ref(clamp(
-  Number(localStorage.getItem('surg_bottom_strip_height')) || defaultBottomStripHeight(),
-  380,
+  Number(localStorage.getItem(BOTTOM_STRIP_STORAGE_KEY)) || defaultBottomStripHeight(),
+  minBottomStripHeight(),
   maxBottomStripHeight()
 ))
 const frameAnalysisPopup = ref({
@@ -345,6 +483,12 @@ const surgr1ProcessingStatus = ref({ running: false, framesAnalyzed: 0 })
 let streamPollingInterval = null
 let streamTimerInterval = null
 let streamEndCheckInterval = null  // Check if stream has ended
+let lastSummaryRefreshAt = 0
+let lastSummaryRefreshWindow = -1
+const translationInFlight = new Set()
+let eventNodesTimer = null
+let eventNodesRequestSeq = 0
+let eventNodesRefreshPending = false
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
 const streamEnded = ref(false)  // Whether the video stream has ended
 const streamWasActive = ref(false)  // Track if stream was ever active (for reliable end detection)
@@ -370,7 +514,10 @@ const getSessionSignal = () => {
 
 const bottomThumbQueue = []
 const bottomThumbQueued = new Set()
+const bottomThumbRetries = reactive({})
+const bottomThumbFailedUrls = new Map()
 let bottomThumbActive = 0
+const BOTTOM_THUMB_CONCURRENCY = 2
 const bottomScrollRef = ref(null)
 const bottomScrollDragging = ref(false)
 const bottomScrollClickSuppressed = ref(false)
@@ -381,9 +528,23 @@ let bottomScrollUpHandler = null
 const clearBottomThumbnails = () => {
   Object.keys(bottomThumbnails).forEach(key => delete bottomThumbnails[key])
   Object.keys(bottomThumbLoading).forEach(key => delete bottomThumbLoading[key])
+  Object.keys(bottomThumbRetries).forEach(key => delete bottomThumbRetries[key])
+  bottomThumbFailedUrls.clear()
   bottomThumbQueue.length = 0
   bottomThumbQueued.clear()
   bottomThumbActive = 0
+}
+
+const clearEventNodes = () => {
+  if (eventNodesTimer) {
+    clearTimeout(eventNodesTimer)
+    eventNodesTimer = null
+  }
+  eventNodesRequestSeq += 1
+  eventNodesRefreshPending = false
+  eventNodes.value = []
+  eventNodesError.value = ''
+  eventNodesLoading.value = false
 }
 
 const fetchBottomThumbnail = async (summary) => {
@@ -395,31 +556,59 @@ const fetchBottomThumbnail = async (summary) => {
   const endTime = Number(summary.end_time ?? summary.window_end ?? startTime + windowDuration.value)
   const midTime = Math.max(0, (startTime + endTime) / 2)
 
-  try {
+  const setThumbnail = (frame) => {
+    if (!frame || currentSession.value?.session_id !== sid) return false
+    if (frame.url) {
+      if (bottomThumbFailedUrls.get(wid)?.has(frame.url)) return false
+      bottomThumbnails[wid] = frame.url
+      delete bottomThumbRetries[wid]
+      return true
+    }
+    if (frame.image_base64) {
+      bottomThumbnails[wid] = `data:image/jpeg;base64,${frame.image_base64}`
+      delete bottomThumbRetries[wid]
+      return true
+    }
+    return false
+  }
+
+  const closestFrame = (frames, targetTime) => {
+    const badUrls = bottomThumbFailedUrls.get(wid)
+    const candidates = (frames || []).filter(frame => {
+      if (frame?.image_base64) return true
+      if (frame?.url) return !badUrls?.has(frame.url)
+      return false
+    })
+    if (!candidates.length) return null
+    return candidates.reduce((a, b) => {
+      return Math.abs((Number(b.timestamp) || 0) - targetTime) < Math.abs((Number(a.timestamp) || 0) - targetTime) ? b : a
+    }, candidates[0])
+  }
+
+  const requestBatch = async ({ start, end, maxFrames = 8, usePreview = true, target = midTime }) => {
+    const safeStart = Math.max(0, Number(start) || 0)
+    const safeEnd = Math.max(safeStart + 0.2, Number(end) || safeStart + 0.2)
     const batchRes = await axios.get(`/api/analysis/frames-batch/${sid}`, {
       params: {
-        start: Math.max(0, midTime - 1),
-        end: midTime + 1,
-        max_frames: 8,
+        start: safeStart,
+        end: safeEnd,
+        max_frames: maxFrames,
         use_url: true,
-        use_preview: true,
+        use_preview: usePreview,
       },
       signal: getSessionSignal(),
     })
-    const frames = batchRes.data?.frames || []
-    if (batchRes.data?.success && frames.length > 0) {
-      const best = frames.reduce((a, b) => {
-        return Math.abs((b.timestamp || 0) - midTime) < Math.abs((a.timestamp || 0) - midTime) ? b : a
-      }, frames[0])
-      if (best?.url) {
-        if (currentSession.value?.session_id !== sid) return
-        bottomThumbnails[wid] = best.url
-        return
-      }
-    }
+    if (!batchRes.data?.success) return false
+    return setThumbnail(closestFrame(batchRes.data?.frames || [], target))
+  }
+
+  try {
+    if (await requestBatch({ start: midTime - 1, end: midTime + 1, usePreview: true })) return
+    if (await requestBatch({ start: startTime, end: endTime, maxFrames: 10, usePreview: true })) return
+    if (await requestBatch({ start: startTime, end: endTime, maxFrames: 12, usePreview: false })) return
 
     const frameRes = await axios.get(`/api/analysis/frame-at-timestamp/${sid}`, {
-      params: { timestamp: midTime, tolerance: 5.0 },
+      params: { timestamp: midTime, tolerance: 8.0 },
       signal: getSessionSignal(),
     })
     if (frameRes.data?.success && frameRes.data.image_base64) {
@@ -433,7 +622,7 @@ const fetchBottomThumbnail = async (summary) => {
 }
 
 const pumpBottomThumbQueue = () => {
-  while (bottomThumbActive < 1 && bottomThumbQueue.length > 0) {
+  while (bottomThumbActive < BOTTOM_THUMB_CONCURRENCY && bottomThumbQueue.length > 0) {
     const summary = bottomThumbQueue.shift()
     const wid = summary?.window_id
     if (wid == null || bottomThumbnails[wid]) {
@@ -452,12 +641,28 @@ const pumpBottomThumbQueue = () => {
   }
 }
 
-const enqueueBottomThumbnail = (summary) => {
+const enqueueBottomThumbnail = (summary, priority = false) => {
   const wid = summary?.window_id
   if (wid == null || bottomThumbnails[wid] || bottomThumbQueued.has(wid)) return
   bottomThumbQueued.add(wid)
-  bottomThumbQueue.push(summary)
+  if (priority) bottomThumbQueue.unshift(summary)
+  else bottomThumbQueue.push(summary)
   pumpBottomThumbQueue()
+}
+
+const handleBottomThumbError = (summary, event = null) => {
+  const wid = summary?.window_id
+  if (wid == null) return
+  const failedUrl = event?.target?.currentSrc || event?.target?.src || bottomThumbnails[wid]
+  if (failedUrl) {
+    if (!bottomThumbFailedUrls.has(wid)) bottomThumbFailedUrls.set(wid, new Set())
+    bottomThumbFailedUrls.get(wid).add(failedUrl)
+  }
+  delete bottomThumbnails[wid]
+  const retries = Number(bottomThumbRetries[wid] || 0)
+  if (retries >= 2) return
+  bottomThumbRetries[wid] = retries + 1
+  setTimeout(() => enqueueBottomThumbnail(summary, true), 350 + retries * 700)
 }
 
 // Abort all session requests
@@ -485,6 +690,12 @@ const fetchConfig = async () => {
 
 const cleanUserSummaryText = (text) => {
   return String(text || '')
+    .replace(/太夹前|钛夹前|太夹钳|胎夹钳/g, '钛夹钳')
+    .replace(/动胆囊动脉/g, '胆囊动脉')
+    .replace(/动胆囊管/g, '胆囊管')
+    .replace(/(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))[，,]?\s*明显/g, '$1')
+    .replace(/(当前窗口|本段|术野|画面)出现/g, '$1有')
+    .replace(/出现了|出现/g, '')
     .replace(/【专家实时快照[^】]*】/g, '')
     .replace(/该段为实时快照，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
     .replace(/已基于\s*\d+\s*帧快速更新手术进程，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
@@ -494,25 +705,216 @@ const cleanUserSummaryText = (text) => {
     .replace(/(?:暂定|暂时|稳定)?检出暂未稳定检出器械/g, '未见明确器械')
     .replace(/暂未稳定检出器械/g, '未见明确器械')
     .replace(/当前判断为/g, '当前处于')
+    .replace(/[，,。；;\s]*暂无明确关键操作变化[。；;\s]*/g, '。')
+    .replace(/当前处于当前阶段[，,]/g, '当前画面')
     .replace(/(?:动作三元组提示|主要动作)[:：]\s*\[[^\n。]*。?/g, '')
     .replace(/(?:动作三元组提示|主要动作)[:：]\s*(?:\[[^\]]+\](?:-[^；。,\s]+)*[；,，、\s]*)+。?/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
+const CVS_STATUS_RE = /(CVS评估[:：]?[^。；;]*(?:[。；;]|$)|CVS(?:尚未达成|未达成|达成|已达成|确认|评估中)[^。；;]*(?:[。；;]|$)|安全关键视野[^。；;]*(?:[。；;]|$)|关键安全视野[^。；;]*(?:[。；;]|$)|critical view(?: of safety)?[^.;]*(?:[.;]|$))/gi
+const CVS_RELEVANT_RE = /(CVS|安全关键视野|关键安全视野|critical view|胆囊管|胆囊动脉|胆囊板|两条结构)/
+const CVS_ACHIEVED_RE = /(CVS(?:已经|已)?达成|CVS确认|CVS已确认|安全关键视野(?:已经|已)?确认|三要素(?:均)?(?:满足|达成)|critical view(?: of safety)? (?:achieved|confirmed))/i
+
+const stripCvsStatusText = (text) => {
+  return cleanUserSummaryText(text)
+    .replace(CVS_STATUS_RE, '')
+    .replace(/[，,]\s*[。；;]/g, '。')
+    .replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
+    .trim()
+}
+
 const cleanSummaryPayload = (payload) => {
   if (!payload || typeof payload !== 'object') return payload
+  let others = payload.others && typeof payload.others === 'object' ? payload.others : {}
+  if (typeof payload.others === 'string') {
+    try {
+      others = JSON.parse(payload.others)
+    } catch {
+      others = {}
+    }
+  }
+  const windowId = payload.window_id ?? payload.windowId
+  const startTime = payload.start_time ?? payload.window_start ?? payload.startTime
+  const endTime = payload.end_time ?? payload.window_end ?? payload.endTime
+  const summaryText = payload.summary ?? payload.glm_summary ?? payload.summary_text ?? payload.window_summary ?? ''
   return {
     ...payload,
-    summary: cleanUserSummaryText(payload.summary),
-    stage1_summary: cleanUserSummaryText(payload.stage1_summary),
+    others,
+    window_id: windowId == null ? windowId : Number(windowId),
+    start_time: startTime == null ? startTime : Number(startTime),
+    end_time: endTime == null ? endTime : Number(endTime),
+    summary: cleanUserSummaryText(summaryText),
+    phase: payload.phase || payload.dominant_phase || payload.surgical_phase || others.phase || 'Unknown',
+    stage: Number(payload.stage ?? others.stage ?? 2),
+    summary_en: payload.summary_en ?? others.summary_en ?? '',
+    stage1_summary: cleanUserSummaryText(payload.stage1_summary ?? others.stage1_summary),
   }
+}
+
+const upsertSummary = (payload) => {
+  const data = cleanSummaryPayload(payload)
+  if (!data || !Number.isFinite(data.window_id)) return null
+
+  const existingIndex = summaries.value.findIndex(s => s.window_id === data.window_id)
+  if (existingIndex >= 0) {
+    summaries.value[existingIndex] = {
+      ...summaries.value[existingIndex],
+      ...data,
+      summary: data.summary || summaries.value[existingIndex].summary,
+      summary_en: data.summary_en || summaries.value[existingIndex].summary_en,
+    }
+  } else {
+    const arr = summaries.value
+    const last = arr.length > 0 ? arr[arr.length - 1] : null
+    if (!last || (data.start_time ?? 0) >= (last.start_time ?? 0)) {
+      arr.push(data)
+    } else {
+      let lo = 0, hi = arr.length
+      const st = data.start_time ?? 0
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if ((arr[mid].start_time ?? 0) <= st) lo = mid + 1
+        else hi = mid
+      }
+      arr.splice(lo, 0, data)
+    }
+  }
+
+  enqueueBottomThumbnail(data)
+  scheduleEventNodesRefresh()
+  return data
+}
+
+const syncReplayTimeline = (time, { forceFinal = false } = {}) => {
+  if (!replayMode.value) return
+  const replayTime = Math.max(0, Number(time || 0))
+  const all = replayAllSummaries.value
+
+  let lo = 0
+  let hi = all.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    const endTime = Number(all[mid]?.end_time ?? all[mid]?.window_end ?? 0)
+    if (endTime <= replayTime + 0.04) lo = mid + 1
+    else hi = mid
+  }
+
+  const visibleCount = lo
+  const latest = visibleCount > 0 ? all[visibleCount - 1] : null
+  const latestEnd = Number(latest?.end_time ?? latest?.window_end ?? 0)
+  const stage1 = cleanUserSummaryText(latest?.stage1_summary || latest?.others?.stage1_summary || '')
+  const finalText = cleanUserSummaryText(latest?.summary || '')
+  const showExpertStage = Boolean(
+    latest
+    && !forceFinal
+    && stage1
+    && finalText
+    && stage1 !== finalText
+    && replayTime < latestEnd + replayFinalUpdateDelay.value
+  )
+  const nextSummarySignature = `${visibleCount}:${showExpertStage ? 'expert' : 'final'}:${forceFinal ? 1 : 0}`
+
+  if (nextSummarySignature !== replaySummarySignature) {
+    const previousIds = new Set(summaries.value.map(item => Number(item.window_id)))
+    const visible = all.slice(0, visibleCount).map((item, index) => {
+      const cleaned = cleanSummaryPayload(item)
+      if (showExpertStage && index === visibleCount - 1) {
+        return {
+          ...cleaned,
+          summary: stage1,
+          stage: 1,
+          replay_stage: 'expert',
+        }
+      }
+      return { ...cleaned, replay_stage: 'final' }
+    })
+    summaries.value = visible
+    visible.forEach((item) => {
+      if (!previousIds.has(Number(item.window_id))) enqueueBottomThumbnail(item)
+    })
+    replaySummarySignature = nextSummarySignature
+  }
+
+  const visibleEvents = replayAllEvents.value.filter((node) => {
+    const availableAt = Number(node?.end_time ?? node?.start_time ?? 0)
+    return availableAt <= replayTime + 0.04 || forceFinal
+  })
+  const nextEventSignature = visibleEvents.map(node => node?.id || `${node?.start_time}-${node?.title}`).join('|')
+  if (nextEventSignature !== replayEventSignature) {
+    eventNodes.value = visibleEvents
+      .map(normalizeEventNode)
+      .filter(node => node.window_ids.length > 0)
+    eventNodesError.value = ''
+    eventNodesLoading.value = false
+    replayEventSignature = nextEventSignature
+    resetEventNodeScroll()
+  }
+
+  const endAt = Number(duration.value || currentSession.value?.duration || 0)
+  isProcessing.value = isPlaying.value && (!endAt || replayTime < endAt - 0.04)
+}
+
+const loadOfflineReplayFromQuery = async () => {
+  const query = new URLSearchParams(window.location.search)
+  const specPath = query.get('replaySpec')
+  if (!specPath) return false
+  if (!isElectron()) throw new Error('Offline replay requires the Electron application')
+
+  const bundle = await loadReplayBundle(specPath)
+  if (!bundle?.success) throw new Error(bundle?.error || 'Failed to load offline replay')
+
+  abortAllSessionRequests()
+  createSessionAbortController()
+  replayMode.value = true
+  replayAllSummaries.value = (bundle.summaries || []).map(cleanSummaryPayload)
+  replayAllEvents.value = Array.isArray(bundle.events) ? bundle.events : []
+  replayReport.value = bundle.report || null
+  replayFinalUpdateDelay.value = Math.max(0, Number(bundle.spec?.final_update_delay || 1.25))
+  replaySummarySignature = ''
+  replayEventSignature = ''
+
+  setLanguage(bundle.spec?.language || 'zh')
+  mode.value = 'local'
+  currentView.value = 'main'
+  navActiveView.value = 'analysis'
+  rightPanelTab.value = 'analysis'
+  bottomViewMode.value = 'events'
+  currentSession.value = bundle.session
+  duration.value = Number(bundle.session?.duration || 0)
+  const requestedStartAt = Number(query.get('replayStartAt') || 0)
+  const initialTime = Number.isFinite(requestedStartAt)
+    ? Math.min(duration.value, Math.max(0, requestedStartAt))
+    : 0
+  currentTime.value = initialTime
+  livePlaybackTime.value = initialTime
+  isPlaying.value = false
+  isProcessing.value = false
+  streamEnded.value = false
+  summaries.value = []
+  eventNodes.value = []
+  clearBottomThumbnails()
+  rightPanelWidth.value = defaultRightPanelWidth()
+  bottomStripHeight.value = defaultBottomStripHeight()
+  syncReplayTimeline(initialTime, { forceFinal: initialTime >= duration.value - 0.04 })
+
+  await nextTick()
+  if (bundle.spec?.auto_play !== false) {
+    const delay = Math.max(100, Number(bundle.spec?.auto_start_delay_ms || 900))
+    window.setTimeout(() => {
+      if (!replayMode.value || currentSession.value?.session_id !== bundle.session?.session_id) return
+      handlePlay()
+    }, delay)
+  }
+  console.log('[Replay] Loaded offline analysis bundle:', bundle.paths)
+  return true
 }
 
 const isSevereBleedingSummary = (summary) => {
   const text = `${summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
   if (/(无(?:明显)?出血|未见(?:明显)?出血|没有(?:明显)?出血|无活动性出血|未见活动性出血|no bleeding|without bleeding)/i.test(text)) return false
-  return /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|active bleeding|heavy bleeding|massive bleeding|profuse bleeding)/i.test(text)
+  return /(大量(?:活动性)?出血|明显(?:活动性)?出血|持续(?:活动性)?出血|喷涌出血|喷射性出血|涌血|明确出血源|影响视野的持续渗血|heavy bleeding|massive bleeding|profuse bleeding|significant bleeding)/i.test(text)
 }
 
 const isBleedingResolvedSummary = (summary) => {
@@ -520,18 +922,15 @@ const isBleedingResolvedSummary = (summary) => {
   return /(出血(?:已经|已)?(?:停止|控制|解决)|已(?:完成)?止血|止血(?:完成|成功|有效)|凝血后(?:未见|无)活动性出血|未见活动性出血|无活动性出血|bleeding (?:stopped|controlled|resolved)|hemostasis achieved)/i.test(text)
 }
 
-// Computed: current summary based on time
-// When in loop playback mode, always show the loop window's summary to avoid flickering
+// Computed: current summary based on the live playback clock.
 const currentSummary = computed(() => {
   if (!summaries.value.length) return null
   
-  // If in loop playback mode, use the fixed loop window ID
-  // This prevents flickering caused by currentTime constantly changing
-  if (loopWindow.value) {
-    return cleanSummaryPayload(summaries.value.find(s => s.window_id === loopWindow.value.window_id)) || null
-  }
-  
-  const windowId = Math.floor(currentTime.value / windowDuration.value)
+  // During history-loop preview, the native video element seeks inside an old
+  // window. Keep the analysis panel tied to livePlaybackTime so review mode
+  // does not make "latest" jump backward.
+  const displayTime = loopWindow.value ? livePlaybackTime.value : currentTime.value
+  const windowId = Math.floor(displayTime / windowDuration.value)
   return cleanSummaryPayload(summaries.value.find(s => s.window_id === windowId)
     || [...summaries.value]
       .filter(s => s.window_id <= windowId)
@@ -540,15 +939,66 @@ const currentSummary = computed(() => {
     || null)
 })
 
+const localizedSummary = (summary) => {
+  const s = cleanSummaryPayload(summary)
+  if (!s) return s
+  if (language.value === 'en' && s.summary_en) {
+    return { ...s, summary: stripCvsStatusText(s.summary_en) || s.summary_en }
+  }
+  return { ...s, summary: stripCvsStatusText(s.summary) || s.summary }
+}
+
+const localizedSummaries = computed(() => summaries.value.map(localizedSummary))
+const localizedCurrentSummary = computed(() => localizedSummary(currentSummary.value))
+
 const isSimulatorSession = computed(() => (
   mode.value === 'stream' &&
   currentSession.value?.video_path?.startsWith('simulator://')
 ))
 
+const maxPlayableTime = () => {
+  const sessionDuration = Number(currentSession.value?.duration || 0)
+  const displayDuration = Number(duration.value || 0)
+  const maxTime = Math.max(sessionDuration, displayDuration)
+  return maxTime > 0 ? maxTime : Infinity
+}
+
+const startDetachedPlaybackClock = () => {
+  if (mode.value !== 'stream' || !isSimulatorSession.value || !isPlaying.value || streamEnded.value) return
+  detachedPlaybackWallStart = performance.now()
+  detachedPlaybackBaseTime = Math.max(
+    Number(livePlaybackTime.value || 0),
+    Number(currentTime.value || 0),
+    Number(loopReturnTime.value || 0)
+  )
+}
+
+const advanceDetachedPlaybackClock = () => {
+  if (detachedPlaybackWallStart == null) return null
+  const elapsed = isPlaying.value ? (performance.now() - detachedPlaybackWallStart) / 1000 : 0
+  const nextTime = Math.min(maxPlayableTime(), Math.max(0, detachedPlaybackBaseTime + elapsed))
+  livePlaybackTime.value = nextTime
+  currentTime.value = nextTime
+  return nextTime
+}
+
+const stopDetachedPlaybackClock = () => {
+  const nextTime = advanceDetachedPlaybackClock()
+  detachedPlaybackWallStart = null
+  detachedPlaybackBaseTime = 0
+  return nextTime
+}
+
 // Computed: list of analyzed window IDs
 const analyzedWindows = computed(() => {
   return summaries.value.map(s => s.window_id)
 })
+
+const summaryReady = computed(() => Boolean(
+  currentSession.value
+  && summaries.value.length > 0
+  && !isProcessing.value
+))
 
 // Mode selection handlers
 const handleModeSelect = (selectedMode) => {
@@ -565,6 +1015,7 @@ const handleModeSelect = (selectedMode) => {
 const handleResumeSession = (session) => {
   currentSession.value = session
   duration.value = session.duration
+  clearEventNodes()
   
   // Detect if this is a stream session based on video_path
   const isStreamSession = session.video_path && (
@@ -592,6 +1043,7 @@ const handleResumeSession = (session) => {
 const handleStreamConnect = ({ session, autoAnalyze }) => {
   // Clear previous session data first
   summaries.value = []
+  clearEventNodes()
   clearBottomThumbnails()
   highlightedWindowId.value = -1
   userSelectedWindow.value = false
@@ -602,10 +1054,11 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   streamWasActive.value = false
   
   currentSession.value = session
-  duration.value = 0  // Live stream has no fixed duration
+  duration.value = Number(session.duration || 0) || 0
   currentView.value = 'main'
   isPlaying.value = true
   currentTime.value = 0
+  livePlaybackTime.value = 0
   streamStartTime.value = Date.now()  // Track when stream started
   
   // Restart service status polling when entering main view
@@ -644,7 +1097,7 @@ const goHome = () => {
   }
   
   // 5. Stop SurgR1 continuous processing on backend (use sendBeacon for reliability)
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     // Use sendBeacon to ensure the stop request is sent even if page navigation happens
     const sessionId = currentSession.value.session_id
     try {
@@ -677,6 +1130,13 @@ const goHome = () => {
   currentView.value = 'select'
   currentSession.value = null
   summaries.value = []
+  replayMode.value = false
+  replayAllSummaries.value = []
+  replayAllEvents.value = []
+  replayReport.value = null
+  replaySummarySignature = ''
+  replayEventSignature = ''
+  clearEventNodes()
   clearBottomThumbnails()
   isProcessing.value = false
   isPlaying.value = false
@@ -694,15 +1154,44 @@ const goHome = () => {
 
 // Video handlers
 let lastAcceptedTimeUpdate = 0
+let lastPositionHeartbeat = 0
 const handleTimeUpdate = (time) => {
   const now = performance.now()
   if (mode.value === 'stream' && now - lastAcceptedTimeUpdate < 250) {
     return
   }
   lastAcceptedTimeUpdate = now
+  if (loopWindow.value) {
+    // History-loop preview must not rewrite the live playback clock. The
+    // native video element is temporarily seeking within an analyzed window,
+    // but backend position, latest-analysis selection, and resume point stay
+    // tied to the live stream timeline.
+    advanceDetachedPlaybackClock()
+    return
+  }
+  if (
+    mode.value === 'stream' &&
+    isSimulatorSession.value &&
+    isPlaying.value &&
+    !loopWindow.value &&
+    livePlaybackTime.value > 3 &&
+    time < livePlaybackTime.value - 0.03
+  ) {
+    return
+  }
   currentTime.value = time
+  if (replayMode.value) syncReplayTimeline(time)
   if (mode.value === 'stream') {
+    livePlaybackTime.value = time
     duration.value = Math.max(duration.value || 0, time)
+    if (currentSession.value && now - lastPositionHeartbeat >= 1000) {
+      lastPositionHeartbeat = now
+      axios.post(`/api/video/control/${currentSession.value.session_id}`, {
+        action: 'position',
+        position: time
+      }).catch(() => {})
+    }
+    refreshCurrentWindowSummary(time)
   }
   
   // Check if we need to loop within window
@@ -726,33 +1215,72 @@ const handleSam3TimeUpdate = (time) => {
 }
 
 const handlePlay = () => {
+  if (loopWindow.value) {
+    exitLoopMode(true)
+    return
+  }
   isPlaying.value = true
+  if (replayMode.value) {
+    syncReplayTimeline(currentTime.value)
+    return
+  }
   if (currentSession.value) {
     if (mode.value === 'stream') {
       // Resume stream timer
       resumeStreamTimer()
     }
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
-      action: 'play'
+      action: 'play',
+      position: loopWindow.value ? livePlaybackTime.value : currentTime.value
     })
   }
 }
 
 const handlePause = () => {
+  if (loopWindow.value) {
+    exitLoopMode(false)
+    return
+  }
   isPlaying.value = false
+  if (replayMode.value) {
+    syncReplayTimeline(currentTime.value)
+    return
+  }
   if (currentSession.value) {
     if (mode.value === 'stream') {
       // Pause stream timer
       pauseStreamTimer()
     }
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
-      action: 'pause'
+      action: 'pause',
+      position: loopWindow.value ? livePlaybackTime.value : currentTime.value
     })
+  }
+}
+
+const handleVideoPause = () => {
+  // The simulator preview uses a latest-frame WebSocket path for recording.
+  // Ignore renderer/native-video pause events in this mode; the bottom control
+  // bar remains the explicit user pause path.
+  if (mode.value === 'stream' && isSimulatorSession.value && !loopWindow.value) {
+    return
+  }
+  handlePause()
+}
+
+const handleVideoEnded = () => {
+  const endAt = Number(duration.value || currentSession.value?.duration || currentTime.value || 0)
+  if (endAt > 0) currentTime.value = endAt
+  isPlaying.value = false
+  if (replayMode.value) {
+    syncReplayTimeline(endAt, { forceFinal: true })
+    isProcessing.value = false
   }
 }
 
 const handleSeek = (time) => {
   currentTime.value = time
+  if (replayMode.value) syncReplayTimeline(time)
   
   // If this is a manual seek (not triggered by loop), exit loop mode
   if (!isLoopSeek && loopWindow.value) {
@@ -760,7 +1288,7 @@ const handleSeek = (time) => {
     loopWindow.value = null
   }
   
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
       action: 'seek',
       position: time
@@ -769,12 +1297,30 @@ const handleSeek = (time) => {
 }
 
 // Exit loop playback mode
-const exitLoopMode = () => {
+const exitLoopMode = (forcePlaying = null) => {
   if (loopWindow.value) {
     console.log('[Loop] Exiting loop mode')
+    const detachedResumeAt = stopDetachedPlaybackClock()
+    const resumeAt = Number.isFinite(detachedResumeAt)
+      ? detachedResumeAt
+      : (Number.isFinite(loopReturnTime.value) ? loopReturnTime.value : livePlaybackTime.value)
+    const shouldPlay = typeof forcePlaying === 'boolean' ? forcePlaying : loopWasPlaying.value
+    currentTime.value = Math.max(0, resumeAt || 0)
+    livePlaybackTime.value = currentTime.value
     loopWindow.value = null
+    loopReturnTime.value = null
+    loopWasPlaying.value = false
+    isPlaying.value = shouldPlay
+    playbackResumeNonce.value += 1
     userSelectedWindow.value = false
     highlightedWindowId.value = -1
+    selectedWindowId.value = -1
+    if (currentSession.value && !replayMode.value) {
+      axios.post(`/api/video/control/${currentSession.value.session_id}`, {
+        action: shouldPlay ? 'play' : 'pause',
+        position: currentTime.value
+      }).catch(() => {})
+    }
   }
 }
 
@@ -814,6 +1360,7 @@ const handleUpload = async (file) => {
     currentSession.value = response.data
     duration.value = response.data.duration
     summaries.value = []
+    clearEventNodes()
     clearBottomThumbnails()
     currentTime.value = 0
     
@@ -833,6 +1380,7 @@ const handleLoad = async (path) => {
     currentSession.value = response.data
     duration.value = response.data.duration
     summaries.value = []
+    clearEventNodes()
     clearBottomThumbnails()
     currentTime.value = 0
     
@@ -849,6 +1397,7 @@ const loadExistingSummaries = async (sessionId) => {
     const response = await axios.get(`/api/analysis/summaries/${sessionId}`)
     summaries.value = (response.data || []).map(cleanSummaryPayload)
     summaries.value.forEach(enqueueBottomThumbnail)
+    scheduleEventNodesRefresh(300)
   } catch (error) {
     console.error('Failed to load summaries:', error)
   }
@@ -935,10 +1484,15 @@ const startSurgR1Continuous = async (sessionId) => {
       if (response.data.server_time && mode.value === 'stream') {
         const networkLatency = (Date.now() - requestStartTime) / 2  // Estimate one-way latency
         const serverTimeMs = response.data.server_time * 1000  // Convert to milliseconds
-        // Reset streamStartTime to match backend's start time
-        streamStartTime.value = serverTimeMs + networkLatency
-        currentTime.value = 0  // Reset current time
-        console.log(`[TimeSync] Synchronized with backend. streamStartTime=${streamStartTime.value}, latency=${networkLatency}ms`)
+          // Reset streamStartTime to match backend's start time only at the
+          // beginning of a new wall-clock live stream. For local simulator
+          // playback the native video clock is authoritative; resetting here
+          // makes pause/resume jump back to 0.
+          if (!isSimulatorSession.value && currentTime.value < 0.5) {
+            streamStartTime.value = serverTimeMs + networkLatency
+            currentTime.value = 0
+          }
+          console.log(`[TimeSync] Synchronized with backend. streamStartTime=${streamStartTime.value}, latency=${networkLatency}ms`)
       }
       
       // Start polling for status updates
@@ -1013,19 +1567,22 @@ const stopSurgR1StatusPolling = () => {
 
 const startAnalysis = async () => {
   if (!currentSession.value) return
-
-  const { surgr1Available, glmAvailable } = await ensureRequiredAnalysisServices()
-
-  // Check VLM (Gemini/GLM) availability — backend picks provider from config
-  if (!glmAvailable) {
-    alert('VLM 服务（Gemini）不可用，请检查 GEMINI_API_KEY 或网络代理')
+  if (replayMode.value) {
+    if (isPlaying.value) handlePause()
+    else handlePlay()
     return
   }
 
-  // Check if SurgR1 is available
+  const { surgr1Available, glmAvailable } = await ensureRequiredAnalysisServices()
+
+  // These status checks are advisory. The backend can still produce a local
+  // expert Stage 1 summary when cloud/local VLM health checks fail.
+  if (!glmAvailable) {
+    console.warn('VLM service is unavailable; starting expert-only Stage 1 summaries.')
+  }
+
   if (!surgr1Available) {
-    alert('SurgR1 服务不可用，请先启动 R1 服务')
-    return
+    console.warn('SurgR1 service is unavailable; backend will use available local experts.')
   }
   
   isProcessing.value = true
@@ -1055,8 +1612,9 @@ const startAnalysis = async () => {
         isProcessing.value = false
         analysisEventSource.close()
         analysisEventSource = null
-        if (data.status === 'completed' && summaries.value.length > 0) {
-          showOverviewToastPrompt()
+        if ((data.status === 'completed' || data.status === 'cancelled') && summaries.value.length > 0) {
+          requestEventNodes({ force: true })
+          if (data.status === 'completed') showOverviewToastPrompt()
         }
         return
       }
@@ -1068,28 +1626,7 @@ const startAnalysis = async () => {
       // Track if this is a new window (not just an update)
       const isNewWindow = existingIndex < 0
       
-      if (existingIndex >= 0) {
-        summaries.value[existingIndex] = data
-      } else {
-        // [perf] SSE 通常按时间顺序推送，绝大多数情况可直接 push 无需 sort。
-        // 只在乱序到达（新 window_id 不是最大）时做一次 O(n) 的顺序插入，
-        // 避免每条消息都跑 O(n log n) sort。
-        const arr = summaries.value
-        const last = arr.length > 0 ? arr[arr.length - 1] : null
-        if (!last || (data.start_time ?? 0) >= (last.start_time ?? 0)) {
-          arr.push(data)
-        } else {
-          let lo = 0, hi = arr.length
-          const st = data.start_time ?? 0
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1
-            if ((arr[mid].start_time ?? 0) <= st) lo = mid + 1
-            else hi = mid
-          }
-          arr.splice(lo, 0, data)
-        }
-      }
-      enqueueBottomThumbnail(data)
+      upsertSummary(data)
       
       // Highlight new window briefly - only for NEW windows, not updates
       // Also skip if user is in loop playback mode (userSelectedWindow is true)
@@ -1163,6 +1700,10 @@ const showOverviewToastPrompt = () => {
 }
 
 const enterOverview = () => {
+  if (loopWindow.value) {
+    exitLoopMode(true)
+  }
+  navActiveView.value = 'overview'
   showOverviewToast.value = false
   if (overviewToastTimer) clearTimeout(overviewToastTimer)
   currentView.value = 'overview'
@@ -1173,11 +1714,549 @@ const enterOverview = () => {
 // 底部条需要最新的在前（window_id 降序 ≈ start_time 降序），直接 reverse 即可，
 // O(n) 代替 O(n log n) 的 sort。
 const sortedSummaries = computed(() => {
-  return summaries.value.slice().reverse().map(cleanSummaryPayload)
+  return localizedSummaries.value.slice().reverse()
 })
 
+const eventNodeDisplayWindowIds = (node) => {
+  return Array.isArray(node?.window_ids)
+    ? node.window_ids.filter(id => Number.isFinite(Number(id))).map(id => Number(id) + 1)
+    : []
+}
+
+const EVENT_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
+const EVENT_NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
+const EVENT_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野|起雾|雾|烟雾|模糊|镜头|体外|手术室|腹腔外|套管口|腹壁外)/
+const EVENT_RISK_RE = /(CVS未达成|安全视野|剪刀|scissors|大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+const SCISSORS_ACTIVITY_RE = /(?:剪刀|电剪|scissors).{0,20}(?:出现|可见|进入|操作|接触|靠近|分离|剪切|剪断|切断)|(?:剪切|剪断|切断).{0,16}(?:胆囊管|胆囊动脉|cystic duct|cystic artery)/i
+const FOG_ACTIVE_RE = /(镜头)?(?:起雾|雾气|烟雾|烟雾弥漫|水汽|模糊|视野不清|视野受遮挡|视野受限|fogging|foggy|fog (?:obscures|obscured|limits|blocks)|smoke|smoky|haze|hazy|blur(?:red|ry)?|obscur(?:ed|ing))/i
+const FOG_RESOLVED_RE = /(雾(?:已|已经)?(?:去除|清除|消散|解除)|烟雾(?:已|已经)?(?:清除|消散)|视野(?:恢复|转为|变得)(?:清晰|可辨)|镜头(?:恢复|转为|变得)清晰|fog (?:cleared|resolved)|smoke (?:cleared|resolved)|view (?:restored|clear))/i
+const OUT_OF_BODY_RE = /(镜头|腹腔镜|视野|画面).{0,12}(?:移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外|切换至手术室|手术室场景)|(?:体外|腹腔外|套管口|腹壁外|手术室场景|器械台|trocar|trocar outside|outside the body|outside-body|extracorporeal|operating room scene|extra-abdominal)/i
+
+const compactEventNodeText = (text, maxChars = 120) => {
+  let out = cleanUserSummaryText(text)
+    .replace(/^【[^】]*】\s*/, '')
+    .replace(/Hem[-\s]?o[-\s]?lok|Hemolok|hemlock/gi, 'Hem-o-lok')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?对/g, '钛夹钳对')
+    .replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?在/g, '钛夹钳在')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+    .replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)${EVENT_NON_CLIP_INSTRUMENT_RE}(?:、${EVENT_NON_CLIP_INSTRUMENT_RE})*[，,。；;]?`, 'g'), '')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
+    .replace(new RegExp(`(?:${EVENT_NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
+    .replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
+    .replace(/夹持牵拉/g, '牵拉')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
+    .replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
+    .replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
+    .replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
+    .replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
+    .replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
+    .replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
+    .replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+    .replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
+    .replace(/视野中可见|可见/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const sentences = out
+    .split(/(?<=[。；！？!?;])/)
+    .map(s => s.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '').trim())
+    .filter(s => s && EVENT_SIGNAL_RE.test(s))
+
+  const risks = sentences.filter(s => EVENT_RISK_RE.test(s))
+  const actions = sentences.filter(s => !EVENT_RISK_RE.test(s))
+  const selected = [...risks, ...actions].slice(0, 2)
+  out = (selected.length ? selected : sentences.slice(0, 1))
+    .map(s => /[。；！？!?;]$/.test(s) ? s : `${s}。`)
+    .join('')
+
+  return (out || cleanUserSummaryText(text)).slice(0, maxChars)
+}
+
+const relatedSummariesForEventNode = (node, representativeId = null, windowIds = null) => {
+  const ids = Array.isArray(windowIds)
+    ? windowIds.map(id => Number(id)).filter(id => Number.isFinite(id))
+    : (Array.isArray(node?.window_ids)
+      ? node.window_ids.map(id => Number(id)).filter(id => Number.isFinite(id))
+      : [])
+  const rep = Number.isFinite(Number(representativeId))
+    ? Number(representativeId)
+    : (Number.isFinite(Number(node?.representative_window_id))
+      ? Number(node.representative_window_id)
+      : (ids.length ? Math.max(...ids) : -1))
+
+  const orderedIds = [...new Set([
+    rep,
+    ...ids.slice().sort((a, b) => Math.abs(a - rep) - Math.abs(b - rep)),
+  ].filter(id => Number.isFinite(id) && id >= 0))]
+
+  const direct = orderedIds
+    .map(id => summaries.value.find(s => Number(s.window_id) === id))
+    .filter(Boolean)
+  if (direct.length) return direct
+
+  const start = Number(node?.start_time)
+  const end = Number(node?.end_time)
+  if (Number.isFinite(start) && Number.isFinite(end)) {
+    return summaries.value
+      .filter(s => Number(s.end_time ?? 0) >= start && Number(s.start_time ?? 0) <= end)
+      .slice(0, 4)
+  }
+  return []
+}
+
+const normalizeEventNode = (node, index) => {
+  const windowIds = Array.isArray(node?.window_ids)
+    ? node.window_ids.map(id => Number(id)).filter(id => Number.isFinite(id))
+    : []
+  const representativeId = Number.isFinite(Number(node?.representative_window_id))
+    ? Number(node.representative_window_id)
+    : (windowIds.length ? Math.max(...windowIds) : -1)
+
+  const relatedSummaries = relatedSummariesForEventNode(node, representativeId, windowIds)
+  relatedSummaries.slice(0, 4).forEach((summary, idx) => enqueueBottomThumbnail(summary, idx === 0))
+  const relatedSummary = relatedSummaries[0] || null
+  const normalizedWindowIds = windowIds.length
+    ? windowIds
+    : (representativeId >= 0 ? [representativeId] : [])
+
+  return {
+    id: String(node?.id || `event_${index + 1}`),
+    type: String(node?.type || 'other'),
+    severity: String(node?.severity || 'normal'),
+    title: String(node?.title || t('app.keyEventNode')).trim(),
+    summary: compactEventNodeText(node?.summary || relatedSummary?.summary || ''),
+    window_ids: normalizedWindowIds,
+    representative_window_id: representativeId,
+    start_time: Number(node?.start_time ?? relatedSummary?.start_time ?? 0),
+    end_time: Number(node?.end_time ?? relatedSummary?.end_time ?? 0),
+    confidence: Number.isFinite(Number(node?.confidence)) ? Number(node.confidence) : null,
+    source: node?.source || 'llm',
+  }
+}
+
+const cvsStatusNode = computed(() => {
+  const cvsSummaries = summaries.value.filter(s => CVS_RELEVANT_RE.test(String(s.summary || '')))
+  if (!cvsSummaries.length) return null
+
+  const achieved = cvsSummaries.some(s => CVS_ACHIEVED_RE.test(String(s.summary || '')))
+  const first = cvsSummaries[0]
+  const latest = cvsSummaries[cvsSummaries.length - 1]
+  const windowIds = cvsSummaries
+    .map(s => Number(s.window_id))
+    .filter(id => Number.isFinite(id))
+
+  if (!windowIds.length) return null
+  const representativeWindowId = Number(latest.window_id)
+  const latestEnd = Number(latest.end_time ?? latest.window_end ?? 0)
+  const endTime = achieved
+    ? latestEnd
+    : Math.max(latestEnd, Number(currentTime.value || 0))
+
+  return {
+    id: 'event_cvs_status',
+    type: 'cvs',
+    severity: achieved ? 'resolved' : 'critical',
+    title: achieved ? 'CVS已达成' : 'CVS尚未达成',
+    summary: achieved
+      ? 'CVS三要素已确认，可作为夹闭/剪断前的安全节点。'
+      : 'CVS评估中：尚未确认三要素，夹闭或剪断胆囊管和胆囊动脉前需继续核查。',
+    window_ids: [...new Set(windowIds)],
+    representative_window_id: representativeWindowId,
+    start_time: Number(first.start_time ?? first.window_start ?? 0),
+    end_time: endTime,
+    confidence: 0.8,
+    source: 'cvs-status',
+    pinned: true,
+  }
+})
+
+const summaryScissorsFlags = (summary) => {
+  const text = `${summary?.summary || ''} ${summary?.summary_en || ''}`
+  const visual = summary?.others?.visual_gpt || summary?.others?.experts?.open_vlm?.visual || {}
+  const scissors = visual?.scissors || {}
+  const confidence = Number(scissors.confidence || 0)
+  const visualScissors = (
+    (Boolean(scissors.visible) || Boolean(scissors.cutting))
+    && (!confidence || confidence >= 0.35)
+  )
+  return visualScissors || SCISSORS_ACTIVITY_RE.test(text)
+}
+
+const scissorsBeforeCvsNode = computed(() => {
+  if (!cvsStatusNode.value || cvsStatusNode.value.severity !== 'critical') return null
+  const scissorsSummaries = summaries.value.filter(summaryScissorsFlags)
+  if (!scissorsSummaries.length) return null
+
+  const first = scissorsSummaries[0]
+  const latest = scissorsSummaries[scissorsSummaries.length - 1]
+  const windowIds = scissorsSummaries
+    .map(s => Number(s.window_id))
+    .filter(id => Number.isFinite(id))
+  if (!windowIds.length) return null
+
+  const zh = language.value !== 'en'
+  return {
+    id: 'event_scissors_before_cvs',
+    type: 'risk',
+    severity: 'critical',
+    title: zh ? 'CVS未达成时出现剪刀操作' : 'Scissors before CVS confirmation',
+    summary: zh
+      ? '检测到剪刀操作，但CVS尚未达成，剪断胆囊管或胆囊动脉前需继续核查。'
+      : 'Scissors activity is detected before CVS confirmation; verify safety before dividing the cystic duct or artery.',
+    window_ids: [...new Set(windowIds)],
+    representative_window_id: Number(latest.window_id),
+    start_time: Number(first.start_time ?? first.window_start ?? 0),
+    end_time: Number(latest.end_time ?? latest.window_end ?? 0),
+    confidence: 0.76,
+    source: 'scissors-cvs-status',
+    pinned: true,
+  }
+})
+
+const summaryVisibilityFlags = (summary) => {
+  const text = `${summary?.summary || ''} ${summary?.summary_en || ''}`
+  const visual = summary?.others?.visual_gpt || summary?.others?.experts?.open_vlm?.visual || {}
+  const visibility = visual?.visibility || {}
+  const status = String(visibility.status || '').toLowerCase()
+  const confidence = Number(visibility.confidence || 0)
+  const trusted = !confidence || confidence >= 0.35
+  return {
+    fogActive: trusted && (
+      Boolean(visibility.fog)
+      || ['foggy', 'blurred', 'blocked', 'smoke', 'smoky', 'hazy'].includes(status)
+      || (FOG_ACTIVE_RE.test(text) && !FOG_RESOLVED_RE.test(text))
+    ),
+    fogResolved: trusted && (
+      Boolean(visibility.fog_cleared || visibility.cleared || visibility.resolved)
+      || ['clear_after_fog', 'fog_cleared'].includes(status)
+      || FOG_RESOLVED_RE.test(text)
+    ),
+    outOfBody: trusted && (
+      Boolean(visibility.out_of_body || visibility.outside_body)
+      || status === 'out_of_body'
+      || OUT_OF_BODY_RE.test(text)
+    ),
+    confidence: confidence || null,
+  }
+}
+
+const fogStatusNode = computed(() => {
+  let fogActive = false
+  let firstActive = null
+  let latestActive = null
+  let latestResolved = null
+  const windowIds = []
+
+  summaries.value
+    .slice()
+    .sort((a, b) => Number(a.window_id ?? 0) - Number(b.window_id ?? 0))
+    .forEach((summary) => {
+      const flags = summaryVisibilityFlags(summary)
+      const wid = Number(summary.window_id)
+      if (flags.fogActive) {
+        if (!fogActive) firstActive = summary
+        fogActive = true
+        latestActive = summary
+        if (Number.isFinite(wid)) windowIds.push(wid)
+      }
+      if (flags.fogResolved) {
+        latestResolved = summary
+        fogActive = false
+        if (Number.isFinite(wid)) windowIds.push(wid)
+      }
+    })
+
+  if (!firstActive && !latestResolved) return null
+  const latest = fogActive ? latestActive : latestResolved
+  if (!latest) return null
+  const ids = [...new Set(windowIds)]
+  const zh = language.value !== 'en'
+  return {
+    id: 'event_fog_status',
+    type: 'visibility',
+    severity: fogActive ? 'critical' : 'resolved',
+    title: fogActive
+      ? (zh ? '视野起雾' : 'Fog obscures view')
+      : (zh ? '雾已去除' : 'Fog cleared'),
+    summary: fogActive
+      ? (zh ? '镜头起雾，手术视野受遮挡。' : 'Lens fogging obscures the surgical field.')
+      : (zh ? '雾已去除，腹腔视野恢复。' : 'The fog has cleared and the laparoscopic view is restored.'),
+    window_ids: ids.length ? ids : [Number(latest.window_id)],
+    representative_window_id: Number(latest.window_id),
+    start_time: Number((firstActive || latest).start_time ?? (firstActive || latest).window_start ?? 0),
+    end_time: fogActive
+      ? Math.max(Number(latest.end_time ?? latest.window_end ?? 0), Number(currentTime.value || 0))
+      : Number(latest.end_time ?? latest.window_end ?? 0),
+    confidence: 0.78,
+    source: 'visibility-status',
+    pinned: true,
+  }
+})
+
+const isFogVisibilityNode = (node) => {
+  if (node?.type !== 'visibility') return false
+  return FOG_ACTIVE_RE.test(`${node.title || ''} ${node.summary || ''}`)
+    || FOG_RESOLVED_RE.test(`${node.title || ''} ${node.summary || ''}`)
+}
+
+const sortedEventNodes = computed(() => {
+  const nodes = [
+    ...(scissorsBeforeCvsNode.value ? [scissorsBeforeCvsNode.value] : []),
+    ...(cvsStatusNode.value ? [cvsStatusNode.value] : []),
+    ...(fogStatusNode.value ? [fogStatusNode.value] : []),
+    ...eventNodes.value.filter(node => {
+      if (scissorsBeforeCvsNode.value && /CVS未达成时出现剪刀操作|Scissors before CVS/i.test(`${node.title || ''} ${node.summary || ''}`)) return false
+      if (cvsStatusNode.value && node.type === 'cvs') return false
+      if (fogStatusNode.value && isFogVisibilityNode(node)) return false
+      return true
+    }),
+  ]
+  return nodes
+    .slice()
+    .sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1
+      if (!a.pinned && b.pinned) return 1
+      const bt = Number(b.start_time ?? 0)
+      const at = Number(a.start_time ?? 0)
+      if (bt !== at) return bt - at
+      return Number(b.representative_window_id ?? 0) - Number(a.representative_window_id ?? 0)
+    })
+})
+
+const bottomEmptyText = computed(() => {
+  if (bottomViewMode.value === 'events') {
+    if (eventNodesLoading.value) return t('app.eventLoading')
+    if (eventNodesError.value) return t('app.eventFailed')
+    return isProcessing.value ? t('app.eventLoading') : t('app.eventEmpty')
+  }
+  return isProcessing.value ? t('app.historyLoading') : t('app.historyEmpty')
+})
+
+const setBottomViewMode = (modeName) => {
+  bottomViewMode.value = modeName === 'windows' ? 'windows' : 'events'
+  localStorage.setItem('surg_bottom_view_mode', bottomViewMode.value)
+  if (bottomViewMode.value === 'events') {
+    resetEventNodeScroll()
+    scheduleEventNodesRefresh(150)
+  }
+}
+
+const resetEventNodeScroll = () => {
+  nextTick(() => {
+    if (bottomViewMode.value !== 'events') return
+    const el = document.querySelector('.event-node-scroll')
+    if (el) el.scrollLeft = 0
+  })
+}
+
+const scheduleEventNodesRefresh = (delay = 2500) => {
+  if (replayMode.value) return
+  if (!currentSession.value || summaries.value.length < 1) return
+  if (eventNodesTimer) {
+    clearTimeout(eventNodesTimer)
+  }
+  eventNodesTimer = setTimeout(() => {
+    eventNodesTimer = null
+    requestEventNodes()
+  }, delay)
+}
+
+const requestEventNodes = async ({ force = false } = {}) => {
+  if (replayMode.value) {
+    syncReplayTimeline(currentTime.value, { forceFinal: currentTime.value >= duration.value - 0.04 })
+    return
+  }
+  const sid = currentSession.value?.session_id
+  if (!sid || summaries.value.length < 1) return
+  if (eventNodesLoading.value && !force) {
+    eventNodesRefreshPending = true
+    return
+  }
+
+  const seq = ++eventNodesRequestSeq
+  eventNodesLoading.value = true
+  eventNodesError.value = ''
+  try {
+    const res = await axios.post(`/api/analysis/event-nodes/${sid}`, {
+      language: language.value,
+      force,
+      max_windows: 120,
+    }, {
+      signal: getSessionSignal(),
+      timeout: 45000,
+    })
+    if (seq !== eventNodesRequestSeq || currentSession.value?.session_id !== sid) return
+    const nodes = Array.isArray(res.data?.events) ? res.data.events : []
+    eventNodes.value = nodes.map(normalizeEventNode).filter(node => node.window_ids.length > 0)
+    resetEventNodeScroll()
+    eventNodesError.value = res.data?.source === 'fallback' && !eventNodes.value.length
+      ? (res.data?.error || 'event-node fallback empty')
+      : ''
+  } catch (error) {
+    if (axios.isCancel(error) || error.name === 'AbortError') return
+    console.warn('[EventNodes] refresh failed:', error.message)
+    if (seq !== eventNodesRequestSeq) return
+    eventNodesError.value = error.message || 'failed'
+  } finally {
+    if (seq === eventNodesRequestSeq) {
+      eventNodesLoading.value = false
+      if (eventNodesRefreshPending) {
+        eventNodesRefreshPending = false
+        scheduleEventNodesRefresh(500)
+      }
+    }
+  }
+}
+
+const eventNodeTypeLabel = (type) => {
+  const key = {
+    phase: 'event.phase',
+    cvs: 'event.cvs',
+    action: 'event.action',
+    risk: 'event.risk',
+    resolution: 'event.resolution',
+    visibility: 'event.visibility',
+    other: 'event.other',
+  }[type] || 'event.other'
+  return t(key)
+}
+
+const eventNodeWindowLabel = (node) => {
+  const displayIds = eventNodeDisplayWindowIds(node)
+  if (!displayIds.length) return ''
+  const start = Math.min(...displayIds)
+  const end = Math.max(...displayIds)
+  return start === end ? bottomWindowLabel(start) : t('app.windowRange', { start, end })
+}
+
+const eventNodeTimeLabel = (node) => {
+  const start = formatWindowTime(node?.start_time)
+  const end = formatWindowTime(node?.end_time)
+  return start === end || end === '--:--' ? start : `${start}-${end}`
+}
+
+const eventNodeRepresentativeSummary = (node) => {
+  const wid = Number(node?.representative_window_id)
+  return summaries.value.find(s => s.window_id === wid)
+    || summaries.value.find(s => node?.window_ids?.includes(s.window_id))
+    || null
+}
+
+const eventNodeThumbnailSummary = (node) => {
+  const related = relatedSummariesForEventNode(node)
+  const representative = eventNodeRepresentativeSummary(node) || related[0] || null
+  if (representative) {
+    const retries = Number(bottomThumbRetries[representative.window_id] || 0)
+    if (bottomThumbnails[representative.window_id] || retries < 2) return representative
+  }
+  return related.find(summary => bottomThumbnails[summary.window_id])
+    || representative
+}
+
+const eventNodeThumbnail = (node) => {
+  const summary = eventNodeThumbnailSummary(node)
+  return summary ? bottomThumbnails[summary.window_id] : ''
+}
+
+const eventNodeThumbLoading = (node) => {
+  const related = relatedSummariesForEventNode(node)
+  return related.some(summary => bottomThumbLoading[summary.window_id] || bottomThumbQueued.has(summary.window_id))
+}
+
+const handleEventNodeThumbError = (node, event = null) => {
+  const summary = eventNodeThumbnailSummary(node)
+  if (summary) {
+    handleBottomThumbError(summary, event)
+    return
+  }
+  relatedSummariesForEventNode(node).slice(0, 3).forEach(summary => handleBottomThumbError(summary))
+}
+
+const handleEventNodeClick = (node) => {
+  if (bottomScrollClickSuppressed.value) return
+  const targetWindow = Number.isFinite(Number(node?.representative_window_id))
+    ? Number(node.representative_window_id)
+    : (Array.isArray(node?.window_ids) && node.window_ids.length ? Math.max(...node.window_ids) : -1)
+  if (targetWindow < 0) return
+  selectedWindowId.value = targetWindow
+  rightPanelTab.value = 'analysis'
+  handleSeekToWindow(targetWindow)
+}
+
+const requestSummaryTranslation = async (summary) => {
+  const s = cleanSummaryPayload(summary)
+  if (!s?.summary || s.summary_en || !currentSession.value) return
+  const key = `${currentSession.value.session_id}:${s.window_id}:en`
+  if (translationInFlight.has(key)) return
+  translationInFlight.add(key)
+  try {
+    const res = await axios.post('/api/analysis/translate-summary', {
+      text: s.summary,
+      target_lang: 'en',
+    }, {
+      signal: getSessionSignal(),
+      timeout: 20000,
+    })
+    if (res.data?.text) {
+      const idx = summaries.value.findIndex(item => item.window_id === s.window_id)
+      if (idx >= 0) {
+        summaries.value[idx] = {
+          ...summaries.value[idx],
+          summary_en: cleanUserSummaryText(res.data.text),
+        }
+      }
+    }
+  } catch (error) {
+    if (!axios.isCancel(error) && error.name !== 'AbortError') {
+      console.debug('[Translate] summary translation failed:', error.message)
+    }
+  } finally {
+    translationInFlight.delete(key)
+  }
+}
+
+const ensureEnglishSummaries = () => {
+  if (language.value !== 'en') return
+  const ordered = [
+    ...summaries.value.slice().reverse(),
+  ].filter(s => s?.summary && !s.summary_en)
+  ordered.slice(0, 24).forEach((s, index) => {
+    setTimeout(() => requestSummaryTranslation(s), index * 250)
+  })
+}
+
+const refreshCurrentWindowSummary = async (time) => {
+  if (replayMode.value) return
+  if (!currentSession.value || loopWindow.value) return
+  const now = performance.now()
+  const windowId = Math.floor(time / windowDuration.value)
+  const alreadyLoaded = summaries.value.some(s => s.window_id === windowId && s.summary)
+  if (alreadyLoaded && lastSummaryRefreshWindow === windowId) return
+  if (now - lastSummaryRefreshAt < 1200) return
+
+  lastSummaryRefreshAt = now
+  lastSummaryRefreshWindow = windowId
+  try {
+    const res = await axios.get(
+      `/api/analysis/window-summary-at-timestamp/${currentSession.value.session_id}`,
+      { params: { timestamp: time }, signal: getSessionSignal() }
+    )
+    if (res.data?.success && res.data.window_id != null) {
+      upsertSummary(res.data)
+    }
+  } catch (error) {
+    if (!axios.isCancel(error) && error.name !== 'AbortError') {
+      console.debug('[SummaryRefresh] current window summary not ready:', error.message)
+    }
+  }
+}
+
 const videoSectionMinHeight = computed(() => {
-  return Math.max(320, viewportHeight.value - bottomStripHeight.value - 220)
+  return Math.max(360, viewportHeight.value - bottomStripHeight.value - 190)
 })
 
 const startRightPanelResize = (event) => {
@@ -1188,10 +2267,10 @@ const startRightPanelResize = (event) => {
   document.body.classList.add('is-resizing-panel')
 
   const onMove = (e) => {
-    rightPanelWidth.value = clamp(startWidth - (e.clientX - startX), 560, maxRightPanelWidth())
+    rightPanelWidth.value = clamp(startWidth - (e.clientX - startX), minRightPanelWidth(), maxRightPanelWidth())
   }
   const onUp = () => {
-    localStorage.setItem('surg_right_panel_width', String(rightPanelWidth.value))
+    localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth.value))
     document.body.classList.remove('is-resizing-panel')
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
@@ -1209,10 +2288,10 @@ const startVideoResize = (event) => {
   document.body.classList.add('is-resizing-video')
 
   const onMove = (e) => {
-    bottomStripHeight.value = clamp(startHeight - (e.clientY - startY), 380, maxBottomStripHeight())
+    bottomStripHeight.value = clamp(startHeight - (e.clientY - startY), minBottomStripHeight(), maxBottomStripHeight())
   }
   const onUp = () => {
-    localStorage.setItem('surg_bottom_strip_height', String(bottomStripHeight.value))
+    localStorage.setItem(BOTTOM_STRIP_STORAGE_KEY, String(bottomStripHeight.value))
     document.body.classList.remove('is-resizing-video')
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
@@ -1224,19 +2303,19 @@ const startVideoResize = (event) => {
 
 const resetRightPanelWidth = () => {
   rightPanelWidth.value = defaultRightPanelWidth()
-  localStorage.setItem('surg_right_panel_width', String(rightPanelWidth.value))
+  localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth.value))
 }
 
 const resetBottomStripHeight = () => {
   bottomStripHeight.value = defaultBottomStripHeight()
-  localStorage.setItem('surg_bottom_strip_height', String(bottomStripHeight.value))
+  localStorage.setItem(BOTTOM_STRIP_STORAGE_KEY, String(bottomStripHeight.value))
 }
 
 const handleViewportResize = () => {
   viewportWidth.value = window.innerWidth
   viewportHeight.value = window.innerHeight
-  rightPanelWidth.value = clamp(rightPanelWidth.value, 560, maxRightPanelWidth())
-  bottomStripHeight.value = clamp(bottomStripHeight.value, 380, maxBottomStripHeight())
+  rightPanelWidth.value = clamp(rightPanelWidth.value, minRightPanelWidth(), maxRightPanelWidth())
+  bottomStripHeight.value = clamp(bottomStripHeight.value, minBottomStripHeight(), maxBottomStripHeight())
 }
 
 const formatWindowTime = (seconds) => {
@@ -1262,6 +2341,12 @@ const toChineseNumeral = (n) => {
   return String(num)
 }
 
+const bottomWindowLabel = (n) => {
+  return language.value === 'zh'
+    ? `${t('app.windowPrefix')}${toChineseNumeral(n)}`
+    : `${t('app.windowPrefix')} ${n}`
+}
+
 const handleNavigation = (view) => {
   navActiveView.value = view
   if (view === 'analysis') {
@@ -1270,9 +2355,17 @@ const handleNavigation = (view) => {
     rightPanelTab.value = 'chat'
   } else if (view === 'overview') {
     enterOverview()
+  } else if (view === 'report') {
+    navActiveView.value = 'report'
+    currentView.value = 'report'
   } else if (view === 'home') {
     goHome()
   }
+}
+
+const handleReportBack = () => {
+  currentView.value = 'main'
+  navActiveView.value = 'analysis'
 }
 
 const toggleAnalysis = () => {
@@ -1339,11 +2432,17 @@ const startBottomScrollDrag = (event) => {
 }
 
 const handleOverviewBack = () => {
+  stopDetachedPlaybackClock()
   currentView.value = 'main'
+  navActiveView.value = 'analysis'
+  playbackResumeNonce.value += 1
 }
 
 const handleOverviewSeekToWindow = (windowId) => {
+  stopDetachedPlaybackClock()
   currentView.value = 'main'
+  navActiveView.value = 'analysis'
+  playbackResumeNonce.value += 1
   handleSeekToWindow(windowId)
 }
 
@@ -1356,7 +2455,29 @@ const startStreamTimer = () => {
   // Reset stream ended state
   streamEnded.value = false
   streamWasActive.value = false
-  
+
+  const fixedDuration = isSimulatorSession.value ? Number(currentSession.value?.duration || 0) : 0
+  if (isSimulatorSession.value) {
+    // The simulator preview is rendered by the native <video> element, so its
+    // currentTime is the only playback clock. Do not also write currentTime
+    // from a wall-clock timer; doing both makes the UI flip between adjacent
+    // seconds/windows near boundaries.
+    if (fixedDuration > 0) {
+      duration.value = fixedDuration
+    }
+    streamTimerInterval = setInterval(() => {
+      if (!isPlaying.value || streamEnded.value || loopWindow.value) return
+      const endAt = Number(currentSession.value?.duration || duration.value || 0)
+      if (endAt > 0 && currentTime.value >= endAt - 0.25) {
+        currentTime.value = endAt
+        livePlaybackTime.value = endAt
+        handleStreamEnded()
+      }
+    }, 500)
+    startStreamEndCheck()
+    return
+  }
+
   // [perf] 原来每 100ms 更新 currentTime，会驱动 ControlBar 的 progressPercent /
   // windowCount / currentSummary 等一串 computed 跟着重算，与 MJPEG 解码争主线程。
   // 直播的时间显示精度到 250ms 肉眼无感（秒级时间戳），但 CPU 负载显著降低。
@@ -1371,10 +2492,16 @@ const startStreamTimer = () => {
     
     // Ensure elapsed time is never negative (can happen if server/client clocks are out of sync)
     const safeElapsed = Math.max(0, elapsed)
-    currentTime.value = safeElapsed
+    const displayTime = safeElapsed
+    currentTime.value = displayTime
+    livePlaybackTime.value = displayTime
     
     // Also update duration for display purposes
-    duration.value = safeElapsed
+    duration.value = fixedDuration > 0 ? fixedDuration : safeElapsed
+
+    if (fixedDuration > 0 && safeElapsed >= fixedDuration) {
+      handleStreamEnded()
+    }
   }, 250)  // 直播时间显示刷新：250ms 足够，避免主线程与视频解码争用
   
   // Start checking if stream has ended (check every 2 seconds)
@@ -1456,18 +2583,12 @@ const startStreamEndCheck = () => {
       // This is just a status check, not critical for functionality
     }
     
-    // Backup detection: check if time is stale (not in loop mode)
-    // In loop mode, time updates are from cached frames, not stream
-    // Only trigger after 30 seconds to avoid false positives
+    // Do not infer stream end from a stale renderer clock. MJPEG/local capture
+    // can briefly stop advancing while frame capture or analysis catches up,
+    // and treating that as end-of-stream pauses the live demo mid-video. The
+    // simulator /info.video_ended flag above is the authoritative end signal.
     if (!inLoopMode && isPlaying.value && currentTime.value > 30) {
-      if (Math.abs(currentTime.value - lastKnownTime) < 0.1) {
-        staleTimeCounter++
-        if (staleTimeCounter >= STALE_TIME_THRESHOLD) {
-          console.log('[Stream] Time stale for too long, assuming stream ended')
-          handleStreamEnded()
-          return
-        }
-      } else {
+      if (Math.abs(currentTime.value - lastKnownTime) >= 0.1) {
         staleTimeCounter = 0
         lastKnownTime = currentTime.value
       }
@@ -1498,6 +2619,28 @@ const handleStreamEnded = () => {
     loopWindow.value = null
     userSelectedWindow.value = false
     highlightedWindowId.value = -1
+  }
+
+  // A finite capture-card simulation has a real EOF. Its frame writer may
+  // stop just before the duration boundary (for example at 99.5s for a 100s
+  // source), while the summarizer still needs to flush the final 95-100s
+  // window. Treating this as a user cancellation used to discard that tail.
+  // Keep the analysis/SSE alive and let the backend mark it completed after
+  // all persisted capture frames have been summarized.
+  if (isSimulatorSession.value && currentSession.value) {
+    const endAt = Number(currentSession.value.duration || duration.value || currentTime.value || 0)
+    if (endAt > 0) {
+      currentTime.value = endAt
+      livePlaybackTime.value = endAt
+      axios.post(`/api/video/control/${currentSession.value.session_id}`, {
+        action: 'position',
+        position: endAt
+      }).catch((error) => {
+        console.warn('[Stream] Failed to persist simulator EOF position:', error)
+      })
+    }
+    console.log(`[Stream] Simulator reached EOF at ${currentTime.value.toFixed(1)}s; waiting for final analysis window`)
+    return
   }
   
   // Stop SurgR1 continuous processing
@@ -1625,6 +2768,12 @@ const handleSeekToWindow = (windowId) => {
   const summary = summaries.value.find(s => s.window_id === windowId)
   
   if (summary) {
+    if (!loopWindow.value) {
+      loopReturnTime.value = currentTime.value
+      livePlaybackTime.value = currentTime.value
+      loopWasPlaying.value = isPlaying.value
+      startDetachedPlaybackClock()
+    }
     // Set up loop playback for this window
     loopWindow.value = {
       window_id: windowId,
@@ -1632,10 +2781,12 @@ const handleSeekToWindow = (windowId) => {
       end_time: summary.end_time
     }
     console.log(`[Loop] Enabled loop playback for window ${windowId}: ${summary.start_time}s - ${summary.end_time}s`)    
-    // Seek to the start of this window
-    isLoopSeek = true
-    handleSeek(summary.start_time)
-    setTimeout(() => { isLoopSeek = false }, 100)
+    // Seek only the frontend preview. Do not call backend seek here; history
+    // loop playback is a temporary review mode and must not alter the live
+    // analysis/playback clock.
+    if (!isPlaying.value) {
+      handlePlay()
+    }
   }
   
   highlightedWindowId.value = windowId
@@ -1750,8 +2901,9 @@ const handleVideoSectionClick = (event) => {
   const isProgressBar = target.closest('.progress-bar') || target.closest('.progress-container')
   const isControlBtn = target.closest('.control-btn') || target.closest('.controls-row')
   const isSummaryPanel = target.closest('.summary-section') || target.closest('.summary-panel')
+  const isLoopBar = target.closest('.loop-indicator-bar')
   
-  if (!isProgressBar && !isControlBtn && !isSummaryPanel) {
+  if (!isProgressBar && !isControlBtn && !isSummaryPanel && !isLoopBar) {
     // Close frame analysis popup if visible
     if (frameAnalysisPopup.value.visible) {
       closeFrameAnalysisPopup()
@@ -1813,6 +2965,14 @@ watch(currentTime, (newTime) => {
   }
 })
 
+watch(
+  () => [language.value, summaries.value.length],
+  () => {
+    ensureEnglishSummaries()
+    scheduleEventNodesRefresh(language.value === 'en' ? 250 : 800)
+  }
+)
+
 // Check all service statuses
 const checkAnalysisServices = async () => {
   // Check all services in parallel with individual timing
@@ -1854,7 +3014,7 @@ const restartAnalysisStatusInterval = () => {
 
 // Handle page close/refresh - use sendBeacon for reliable cleanup
 const handleBeforeUnload = () => {
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     navigator.sendBeacon(
       apiUrl(`/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`),
       ''
@@ -1865,6 +3025,13 @@ const handleBeforeUnload = () => {
 onMounted(async () => {
   // 首先获取配置
   await fetchConfig()
+
+  try {
+    await loadOfflineReplayFromQuery()
+  } catch (error) {
+    console.error('[Replay] Startup failed:', error)
+    alert(`离线分析回放加载失败: ${error.message}`)
+  }
   
   checkAnalysisServices()
   // Refresh status every 30 seconds
@@ -1890,7 +3057,7 @@ onUnmounted(() => {
   analysisQueue.clear()
   
   // Stop SurgR1 continuous processing when leaving
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     navigator.sendBeacon(
       apiUrl(`/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`),
       ''
@@ -1908,6 +3075,7 @@ onUnmounted(() => {
   if (overviewToastTimer) {
     clearTimeout(overviewToastTimer)
   }
+  clearEventNodes()
   clearBottomScrollDragHandlers()
   
   // Remove beforeunload handler
@@ -2070,6 +3238,64 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.summary-ready-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid rgba(48, 196, 126, 0.72);
+  background: rgba(36, 151, 94, 0.18);
+  color: #79e2ad;
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.summary-ready-btn:hover {
+  background: rgba(36, 151, 94, 0.28);
+  border-color: rgba(80, 220, 150, 0.9);
+}
+
+.language-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.language-option {
+  min-width: 64px;
+  padding: 0.38rem 0.7rem;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+
+.language-option:hover {
+  color: var(--text-secondary);
+}
+
+.language-option.active {
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  font-weight: 700;
+}
+
 /* Toast Message */
 .toast-message {
   position: fixed;
@@ -2157,6 +3383,12 @@ onUnmounted(() => {
 }
 .overview-toast-dismiss:hover {
   color: var(--text-primary);
+}
+
+.overview-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
 }
 
 /* Overview Header Button */

@@ -158,9 +158,9 @@ class WindowHistoryManager:
         "CalotTriangleDissection": 1, "肝胆三角解剖阶段": 1,
         "ClippingCutting": 2, "夹闭切断阶段": 2,
         "GallbladderDissection": 3, "胆囊分离阶段": 3,
-        "GallbladderRetraction": 4, "胆囊牵拉阶段": 4,
-        "CleaningCoagulation": 5, "清洁凝血阶段": 5,
-        "GallbladderPackaging": 6, "胆囊取出阶段": 6,
+        "GallbladderRetraction": 4, "标本袋牵拉取出阶段": 4, "胆囊牵拉阶段": 4,
+        "CleaningCoagulation": 4, "清洁凝血阶段": 4,
+        "GallbladderPackaging": 4, "胆囊取出阶段": 4,
     }
     
     PHASE_CN_NAMES = {
@@ -168,7 +168,7 @@ class WindowHistoryManager:
         "CalotTriangleDissection": "肝胆三角解剖阶段",
         "ClippingCutting": "夹闭切断阶段",
         "GallbladderDissection": "胆囊分离阶段",
-        "GallbladderRetraction": "胆囊牵拉阶段",
+        "GallbladderRetraction": "标本袋牵拉取出阶段",
         "CleaningCoagulation": "清洁凝血阶段",
         "GallbladderPackaging": "胆囊取出阶段",
         "Unknown": "未知阶段"
@@ -177,12 +177,12 @@ class WindowHistoryManager:
     # 阶段转换规则表：定义每个阶段后允许出现的阶段
     ALLOWED_TRANSITIONS = {
         "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
-        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction", "Preparation"],
-        "ClippingCutting": ["GallbladderDissection", "CalotTriangleDissection"],
-        "GallbladderDissection": ["CleaningCoagulation", "GallbladderRetraction", "ClippingCutting"],
-        "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
-        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderDissection"],
-        "GallbladderPackaging": ["CleaningCoagulation"],  # 胆囊取出后只允许清洁凝血
+        "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction"],
+        "ClippingCutting": ["GallbladderDissection", "CleaningCoagulation"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging", "GallbladderRetraction"],
+        "GallbladderRetraction": ["CleaningCoagulation", "GallbladderPackaging"],
+        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderRetraction"],
+        "GallbladderPackaging": ["CleaningCoagulation", "GallbladderRetraction"],
     }
     
     # 按手术顺序排列，用于生成阶段进展摘要
@@ -266,7 +266,7 @@ class WindowHistoryManager:
         
         基于 ALLOWED_TRANSITIONS 规则表验证：
         - 如果某阶段已被连续确认，则后续阶段必须在其允许列表中
-        - 特别地，胆囊取出阶段确认后，只允许清洁凝血阶段
+        - 晚期的清洁凝血、装袋和标本袋牵拉取出可按实际画面交替
         
         Args:
             current_phase: 当前窗口的阶段
@@ -366,7 +366,7 @@ class GeminiClient:
         api_key_env = gemini_config.get("api_key_env", "GEMINI_API_KEY")
         self.api_key = api_key or os.environ.get(api_key_env, "")
         
-        self.model_name = model_name or gemini_config.get("model_name", "gemini-3.1-pro-preview")
+        self.model_name = model_name or gemini_config.get("model_name", "gemini-2.5-flash")
         self.thinking_level = thinking_level or gemini_config.get("thinking_level", "none")
         self.max_tokens = max_tokens or gemini_config.get("max_tokens", 1000)
         self.timeout = timeout
@@ -473,7 +473,7 @@ class GeminiClient:
             return None
         
         # "none" 表示关闭思考模式
-        # gemini-3-flash-preview 不支持 thinking_level=NONE，
+        # Some Flash models do not support thinking_level=NONE,
         # 但可以通过 thinking_budget=256 有效禁用 thinking（tokens=0）
         if self.thinking_level == "none":
             # 对于强制 thinking 的模型，thinking_budget=0 完全禁用 thinking
@@ -1143,14 +1143,16 @@ class GeminiClient:
    - blur判断极其严格：标本袋半透明表面、光线反射、局部过曝均不算blur；只有整个视野被烟雾/水雾/血液大面积遮挡才算blur=Y
 5. 必须关注Hem-o-lok、纱布（仅在出现时描述）
 6. 全中文输出：禁止出现任何英文，包括括号内的英文注释
+7. 涉及夹闭、施夹、钛夹释放或剪切时，必须在胆囊管和胆囊动脉中选择一个具体对象；禁止单独写“管状结构”、合并候选结构、斜线对象。证据不足时参考 Triplet 目标倾向
 
 【输出格式】
 【xxx】（不要写"阶段"二字，如【清洁凝血】【胆囊分离】）
 简洁操作描述（{max_chars}字以内）
 [others]hem_loc=N,gauze=Y/N,bleeding=Y/N,blur=Y/N,out_of_body=Y/N
 
-【阶段名称】准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
+【阶段名称】准备、肝胆三角解剖、夹闭切断、胆囊分离、清洁凝血、胆囊取出、标本袋牵拉取出
 【工具中文名】抓钳、电钩、剪刀、钛夹钳、冲吸器、双极电凝
+【关键组织】胆囊管、胆囊动脉、胆囊、肝胆三角、胆囊板。夹闭和剪切对象必须具体写成胆囊管或胆囊动脉；证据不足时参考 Triplet 目标倾向，不写候选合并对象
 
 【others说明】
 - hem_loc: 可见的Hem-o-lok数量，无则填0
@@ -1173,10 +1175,10 @@ class GeminiClient:
             phase_constraints = []
             if "胆囊取出" in history_context:
                 phase_constraints.append(
-                    "⚠️ 历史已出现「胆囊取出」，当前窗口**仅允许**标注为「清洁凝血」或「胆囊取出」，"
-                    "**禁止**标注为「胆囊分离」「胆囊牵拉」「夹闭切断」「肝胆三角解剖」「准备阶段」"
+                    "⚠️ 历史已出现「胆囊取出」，当前窗口只允许晚期阶段「清洁凝血」「胆囊取出」"
+                    "或「标本袋牵拉取出」，禁止回退到胆囊分离及更早阶段"
                 )
-            if any(p in history_context for p in ["肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "胆囊取出", "清洁凝血"]):
+            if any(p in history_context for p in ["肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊取出", "标本袋牵拉取出", "清洁凝血"]):
                 phase_constraints.append("⚠️ 手术已进入正式阶段，当前窗口禁止回退到「准备阶段」")
             
             if phase_constraints:
@@ -1281,7 +1283,7 @@ class GeminiClient:
             "【阶段中文名】\n"
             f"一段动作描述（{max_chars}字以内，不分段）\n\n"
             "【阶段中文名】只能在：准备、肝胆三角解剖、夹闭切断、胆囊分离、"
-            "胆囊牵拉、清洁凝血、胆囊取出 中选一个。"
+            "清洁凝血、胆囊取出、标本袋牵拉取出 中选一个。"
         )
 
         parts = []
@@ -1293,11 +1295,11 @@ class GeminiClient:
             phase_constraints = []
             if "胆囊取出" in history_context:
                 phase_constraints.append(
-                    "历史已出现「胆囊取出」，当前窗口仅允许标注为「清洁凝血」或「胆囊取出」，"
-                    "禁止回退到「胆囊分离」「胆囊牵拉」「夹闭切断」「肝胆三角解剖」「准备阶段」"
+                    "历史已出现「胆囊取出」，当前窗口仅允许晚期阶段「清洁凝血」「胆囊取出」"
+                    "或「标本袋牵拉取出」，禁止回退到胆囊分离及更早阶段"
                 )
             if any(p in history_context for p in [
-                "肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "胆囊取出", "清洁凝血"
+                "肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊取出", "标本袋牵拉取出", "清洁凝血"
             ]):
                 phase_constraints.append(
                     "手术已进入正式阶段，当前窗口禁止回退到「准备阶段」"
@@ -1492,7 +1494,7 @@ Rules:
 
             response = await asyncio.to_thread(
                 self._client.models.generate_content,
-                model="gemini-3.1-pro-preview",
+                model=self.model_name,
                 contents=[prompt, img_part],
                 config=types.GenerateContentConfig(
                     temperature=0.1,

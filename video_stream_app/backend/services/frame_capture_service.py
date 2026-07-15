@@ -112,7 +112,7 @@ def open_video_source(video_source: str) -> Optional[cv2.VideoCapture]:
     try:
         resolved = resolve_video_source(video_source)
         if resolved.is_simulator and resolved.source != video_source:
-            cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=True)
+            cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=False)
             if cap.isOpened():
                 logger.info(
                     "[FrameCaptureService] Using paced simulator source: %s @ %.1ffps",
@@ -180,6 +180,8 @@ def frame_capture_thread_func(
         on_frame_saved: 帧保存后的回调函数(session_id, timestamp, frame_idx)
     """
     config = load_frame_capture_config()
+    resolved_source = resolve_video_source(video_source)
+    is_finite_simulator = bool(resolved_source.is_simulator and resolved_source.source != video_source)
     
     # 创建状态对象
     state = FrameCaptureState(
@@ -244,6 +246,9 @@ def frame_capture_thread_func(
             total_read_time += read_time
             
             if not ret:
+                if is_finite_simulator:
+                    logger.info(f"[FrameCaptureService] Simulator source ended for session {session_id}")
+                    break
                 if is_realtime_stream:
                     # 实时流读取失败，等待重试
                     time.sleep(0.05)
@@ -255,7 +260,9 @@ def frame_capture_thread_func(
                     continue
             
             # 计算当前时间戳
-            if is_realtime_stream:
+            if is_finite_simulator and hasattr(cap, "last_timestamp"):
+                current_time = float(cap.last_timestamp())
+            elif is_realtime_stream:
                 current_time = time.time() - stream_start_time
             else:
                 current_time = frame_idx / video_fps

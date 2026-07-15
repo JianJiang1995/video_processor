@@ -18,7 +18,7 @@
           @click="togglePlay"
         >
           <div class="loop-loading-spinner"></div>
-          <div class="loop-loading-text">加载回放帧...</div>
+          <div class="loop-loading-text">{{ t('video.loadingPlayback') }}</div>
         </div>
         
         <div
@@ -45,7 +45,7 @@
 
         <!-- Native playback for the local capture-card simulator. Analysis still
              runs through the live simulator pipeline; preview should use the
-             browser decoder instead of an MJPEG image stream. -->
+             browser decoder instead of a JPEG frame stream. -->
         <video
           v-else-if="mode === 'stream' && isSimulatorStream"
           ref="videoRef"
@@ -54,13 +54,13 @@
           :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
           autoplay
           muted
-          loop
           playsinline
           @timeupdate="onTimeUpdate"
           @loadedmetadata="onLoadedMetadata"
-          @loadeddata="onStreamLoad"
+          @loadeddata="onNativeDataReady"
+          @canplay="onNativeCanPlay"
           @play="$emit('play')"
-          @pause="$emit('pause')"
+          @pause="onNativePause"
           @click="togglePlay"
         ></video>
 
@@ -92,7 +92,7 @@
           class="pause-overlay"
         >
           <div class="pause-icon">⏸</div>
-          <div class="pause-text">实时流已暂停</div>
+          <div class="pause-text">{{ t('video.streamPaused') }}</div>
         </div>
         
         <!-- Video Element (for local files) -->
@@ -105,6 +105,7 @@
           @loadedmetadata="onLoadedMetadata"
           @play="$emit('play')"
           @pause="$emit('pause')"
+          @ended="$emit('ended')"
           @click="togglePlay"
         ></video>
         
@@ -113,20 +114,20 @@
           v-if="showSam3 && sam3Frame"
           :src="sam3Frame"
           class="stream-image sam3-overlay"
-          alt="SAM3 Segmented View"
+          :alt="t('video.sam3Alt')"
         />
         
         <!-- SAM3 Loading Indicator -->
         <div v-if="showSam3 && sam3Loading" class="sam3-loading-overlay">
           <div class="sam3-loading-spinner"></div>
-          <div class="sam3-loading-text">加载器械分割...</div>
+          <div class="sam3-loading-text">{{ t('video.loadingSam3') }}</div>
         </div>
         
         <!-- SAM3 Error Message -->
         <div v-if="showSam3 && sam3Error && !sam3Loading" class="sam3-error-overlay">
           <div class="sam3-error-icon">⚠️</div>
           <div class="sam3-error-text">{{ sam3Error }}</div>
-          <button class="sam3-retry-btn" @click="fetchSam3Frame(currentTime)">重试</button>
+          <button class="sam3-retry-btn" @click="fetchSam3Frame(currentTime)">{{ t('video.retry') }}</button>
         </div>
       </template>
       
@@ -134,11 +135,11 @@
       <div v-else class="video-placeholder">
         <div class="upload-zone" @click="triggerUpload" @drop.prevent="onDrop" @dragover.prevent>
           <div class="upload-icon">📁</div>
-          <div class="upload-text">拖放视频文件或点击上传</div>
-          <div class="upload-hint">支持 MP4, AVI, MOV, MKV</div>
+          <div class="upload-text">{{ t('video.dropUpload') }}</div>
+          <div class="upload-hint">{{ t('video.supportedFormats') }}</div>
           
           <div style="margin-top: 1.5rem; font-size: 0.9rem; color: var(--text-tertiary);">
-            — 或输入本地路径 —
+            — {{ t('video.orLocalPath') }} —
           </div>
           
           <div style="margin-top: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center;">
@@ -151,7 +152,7 @@
               @click.stop
             />
             <button class="btn btn-primary" @click.stop="loadFromPath">
-              加载
+              {{ t('video.load') }}
             </button>
           </div>
         </div>
@@ -168,13 +169,13 @@
       <!-- Loading Overlay -->
       <div v-if="isLoading" class="loading-overlay">
         <div class="loader"></div>
-        <div class="loading-text">{{ mode === 'stream' ? '连接视频流...' : '加载视频...' }}</div>
+        <div class="loading-text">{{ mode === 'stream' ? t('video.connectingStream') : t('video.loadingVideo') }}</div>
       </div>
       
       <!-- Live/Ended Indicator -->
       <div v-if="session && mode === 'stream'" class="live-indicator" :class="{ 'ended': streamEnded }">
         <span class="live-dot" :class="{ 'ended': streamEnded }"></span>
-        {{ streamEnded ? 'ENDED' : 'LIVE' }}
+        {{ streamEnded ? t('video.ended') : t('video.live') }}
       </div>
       
       <!-- Current Time Overlay -->
@@ -195,20 +196,36 @@
     </div>
     
     <!-- Loop Playback Indicator - Outside video container to avoid blocking video -->
-    <div v-if="loopWindow" class="loop-indicator-bar">
+    <div
+      v-if="loopWindow"
+      class="loop-indicator-bar"
+      @mousedown.stop.prevent="emit('exitLoop')"
+      @click.stop.prevent="emit('exitLoop')"
+    >
       <span class="loop-icon">🔄</span>
-      <span class="loop-text">循环播放窗口 {{ loopWindow.window_id + 1 }}</span>
+      <span class="loop-text">{{ t('video.loopWindow', { num: loopWindow.window_id + 1 }) }}</span>
       <span class="loop-separator">|</span>
       <span class="loop-time">{{ formatTime(loopWindow.start_time) }} - {{ formatTime(loopWindow.end_time) }}</span>
       <span class="loop-separator">|</span>
-      <span class="loop-hint">点击视频退出循环</span>
+      <span class="loop-hint">{{ t('video.loopExitHint') }}</span>
+      <button
+        class="loop-exit-btn"
+        type="button"
+        @mousedown.stop.prevent="emit('exitLoop')"
+        @click.stop.prevent="emit('exitLoop')"
+      >
+        {{ t('video.exitLoop') }}
+      </button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted, computed } from 'vue'
+import { ref, watch, onUnmounted, computed, nextTick } from 'vue'
 import { isElectron, getBackendUrl, getCachedFrame, cacheFrame, getLocalFrame } from '@/utils/electronBridge'
+import { useI18n } from '@/i18n'
+
+const { t } = useI18n()
 
 // 后端 URL（Electron 环境下从配置读取，浏览器环境为空使用相对路径）
 const backendUrl = ref('')
@@ -238,18 +255,24 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  resumeNonce: {
+    type: Number,
+    default: 0
+  },
   windowDuration: {
     type: Number,
     default: 15  // From backend config, default 15s
   }
 })
 
-const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning'])
+const emit = defineEmits(['timeupdate', 'play', 'pause', 'ended', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning'])
 
 const videoRef = ref(null)
 const streamImgRef = ref(null)
 const containerRef = ref(null)
 const fileInput = ref(null)
+const nativeMetadataReady = ref(false)
+const pendingInitialSeek = ref(Math.max(0, Number(props.currentTime || 0)))
 const isLoading = ref(false)
 const videoPath = ref('')
 const frozenFrame = ref(null)  // Store captured frame when paused
@@ -300,13 +323,13 @@ const isSimulatorStream = computed(() => {
 const isLiveStream = computed(() => isHttpMjpegStream.value || isRtspStream.value || isCaptureDevice.value)
 
 const useCanvasStream = computed(() => {
-  return props.mode === 'stream' && isLiveStream.value && !props.loopWindow
+  return props.mode === 'stream' && isLiveStream.value && !isSimulatorStream.value && !props.loopWindow
 })
 
 // Computed: get the stream URL
-// Use the backend latest-frame display endpoint for every live source. It keeps
-// only the newest JPEG per source, so a brief renderer stall drops old frames
-// instead of building a playback backlog.
+// Use the backend latest-frame display endpoint for live device/RTSP/HTTP
+// sources. The simulator is intentionally excluded from this path so local
+// test playback can use the browser's native video decoder.
 const streamUrl = computed(() => {
   if (!props.session?.session_id) return ''
   if (!isLiveStream.value) return ''
@@ -316,6 +339,49 @@ const streamUrl = computed(() => {
 
 const onStreamLoad = () => {
   isLoading.value = false
+}
+
+const restoreNativeSimulatorPlayback = () => {
+  if (!isSimulatorStream.value || props.loopWindow || !videoRef.value) return
+
+  isLoading.value = false
+  const targetTime = Number(props.currentTime || 0)
+  if (
+    targetTime > 1 &&
+    Math.abs(videoRef.value.currentTime - targetTime) > 0.5
+  ) {
+    videoRef.value.currentTime = targetTime
+  }
+
+  if (!props.isPlaying || props.streamEnded) return
+
+  const playCurrentVideo = () => {
+    if (!videoRef.value || !props.isPlaying || props.streamEnded) return
+    videoRef.value.play().catch(() => {})
+  }
+
+  playCurrentVideo()
+  window.setTimeout(() => {
+    if (videoRef.value?.paused) {
+      playCurrentVideo()
+    }
+  }, 120)
+}
+
+const onNativeDataReady = () => {
+  onStreamLoad()
+  restoreNativeSimulatorPlayback()
+}
+
+const onNativeCanPlay = () => {
+  restoreNativeSimulatorPlayback()
+}
+
+const resumeNativeSimulatorPlaybackSoon = async () => {
+  await nextTick()
+  restoreNativeSimulatorPlayback()
+  window.setTimeout(restoreNativeSimulatorPlayback, 120)
+  window.setTimeout(restoreNativeSimulatorPlayback, 360)
 }
 
 const onStreamError = () => {
@@ -498,6 +564,10 @@ watch(() => props.isPaused, async (paused) => {
 // Use a small threshold (0.1s) to avoid unnecessary seeks during normal playback
 // but still allow precise seeking for loop playback and user interactions
 watch(() => props.currentTime, (newTime) => {
+  if (!nativeMetadataReady.value) {
+    pendingInitialSeek.value = Math.max(pendingInitialSeek.value, Number(newTime || 0))
+    return
+  }
   if (isSimulatorStream.value && props.isPlaying && !props.loopWindow) {
     return
   }
@@ -508,7 +578,8 @@ watch(() => props.currentTime, (newTime) => {
 })
 
 // Watch for play/pause state
-watch(() => props.isPlaying, (playing) => {
+watch(() => props.isPlaying, async (playing) => {
+  await nextTick()
   if (useCanvasStream.value) {
     if (playing) {
       startCanvasStream()
@@ -519,12 +590,24 @@ watch(() => props.isPlaying, (playing) => {
   }
   if (videoRef.value) {
     if (playing) {
-      videoRef.value.play()
+      if (
+        isSimulatorStream.value &&
+        !props.loopWindow &&
+        props.currentTime > 1 &&
+        videoRef.value.currentTime < props.currentTime - 1
+      ) {
+        videoRef.value.currentTime = props.currentTime
+      }
+      videoRef.value.play().catch(() => {})
     } else {
       videoRef.value.pause()
     }
   }
-})
+}, { flush: 'post' })
+
+watch(() => props.resumeNonce, () => {
+  resumeNativeSimulatorPlaybackSoon()
+}, { flush: 'post', immediate: true })
 
 watch(
   () => [backendUrl.value, props.session?.session_id, props.mode, props.loopWindow, useCanvasStream.value],
@@ -539,8 +622,14 @@ watch(
 
 let lastNativeTimeEmit = 0
 const onTimeUpdate = () => {
-  if (videoRef.value) {
-    if (isSimulatorStream.value && !props.loopWindow) {
+  if (videoRef.value && nativeMetadataReady.value) {
+    if (
+      isSimulatorStream.value &&
+      !props.loopWindow &&
+      props.currentTime > 3 &&
+      videoRef.value.currentTime < props.currentTime - 2
+    ) {
+      videoRef.value.currentTime = props.currentTime
       return
     }
     if (isSimulatorStream.value && props.loopWindow) {
@@ -569,6 +658,27 @@ const onTimeUpdate = () => {
 
 const onLoadedMetadata = () => {
   isLoading.value = false
+  if (!isSimulatorStream.value && videoRef.value) {
+    const targetTime = Math.max(pendingInitialSeek.value, Number(props.currentTime || 0))
+    if (targetTime > 0.04 && Math.abs(videoRef.value.currentTime - targetTime) > 0.08) {
+      videoRef.value.currentTime = targetTime
+    }
+  }
+  nativeMetadataReady.value = true
+  pendingInitialSeek.value = 0
+  restoreNativeSimulatorPlayback()
+}
+
+watch(() => props.session?.session_id, () => {
+  nativeMetadataReady.value = false
+  pendingInitialSeek.value = Math.max(0, Number(props.currentTime || 0))
+})
+
+const onNativePause = () => {
+  if (isSimulatorStream.value && !props.loopWindow) {
+    return
+  }
+  emit('pause')
 }
 
 const togglePlay = () => {
@@ -923,7 +1033,7 @@ const loadLoopWindowFrames = async () => {
       console.error('[LoopPlayback] Base64 fallback also failed:', fallbackError)
     }
     
-    emit('loopLoadFailed', '无法加载帧')
+    emit('loopLoadFailed', t('video.failedToLoad'))
     emit('exitLoop')
     return false
   }
@@ -1185,6 +1295,21 @@ watch(() => props.loopWindow, async (newVal, oldVal) => {
           }
         }
         requestAnimationFrame(seekToLoopStart)
+      } else if (oldVal && !newVal) {
+        const restoreLivePlayback = () => {
+          if (!videoRef.value) return
+          const resumeAt = Number.isFinite(props.currentTime) ? props.currentTime : oldVal.end_time || 0
+          if (Math.abs(videoRef.value.currentTime - resumeAt) > 0.08) {
+            videoRef.value.currentTime = resumeAt
+          }
+          loopPlaybackTime.value = 0
+          if (props.isPlaying) {
+            videoRef.value.play().catch(() => {})
+          } else {
+            videoRef.value.pause()
+          }
+        }
+        requestAnimationFrame(restoreLivePlayback)
       }
       return
     }
@@ -1318,7 +1443,7 @@ const fetchSam3Frame = async (timestamp, forceOnDemand = false) => {
       if (!response.ok) {
         const errorText = await response.text()
         console.error(`SAM3 segmented-frame error: ${response.status}`, errorText.substring(0, 200))
-        sam3Error.value = `服务错误 (${response.status})`
+        sam3Error.value = `${t('video.failedToLoad')} (${response.status})`
         // DON'T clear sam3Frame - keep showing last valid frame to prevent flicker
         sam3Loading.value = false
         return
@@ -1328,7 +1453,7 @@ const fetchSam3Frame = async (timestamp, forceOnDemand = false) => {
         data = await response.json()
       } catch (jsonError) {
         console.error('Failed to parse segmented-frame response:', jsonError)
-        sam3Error.value = 'JSON 解析失败'
+        sam3Error.value = t('video.failedToLoad')
         // DON'T clear sam3Frame - keep showing last valid frame to prevent flicker
         sam3Loading.value = false
         return
@@ -1351,15 +1476,15 @@ const fetchSam3Frame = async (timestamp, forceOnDemand = false) => {
     } else {
       // Only show error if we have no frame at all
       if (!sam3Frame.value) {
-        sam3Error.value = 'No SAM3 data received'
+        sam3Error.value = t('video.noSam3Data')
       }
     }
   } catch (error) {
     console.error('Failed to fetch SAM3 frame:', error)
     if (error.name === 'AbortError') {
-      sam3Error.value = 'Request timeout'
+      sam3Error.value = t('video.requestTimeout')
     } else {
-      sam3Error.value = error.message || 'Failed to load'
+      sam3Error.value = error.message || t('video.failedToLoad')
     }
     // DON'T clear sam3Frame on error - keep showing the last valid frame
     // This prevents flickering when requests temporarily fail
@@ -1721,6 +1846,22 @@ onUnmounted(() => {
 .loop-indicator-bar .loop-hint:hover {
   color: white;
   text-decoration: underline;
+}
+
+.loop-exit-btn {
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.22);
+  color: white;
+  border-radius: 4px;
+  padding: 0.28rem 0.65rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.loop-exit-btn:hover {
+  background: rgba(0, 0, 0, 0.36);
+  border-color: rgba(255, 255, 255, 0.8);
 }
 
 /* Loop Playback Frame */

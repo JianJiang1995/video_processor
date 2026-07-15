@@ -49,7 +49,7 @@ class BleedingAnnotator:
 
     BLEEDING_CLASS_ID = 0  # Single class: "bleeding"
 
-    def __init__(self, model: str = "gemini-3.1-pro-preview"):
+    def __init__(self, model: str = "gemini-2.5-flash"):
         from google import genai
         from google.genai import types
         self.genai = genai
@@ -277,7 +277,7 @@ def main():
     parser.add_argument("--sample-interval", type=int, default=5, help="Sample every Nth frame (default: 5)")
     parser.add_argument("--max-frames", type=int, default=0, help="Max frames to process (0=all)")
     parser.add_argument("--visualize", action="store_true", help="Generate visualization images")
-    parser.add_argument("--model", default="gemini-3.1-pro-preview", help="Gemini model name")
+    parser.add_argument("--model", default="gemini-2.5-flash", help="Gemini model name")
 
     args = parser.parse_args()
 

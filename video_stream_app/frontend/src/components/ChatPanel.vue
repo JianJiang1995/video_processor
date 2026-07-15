@@ -5,12 +5,12 @@
       <!-- Welcome message -->
       <div v-if="messages.length === 0" class="chat-empty">
         <div class="chat-empty-icon">&#x1F4AC;</div>
-        <div class="chat-empty-text">Ask questions about the surgical video</div>
-        <div class="chat-empty-hint">Supports text, voice input, and similarity search</div>
+        <div class="chat-empty-text">{{ t('chat.emptyText') }}</div>
+        <div class="chat-empty-hint">{{ t('chat.emptyHint') }}</div>
         <div class="chat-hints">
-          <button class="chat-hint-chip" @click="sendQuickMessage('What surgical phase is currently being performed?')">Current phase?</button>
-          <button class="chat-hint-chip" @click="sendQuickMessage('Are there any signs of bleeding?')">Bleeding signs?</button>
-          <button class="chat-hint-chip" @click="sendQuickMessage('Find similar windows to the current one')">Find similar</button>
+          <button class="chat-hint-chip" @click="sendQuickMessage(t('chat.currentPhasePrompt'))">{{ t('chat.currentPhase') }}</button>
+          <button class="chat-hint-chip" @click="sendQuickMessage(t('chat.bleedingSignsPrompt'))">{{ t('chat.bleedingSigns') }}</button>
+          <button class="chat-hint-chip" @click="sendQuickMessage(t('chat.findSimilarPrompt'))">{{ t('chat.findSimilar') }}</button>
         </div>
       </div>
 
@@ -35,7 +35,7 @@
             class="chat-similar-item"
             @click="$emit('seekToWindow', sim.window_id)"
           >
-            W#{{ sim.window_id + 1 }}
+            {{ t('chat.window') }} #{{ sim.window_id + 1 }}
             <span class="sim-score">{{ sim.similarity.toFixed(2) }}</span>
           </div>
         </div>
@@ -57,14 +57,14 @@
         ref="inputRef"
         class="chat-input"
         v-model="inputText"
-        placeholder="Ask about the video or search..."
+        :placeholder="t('chat.placeholder')"
         @keydown.enter="sendMessage"
       />
       <button
         class="chat-voice-btn"
         :class="{ recording: isRecording }"
         @click="toggleRecording"
-        title="Voice input"
+        :title="t('chat.voiceInput')"
       >
         &#x1F3A4;
       </button>
@@ -82,6 +82,9 @@
 <script setup>
 import { ref, nextTick, watch } from 'vue'
 import axios from 'axios'
+import { useI18n } from '@/i18n'
+
+const { t } = useI18n()
 
 const props = defineProps({
   sessionId: { type: String, default: '' },
@@ -132,7 +135,7 @@ const formatError = (error) => {
   if (detail && typeof detail === 'object') {
     return detail.message || detail.msg || detail.error || JSON.stringify(detail)
   }
-  return detail || error?.message || '网络错误'
+  return detail || error?.message || t('chat.networkError')
 }
 
 const sendMessage = async () => {
@@ -163,14 +166,14 @@ const sendMessage = async () => {
     const assistantContent = response.data?.response?.content
       || response.data?.response_text
       || response.data?.error
-      || 'No response'
+      || t('chat.noResponse')
 
     const reply = {
       role: 'assistant',
       content: assistantContent,
       time: formatTime(),
       similarWindows: null,
-      context: buildContext() ? '已结合当前分析窗口上下文' : null,
+      context: buildContext() ? t('chat.contextUsed') : null,
     }
 
     // If similarity-related, also run semantic search
@@ -199,7 +202,7 @@ const sendMessage = async () => {
   } catch (error) {
     messages.value.push({
       role: 'assistant',
-      content: `Error: ${formatError(error)}`,
+      content: `${t('chat.errorPrefix')}: ${formatError(error)}`,
       time: formatTime(),
     })
   } finally {
@@ -212,7 +215,7 @@ const buildContext = () => {
   if (!props.summaries.length) return ''
   return props.summaries
     .slice(-10)
-    .map(s => `Window ${s.window_id + 1} (${formatTimestamp(s.start_time)}-${formatTimestamp(s.end_time)}): ${s.summary}`)
+    .map(s => `${t('chat.window')} ${s.window_id + 1} (${formatTimestamp(s.start_time)}-${formatTimestamp(s.end_time)}): ${s.summary}`)
     .join('\n')
 }
 

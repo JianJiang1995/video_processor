@@ -1,6 +1,6 @@
 <template>
   <div class="stream-input-panel">
-    <h3>📡 连接视频源</h3>
+    <h3>📡 {{ t('stream.connectSource') }}</h3>
     
     <!-- Source Type Tabs -->
     <div class="source-tabs">
@@ -9,33 +9,33 @@
         :class="{ active: sourceType === 'stream' }"
         @click="sourceType = 'stream'"
       >
-        🌐 网络视频流
+        🌐 {{ t('stream.networkStream') }}
       </button>
       <button 
         class="tab-btn" 
         :class="{ active: sourceType === 'capture' }"
         @click="sourceType = 'capture'; loadCaptureDevices()"
       >
-        📹 本地采集卡
+        📹 {{ t('stream.captureCard') }}
       </button>
     </div>
 
     <!-- Network Stream Input -->
     <template v-if="sourceType === 'stream'">
       <div class="input-group">
-        <label>视频流地址</label>
+        <label>{{ t('stream.url') }}</label>
         <input
           type="text"
           v-model="streamUrl"
-          placeholder="rtsp://192.168.1.100:554/stream 或 http://..."
+          :placeholder="t('stream.urlPlaceholder')"
           class="input"
           @keyup.enter="connect"
         />
-        <div class="input-hint">支持 RTSP, HTTP, HLS 视频流</div>
+        <div class="input-hint">{{ t('stream.urlHint') }}</div>
       </div>
 
       <div class="preset-streams">
-        <label>常用地址</label>
+        <label>{{ t('stream.presets') }}</label>
         <div class="preset-list">
           <button 
             v-for="preset in presets" 
@@ -43,7 +43,7 @@
             class="preset-btn"
             @click="selectPreset(preset)"
           >
-            {{ preset.name }}
+            {{ t(preset.nameKey) }}
           </button>
         </div>
       </div>
@@ -53,24 +53,24 @@
     <template v-else>
       <div class="capture-section">
         <div class="capture-header">
-          <label>选择采集设备</label>
+          <label>{{ t('stream.selectCaptureDevice') }}</label>
           <button class="refresh-btn" @click="loadCaptureDevices" :disabled="isLoadingDevices">
-            🔄 {{ isLoadingDevices ? '扫描中...' : '刷新' }}
+            🔄 {{ isLoadingDevices ? t('stream.scanning') : t('stream.refresh') }}
           </button>
         </div>
         
         <div v-if="isLoadingDevices" class="devices-loading">
           <div class="loader-small"></div>
-          <span>正在扫描采集设备...</span>
+          <span>{{ t('stream.scanningDevices') }}</span>
         </div>
         
         <div v-else-if="captureDevices.length === 0" class="no-devices">
-          <p>⚠️ 未检测到采集设备</p>
-          <p class="hint">请确保：</p>
+          <p>⚠️ {{ t('stream.noDevices') }}</p>
+          <p class="hint">{{ t('stream.ensure') }}</p>
           <ul>
-            <li>采集卡已正确安装并连接</li>
-            <li>驱动程序已安装</li>
-            <li>SDI/DVI 线缆已连接到达芬奇机器人</li>
+            <li>{{ t('stream.ensureInstalled') }}</li>
+            <li>{{ t('stream.ensureDriver') }}</li>
+            <li>{{ t('stream.ensureCable') }}</li>
           </ul>
         </div>
         
@@ -94,7 +94,7 @@
         </div>
 
         <div v-if="selectedDevice?.supported_modes?.length" class="input-group mode-select-group">
-          <label>输入模式</label>
+          <label>{{ t('stream.inputMode') }}</label>
           <select v-model="selectedMode" class="input">
             <option
               v-for="mode in selectedDevice.supported_modes"
@@ -107,8 +107,8 @@
         </div>
         
         <div class="capture-hint">
-          <p>💡 <strong>达芬奇机器人部署提示：</strong></p>
-          <p>使用 SDI 线缆连接机器人输出到 Blackmagic 采集卡</p>
+          <p>💡 <strong>{{ t('stream.deployTipTitle') }}</strong></p>
+          <p>{{ t('stream.deployTip') }}</p>
         </div>
       </div>
     </template>
@@ -116,13 +116,13 @@
     <div class="stream-options">
       <label>
         <input type="checkbox" v-model="autoAnalyze" />
-        连接后自动开始分析
+        {{ t('stream.autoAnalyze') }}
       </label>
     </div>
 
     <div class="actions">
       <button class="btn btn-secondary" @click="$emit('back')">
-        ← 返回
+        ← {{ t('app.back') }}
       </button>
       <button 
         v-if="sourceType === 'stream'"
@@ -130,7 +130,7 @@
         @click="connect" 
         :disabled="!streamUrl"
       >
-        🔗 连接视频流
+        🔗 {{ t('stream.connectStream') }}
       </button>
       <button 
         v-else
@@ -138,7 +138,7 @@
         @click="connectCapture" 
         :disabled="!selectedDevice"
       >
-        📹 连接采集卡
+        📹 {{ t('stream.connectCapture') }}
       </button>
     </div>
 
@@ -146,9 +146,9 @@
     <div v-if="isConnecting" class="connection-status">
       <div class="status-content">
         <div class="loader-small"></div>
-        <span>{{ sourceType === 'stream' ? '正在连接视频流...' : '正在连接采集卡...' }}</span>
+        <span>{{ sourceType === 'stream' ? t('stream.connectingStream') : t('stream.connectingCapture') }}</span>
       </div>
-      <button class="cancel-btn" @click="cancelConnect">取消</button>
+      <button class="cancel-btn" @click="cancelConnect">{{ t('stream.cancel') }}</button>
     </div>
 
     <div v-if="error" class="connection-error">
@@ -160,6 +160,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import { useI18n } from '@/i18n'
+
+const { language, t } = useI18n()
 
 const emit = defineEmits(['connect', 'back'])
 
@@ -173,10 +176,10 @@ const autoConnectCapture = import.meta.env.VITE_AUTO_CONNECT_CAPTURE === '1'
 // Stream mode state
 const streamUrl = ref(defaultStreamUrl)
 const presets = [
-  { name: '本机模拟器', url: defaultStreamUrl },
-  { name: '手术室1', url: 'rtsp://192.168.1.101:554/live' },
-  { name: '手术室2', url: 'rtsp://192.168.1.102:554/live' },
-  { name: '测试流', url: 'http://localhost:9001/stream' },
+  { nameKey: 'stream.presetSimulator', url: defaultStreamUrl },
+  { nameKey: 'stream.presetRoom1', url: 'rtsp://192.168.1.101:554/live' },
+  { nameKey: 'stream.presetRoom2', url: 'rtsp://192.168.1.102:554/live' },
+  { nameKey: 'stream.presetTest', url: 'http://localhost:9001/stream' },
 ]
 
 // Capture mode state
@@ -310,11 +313,15 @@ const connect = async () => {
     }
     
     if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
-      error.value = '连接超时（30秒），请检查视频流地址和后端服务'
+      error.value = language.value === 'zh'
+        ? '连接超时（30秒），请检查视频流地址和后端服务'
+        : 'Connection timed out after 30 seconds. Check the stream URL and backend service.'
     } else if (err.code === 'ERR_NETWORK' || err.message?.includes('Network Error')) {
-      error.value = '网络错误，请检查后端服务是否运行在 localhost:8001'
+      error.value = language.value === 'zh'
+        ? '网络错误，请检查后端服务是否运行在 localhost:8001'
+        : 'Network error. Check whether the backend is running on localhost:8001.'
     } else {
-      error.value = err.response?.data?.detail || err.message || '连接失败，请检查视频流地址'
+      error.value = err.response?.data?.detail || err.message || (language.value === 'zh' ? '连接失败，请检查视频流地址' : 'Connection failed. Check the stream URL.')
     }
   } finally {
     isConnecting.value = false
@@ -356,9 +363,11 @@ const connectCapture = async () => {
     }
     
     if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
-      error.value = '连接超时，请检查采集卡是否正常工作'
+      error.value = language.value === 'zh'
+        ? '连接超时，请检查采集卡是否正常工作'
+        : 'Connection timed out. Check whether the capture card is working.'
     } else {
-      error.value = err.response?.data?.detail || '连接失败，请检查采集卡'
+      error.value = err.response?.data?.detail || (language.value === 'zh' ? '连接失败，请检查采集卡' : 'Connection failed. Check the capture card.')
     }
   } finally {
     isConnecting.value = false
@@ -374,6 +383,8 @@ const connectCapture = async () => {
   border-radius: var(--radius-md);
   padding: 1.8rem 2rem;
   max-width: 760px;
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
   width: 100%;
   box-shadow: var(--shadow-md);
 }
@@ -652,6 +663,12 @@ const connectCapture = async () => {
   display: flex;
   gap: 1rem;
   justify-content: space-between;
+  position: sticky;
+  bottom: -1.8rem;
+  z-index: 2;
+  margin: 0 -2rem -1.8rem;
+  padding: 1rem 2rem 1.8rem;
+  background: linear-gradient(180deg, rgba(32, 32, 32, 0), var(--bg-secondary) 28%);
 }
 
 /* Connection Status */

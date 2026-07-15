@@ -58,6 +58,16 @@ export const setBackendUrl = async (url) => {
 }
 
 /**
+ * Load a trusted local offline-analysis replay bundle through Electron IPC.
+ */
+export const loadReplayBundle = async (specPath) => {
+  if (!isElectron()) {
+    return { success: false, error: 'Offline replay is only available in Electron' }
+  }
+  return await window.electronAPI.loadReplayBundle(specPath)
+}
+
+/**
  * 获取配置项
  */
 export const getConfig = async (key) => {
