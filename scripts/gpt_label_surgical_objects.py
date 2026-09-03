@@ -76,6 +76,76 @@ def _pil_to_data_url(image: Image.Image, max_width: int = 1280, quality: int = 8
 
 
 def _prompt(prompt_profile: str = "default") -> str:
+    if prompt_profile == "dual-clip-strict":
+        return """You are creating high-precision object-detection training labels for DEPLOYED clip bodies in laparoscopic cholecystectomy frames.
+
+Primary targets:
+- hemolok_clip: a deployed white/ivory opaque plastic Hem-o-lok locking clip BODY. It is thick, non-metallic, usually C/U/V-shaped or bar-like, with a locking hinge/notch, attached across a cystic duct or vessel.
+- titanium_clip: a deployed metal titanium ligating clip BODY. It is small, short, silver/gray metallic, often V/U/staple-like or two short parallel prongs on a duct/vessel. It is much shorter than instrument jaws.
+
+Allowed distractors:
+- specular_highlight: wet glare, saturated white reflection, or shiny tissue/instrument highlight that might be confused with a clip.
+- clip_applier: clip applier jaws or shaft, including jaws holding a clip before release. This is NOT the deployed clip body.
+- other_instrument: scissors, hook, grasper, forceps, suction, trocar, or any non-clip object.
+
+Strict labeling rules:
+1. Label only released/deployed clip BODY objects. Do not label clip applier jaws, grasper teeth, scissors tips, electrocautery hooks, shafts, sutures, ducts, vessels, tissue folds, fat strands, smoke, or blood.
+2. Hem-o-lok must be white/ivory opaque plastic and visibly thick/locking. Do not label blue, green, purple, transparent, or uncertain polymer clips as hemolok_clip.
+3. Titanium clip must be a short silver/gray metallic clip body with rigid clip morphology. Do not label a long bright line, tool edge, jaw tip, or wet highlight as titanium_clip.
+4. A bright spot is titanium_clip only if the short rigid V/U/parallel-prong clip shape is visible; otherwise label it specular_highlight or omit it.
+5. Boxes must be tight around only the clip body. Do not include surrounding tissue, duct/vessel, instrument jaws, or large background.
+6. If the clip type is uncertain between hemolok_clip and titanium_clip, omit the object or use confidence below 0.55.
+7. Prefer high precision over recall. It is better to return no clip than to label a false clip.
+
+Coordinates must be normalized integers in the original image coordinate system from 0 to 1000: [x1,y1,x2,y2].
+
+Return ONLY valid JSON:
+{
+  "objects": [
+    {
+      "label": "hemolok_clip|titanium_clip|specular_highlight|clip_applier|other_instrument",
+      "box_1000": [0, 0, 1000, 1000],
+      "confidence": 0.0,
+      "reason": "brief visual reason"
+    }
+  ]
+}
+"""
+    if prompt_profile == "titanium-focused":
+        return """You are creating high-precision object-detection training labels for deployed METAL titanium ligating clips in laparoscopic cholecystectomy frames.
+
+Primary target:
+- titanium_clip: a deployed metal titanium ligating clip BODY. It is a small, short, silver/gray metallic clip on a duct/vessel, often V/U/parallel-pronged or staple-like. It is much shorter than instrument jaws.
+
+Allowed distractor labels:
+- specular_highlight: wet glare or isolated highlight that might be confused with a titanium clip.
+- clip_applier: clip applier jaws or shaft. These are long/large instrument parts and are NOT the deployed clip body.
+- other_instrument: scissors, hook, grasper, forceps, suction, or any non-applier tool.
+- hemolok_clip: only if a deployed white/ivory opaque plastic locking Hem-o-lok clip body is unambiguous. Do not label blue/green/purple polymer clips.
+
+Titanium-specific rules:
+1. Label titanium_clip only when the released/deployed metal clip body itself is visible.
+2. The titanium clip box must tightly surround only the short metal clip body, not the duct/vessel/tissue/instrument.
+3. Do not label long applier jaws, grasper teeth, scissor tips, shafts, or electrocautery tips as titanium_clip.
+4. Do not label wet white glare or saturated highlights as titanium_clip unless a rigid short V/U/parallel metal clip shape is clearly visible.
+5. Do not label sutures, vessel edges, fat strands, tissue folds, or smoke as titanium_clip.
+6. If a possible titanium clip is mostly hidden or ambiguous, use confidence below 0.55 or omit it.
+7. If the frame has no clear deployed titanium clip body, return an empty objects list or label only clear distractors.
+
+Coordinates must be normalized integers in the original image coordinate system from 0 to 1000: [x1,y1,x2,y2].
+
+Return ONLY valid JSON:
+{
+  "objects": [
+    {
+      "label": "titanium_clip|specular_highlight|clip_applier|other_instrument|hemolok_clip",
+      "box_1000": [0, 0, 1000, 1000],
+      "confidence": 0.0,
+      "reason": "brief visual reason"
+    }
+  ]
+}
+"""
     if prompt_profile == "clip-focused":
         return """You are creating high-precision object-detection training labels for deployed surgical clips in laparoscopic cholecystectomy frames.
 
@@ -351,7 +421,7 @@ class OpenAIResponsesFrameAnnotator:
                     "reason": obj.get("reason", ""),
                 }
             )
-        if self.prompt_profile == "clip-focused":
+        if self.prompt_profile in {"clip-focused", "titanium-focused", "dual-clip-strict"}:
             rules = """1. Keep only deployed clip BODY boxes that are good enough for detector training.
 2. Reject tissue, fat, ducts, vessels, old blood stains, shadows, smoke, glare, ordinary instruments, and long applier jaws/shafts.
 3. Hem-o-lok must be a visible deployed white/ivory plastic locking clip body. Reject blue/green/purple polymer clips for this dataset.
@@ -843,7 +913,7 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=1000)
     parser.add_argument("--reasoning-effort", default="none", choices=["none", "minimal", "low", "medium", "high", "xhigh"])
     parser.add_argument("--image-detail", default="high", choices=["low", "high", "auto", "original"])
-    parser.add_argument("--prompt-profile", default="default", choices=["default", "clip-focused"])
+    parser.add_argument("--prompt-profile", default="default", choices=["default", "clip-focused", "titanium-focused", "dual-clip-strict"])
     parser.add_argument("--interval-sec", type=float, default=12.0)
     parser.add_argument("--max-frames-per-video", type=int, default=30)
     parser.add_argument("--max-total-frames", type=int, default=0)

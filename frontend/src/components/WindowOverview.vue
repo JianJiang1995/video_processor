@@ -403,7 +403,7 @@ function fallbackEnglishSummary(text) {
   }
   if (/(胆囊分离|胆囊与肝床|肝床|胆囊床)/.test(src)) add('The gallbladder is dissected from the liver bed.')
   if (/(冲吸|冲洗|吸引|清理)/.test(src)) add('Suction and irrigation are used to clear the operative field.')
-  if (/(大量活动性出血|活动性出血|明显出血|持续出血)/.test(src)) add('Active bleeding is noted.')
+  if (/(大量(?:活动性)?出血|明显(?:活动性)?出血|持续(?:活动性)?出血|喷涌出血|喷射性出血|涌血|明确出血源|影响视野的持续渗血)/.test(src)) add('Active bleeding is noted.')
   else if (/(少量出血|少量渗血|渗血|出血)/.test(src)) add('Minor local bleeding or oozing is noted.')
   if (/(止血|凝血|无活动性出血|未见活动性出血)/.test(src)) add('Hemostasis is achieved or no active bleeding is seen.')
   if (/(牵拉|暴露)/.test(src)) add('Traction is maintained for exposure.')

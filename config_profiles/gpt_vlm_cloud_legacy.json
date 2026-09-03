@@ -1,0 +1,110 @@
+{
+  "profile_name": "gpt_vlm_cloud_legacy",
+  "description": "Archive of the previous external Gemini/GPT VLM route. Keep this profile separate from the local YOLO/local-VLM post-processing path.",
+  "archived_from_commit": "ff16adf",
+  "archived_at": "2026-07-05",
+  "data_policy": "This profile sends image/text data to external model APIs. Do not enable it in the formal private deployment unless explicitly approved.",
+  "restore_notes": [
+    "Merge the sections below into config.json.",
+    "Unset DISABLE_EXTERNAL_AI, DISABLE_REALTIME_OPEN_VISION, DISABLE_EMBEDDINGS and DISABLE_SUMMARY_COMPRESSION.",
+    "Set GEMINI_API_KEY. Set OPENAI_API_KEY only if OpenAI fallback is enabled.",
+    "Restart backend and Electron after switching providers."
+  ],
+  "window_analysis": {
+    "provider": "gemini",
+    "history_window_count": 3,
+    "max_output_chars": 300,
+    "min_frames_ratio": 0.2
+  },
+  "chat_assistant": {
+    "provider": "gemini",
+    "compress_window_count": 5,
+    "compress_prompt_file": "prompts/compress_summary_prompt.txt",
+    "max_context_summaries": 50
+  },
+  "services": {
+    "glm": {
+      "enabled": false,
+      "required": false,
+      "port": 8000,
+      "host": "localhost",
+      "api_url": "http://localhost:8000/v1",
+      "model_name": "Qwen3-VL-8B",
+      "temperature": 0.7,
+      "max_tokens": 1000,
+      "max_concurrent": 16,
+      "retry_count": 2,
+      "window_merge_count": 3
+    },
+    "gemini": {
+      "enabled": true,
+      "required": true,
+      "api_key_env": "GEMINI_API_KEY",
+      "model_name": "gemini-2.5-flash",
+      "thinking_level": "none",
+      "max_tokens": 2048,
+      "max_concurrent": 8,
+      "retry_count": 3,
+      "retry_delay": 1.0
+    },
+    "realtime_open_vision": {
+      "enabled": true,
+      "provider": "gemini",
+      "api_key_env": "OPENAI_API_KEY",
+      "model_name": "gemini-2.5-flash",
+      "openai_fallback": true,
+      "openai_model_name": "gpt-4o-mini",
+      "transport": "curl",
+      "trust_env": true,
+      "thinking_level": "none",
+      "max_images": 4,
+      "max_tokens": 520,
+      "timeout": 10.0,
+      "temperature": 0.0,
+      "response_format_json": true
+    },
+    "translation": {
+      "enabled": true,
+      "provider": "gemini",
+      "api_key_env": "GEMINI_API_KEY",
+      "model_name": "gemini-2.5-flash",
+      "thinking_level": "none",
+      "max_tokens": 220,
+      "temperature": 0.0
+    },
+    "clinical_summary": {
+      "enabled": true,
+      "provider": "gemini",
+      "api_key_env": "GEMINI_API_KEY",
+      "model_name": "gemini-2.5-flash",
+      "thinking_level": "none",
+      "max_tokens": 2200,
+      "max_windows": 90,
+      "max_events": 40,
+      "temperature": 0.0
+    },
+    "event_nodes": {
+      "enabled": true,
+      "provider": "gemini",
+      "api_key_env": "OPENAI_API_KEY",
+      "model_name": "gemini-2.5-flash",
+      "thinking_level": "none",
+      "max_tokens": 1200,
+      "temperature": 0.0,
+      "timeout": 30.0,
+      "transport": "curl",
+      "trust_env": true,
+      "max_windows": 120,
+      "fallback_models": [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
+      ]
+    },
+    "embedding": {
+      "enabled": true,
+      "model": "gemini-embedding-2-preview",
+      "persist_to_disk": true
+    }
+  }
+}

@@ -40,10 +40,17 @@ class YOLOService:
     ID_GC_FRAMES = 60
 
     def __init__(self, model_path: str, device: str = "cuda:0", conf_threshold: float = 0.25):
+        import torch
         from ultralytics import YOLO
         logger.info(f"[YOLO] Loading model from {model_path} on {device} (track mode)")
         self.model = YOLO(model_path)
-        self.device = device
+        # Ultralytics treats a CUDA string as CUDA_VISIBLE_DEVICES and then
+        # returns cuda:0. That silently collapses cuda:1 onto GPU0 when torch
+        # was initialized earlier by another expert. A torch.device bypasses
+        # that remapping and preserves the requested physical index.
+        if isinstance(device, str) and device.isdigit():
+            device = f"cuda:{device}"
+        self.device = torch.device(device) if isinstance(device, str) else device
         self.conf_threshold = conf_threshold
 
         # 追踪状态

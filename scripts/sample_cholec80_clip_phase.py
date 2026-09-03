@@ -8,7 +8,7 @@ import json
 import random
 import re
 import shutil
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -73,6 +73,30 @@ def _read_frame(video_path: Path, sec: float) -> Image.Image | None:
     if not ok or frame is None:
         return None
     return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+
+def _read_grouped_frames(rows: List[Dict]) -> Iterable[Tuple[int, Dict, Image.Image]]:
+    """Read selected rows while opening each source video only once."""
+    by_video: Dict[str, List[Tuple[int, Dict]]] = defaultdict(list)
+    for idx, row in enumerate(rows, start=1):
+        by_video[str(row["video"])].append((idx, row))
+
+    for video_name, items in sorted(by_video.items()):
+        video_path = Path(video_name)
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            continue
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        for original_idx, row in sorted(items, key=lambda item: float(item[1]["time_sec"])):
+            sec = float(row["time_sec"])
+            frame_idx = int(round(sec * fps)) if fps > 0 else 0
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_idx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            yield original_idx, row, image
+        cap.release()
 
 
 def _safe_stem(video_path: Path, sec: float) -> str:
@@ -146,12 +170,9 @@ def sample(args: argparse.Namespace) -> None:
     metadata_path = output / "frames.jsonl"
     written_rows: List[Dict] = []
     with metadata_path.open("w", encoding="utf-8") as f:
-        for idx, row in enumerate(rows, start=1):
+        for idx, row, image in _read_grouped_frames(rows):
             video = Path(row["video"])
             sec = float(row["time_sec"])
-            image = _read_frame(video, sec)
-            if image is None:
-                continue
             stem = _safe_stem(video, sec)
             image_path = output / "images" / f"{stem}.jpg"
             image.save(image_path, quality=92)

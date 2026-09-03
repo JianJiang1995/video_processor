@@ -160,7 +160,7 @@ const PHASE_CN = {
   ClippingCutting: '夹闭切断',
   GallbladderDissection: '胆囊分离',
   GallbladderPackaging: '胆囊装袋',
-  GallbladderRetraction: '胆囊牵拉',
+  GallbladderRetraction: '标本袋牵拉取出',
   CleaningCoagulation: '清洁凝血',
 }
 
@@ -170,7 +170,7 @@ const PHASE_EN = {
   ClippingCutting: 'Clipping and Cutting',
   GallbladderDissection: 'Gallbladder Dissection',
   GallbladderPackaging: 'Gallbladder Packaging',
-  GallbladderRetraction: 'Gallbladder Retraction',
+  GallbladderRetraction: 'Specimen Bag Retraction',
   CleaningCoagulation: 'Cleaning and Coagulation',
 }
 
@@ -356,7 +356,7 @@ function focusProgressText(text, maxChars = 260, maxSentences = 2) {
 function hasSevereBleedingText(text) {
   const t = String(text || '').toLowerCase()
   if (/(无(?:明显)?出血|未见(?:明显)?出血|没有(?:明显)?出血|无活动性出血|未见活动性出血|no bleeding|without bleeding)/i.test(t)) return false
-  return /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|active bleeding|heavy bleeding|massive bleeding|profuse bleeding)/i.test(t)
+  return /(大量(?:活动性)?出血|明显(?:活动性)?出血|持续(?:活动性)?出血|喷涌出血|喷射性出血|涌血|明确出血源|影响视野的持续渗血|heavy bleeding|massive bleeding|profuse bleeding|significant bleeding)/i.test(t)
 }
 
 function hasBleedingResolvedText(text) {

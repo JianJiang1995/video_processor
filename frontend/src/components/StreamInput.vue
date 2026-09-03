@@ -93,22 +93,41 @@
           </div>
         </div>
 
-        <div v-if="selectedDevice?.supported_modes?.length" class="input-group mode-select-group">
-          <label>{{ t('stream.inputMode') }}</label>
-          <select v-model="selectedMode" class="input">
-            <option
-              v-for="mode in selectedDevice.supported_modes"
-              :key="mode"
-              :value="mode"
-            >
-              {{ mode }}
-            </option>
-          </select>
+        <div
+          v-if="selectedDevice?.supported_modes?.length"
+          class="capture-settings-grid"
+        >
+          <div v-if="selectedDevice?.supported_connections?.length" class="input-group">
+            <label>{{ t('stream.inputConnection') }}</label>
+            <select v-model="selectedConnection" class="input">
+              <option
+                v-for="connection in selectedDevice.supported_connections"
+                :key="connection"
+                :value="connection"
+              >
+                {{ connectionLabel(connection) }}
+              </option>
+            </select>
+          </div>
+
+          <div class="input-group">
+            <label>{{ t('stream.inputMode') }}</label>
+            <select v-model="selectedMode" class="input">
+              <option
+                v-for="mode in selectedDevice.supported_modes"
+                :key="mode"
+                :value="mode"
+              >
+                {{ modeLabel(mode) }}
+              </option>
+            </select>
+          </div>
         </div>
         
         <div class="capture-hint">
           <p>💡 <strong>{{ t('stream.deployTipTitle') }}</strong></p>
-          <p>{{ t('stream.deployTip') }}</p>
+          <p>{{ selectedConnection === 'sdi' ? t('stream.deployTipSdi') : t('stream.deployTipHdmi') }}</p>
+          <p class="capture-warning">{{ t('stream.sxgaWarning') }}</p>
         </div>
       </div>
     </template>
@@ -185,7 +204,8 @@ const presets = [
 // Capture mode state
 const captureDevices = ref([])
 const selectedDevice = ref(null)
-const selectedMode = ref('1080p30')
+const selectedMode = ref('auto')
+const selectedConnection = ref('hdmi')
 const isLoadingDevices = ref(false)
 
 // Common state
@@ -204,7 +224,19 @@ const selectPreset = (preset) => {
 
 const selectDevice = (device) => {
   selectedDevice.value = device
-  selectedMode.value = device.default_mode || device.supported_modes?.[0] || '1080p30'
+  selectedMode.value = device.default_mode || device.supported_modes?.[0] || 'auto'
+  selectedConnection.value = device.default_connection || device.supported_connections?.[0] || 'auto'
+}
+
+const connectionLabel = (connection) => {
+  if (connection === 'hdmi') return t('stream.connectionHdmi')
+  if (connection === 'sdi') return t('stream.connectionSdi')
+  return t('stream.connectionAuto')
+}
+
+const modeLabel = (mode) => {
+  if (mode === 'auto') return t('stream.modeAuto')
+  return mode
 }
 
 const isSelectedDevice = (device) => {
@@ -346,11 +378,12 @@ const connectCapture = async () => {
       device_id: selectedDevice.value.device_id,
       device_name: selectedDevice.value.device_name || '',
       backend: selectedDevice.value.backend || 'auto',
-      mode: selectedMode.value || selectedDevice.value.default_mode || '1080p30',
+      mode: selectedMode.value || selectedDevice.value.default_mode || 'auto',
+      connection: selectedConnection.value || selectedDevice.value.default_connection || 'auto',
       auto_analyze: autoAnalyze.value
     }, {
       signal: abortController.signal,
-      timeout: 15000
+      timeout: 25000
     })
     
     emit('connect', {
@@ -364,8 +397,8 @@ const connectCapture = async () => {
     
     if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
       error.value = language.value === 'zh'
-        ? '连接超时，请检查采集卡是否正常工作'
-        : 'Connection timed out. Check whether the capture card is working.'
+        ? '连接超时，请检查采集卡驱动和输入接口；可先选择“自动检测”制式重试'
+        : 'Connection timed out. Check the driver/input, then retry with automatic mode detection.'
     } else {
       error.value = err.response?.data?.detail || (language.value === 'zh' ? '连接失败，请检查采集卡' : 'Connection failed. Check the capture card.')
     }
@@ -617,8 +650,15 @@ const connectCapture = async () => {
   font-weight: bold;
 }
 
-.mode-select-group {
+.capture-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
   margin-top: 1rem;
+}
+
+.capture-settings-grid .input-group {
+  min-width: 0;
   margin-bottom: 0;
 }
 
@@ -638,6 +678,17 @@ const connectCapture = async () => {
 
 .capture-hint p:first-child {
   margin-bottom: 0.25rem;
+}
+
+.capture-hint .capture-warning {
+  margin-top: 0.55rem;
+  color: var(--warning, #f5b942);
+}
+
+@media (max-width: 620px) {
+  .capture-settings-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* Stream Options */

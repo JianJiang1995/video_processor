@@ -31,6 +31,16 @@
       <span v-if="summaryCount > 0" class="nav-badge">{{ summaryCount }}</span>
     </button>
 
+    <button
+      v-if="summaryReady"
+      class="nav-btn"
+      :class="{ active: activeView === 'report' }"
+      @click="$emit('navigate', 'report')"
+    >
+      <span class="nav-icon">&#x1F4CB;</span>
+      <span class="nav-tooltip">{{ t('nav.report') }}</span>
+    </button>
+
     <div class="nav-divider"></div>
 
     <!-- Analyze Start/Stop -->
@@ -62,6 +72,7 @@ defineProps({
   activeView: { type: String, default: 'analysis' },
   isAnalyzing: { type: Boolean, default: false },
   summaryCount: { type: Number, default: 0 },
+  summaryReady: { type: Boolean, default: false },
 })
 
 defineEmits(['navigate', 'toggleAnalyze'])

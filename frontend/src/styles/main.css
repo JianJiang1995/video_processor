@@ -745,7 +745,7 @@ body {
   flex: 1;
   display: flex;
   gap: 14px;
-  padding: 10px 18px 14px;
+  padding: 8px 18px 16px;
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   cursor: grab;
@@ -769,13 +769,13 @@ body {
 .event-node-card {
   min-width: 500px;
   max-width: 500px;
-  min-height: 292px;
+  min-height: 100%;
   flex-shrink: 0;
   scroll-snap-align: start;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
-  padding: 12px 14px;
+  padding: 12px 14px 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -848,7 +848,7 @@ body {
 
 .event-node-thumb {
   width: 100%;
-  height: 122px;
+  height: 104px;
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   overflow: hidden;
@@ -874,10 +874,10 @@ body {
 
 .event-node-summary {
   font-size: 21px;
-  line-height: 1.36;
+  line-height: 1.32;
   color: var(--text-secondary);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
   flex: 1;

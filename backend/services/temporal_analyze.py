@@ -201,7 +201,7 @@ def analyze_clip_consistency(clip: ClipData) -> Dict[str, Any]:
             if "irrigator" in tools_str:
                 all_tools.append("冲洗器")
             if "bipolar" in tools_str:
-                all_tools.append("双极电凝")
+                all_tools.append("双极电凝钳")
     
     unique_tools = list(set(all_tools))
     
@@ -262,7 +262,7 @@ def build_glm_context(consistency_result: Dict[str, Any]) -> str:
         "CalotTriangleDissection": "Calot三角分离",
         "ClippingCutting": "夹闭切断",
         "GallbladderDissection": "胆囊分离",
-        "GallbladderRetraction": "胆囊牵拉",
+        "GallbladderRetraction": "标本袋牵拉取出",
         "CleaningCoagulation": "清洁止血",
         "GallbladderPackaging": "胆囊取出",
         "Unknown": "未知阶段"
@@ -339,7 +339,7 @@ def process_window_for_glm(
         "CalotTriangleDissection": "Calot三角分离",
         "ClippingCutting": "夹闭切断",
         "GallbladderDissection": "胆囊分离",
-        "GallbladderRetraction": "胆囊牵拉",
+        "GallbladderRetraction": "标本袋牵拉取出",
         "CleaningCoagulation": "清洁止血",
         "GallbladderPackaging": "胆囊取出",
         "Unknown": "手术操作"
@@ -353,7 +353,5 @@ def process_window_for_glm(
         "context": context,
         "summary_hint": summary_hint
     }
-
-
 
 

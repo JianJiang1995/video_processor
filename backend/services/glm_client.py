@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import base64
+import os
 import time
 from pathlib import Path
 from io import BytesIO
@@ -102,11 +103,12 @@ class WindowHistoryManager:
         "GallbladderDissection": 3,
         "胆囊分离阶段": 3,
         "GallbladderRetraction": 4,
+        "标本袋牵拉取出阶段": 4,
         "胆囊牵拉阶段": 4,
-        "CleaningCoagulation": 5,
-        "清洁凝血阶段": 5,
-        "GallbladderPackaging": 6,
-        "胆囊取出阶段": 6,
+        "CleaningCoagulation": 4,
+        "清洁凝血阶段": 4,
+        "GallbladderPackaging": 4,
+        "胆囊取出阶段": 4,
     }
     
     # 阶段中文名称映射
@@ -115,7 +117,7 @@ class WindowHistoryManager:
         "CalotTriangleDissection": "肝胆三角解剖阶段",
         "ClippingCutting": "夹闭切断阶段",
         "GallbladderDissection": "胆囊分离阶段",
-        "GallbladderRetraction": "胆囊牵拉阶段",
+        "GallbladderRetraction": "标本袋牵拉取出阶段",
         "CleaningCoagulation": "清洁凝血阶段",
         "GallbladderPackaging": "胆囊取出阶段",
         "Unknown": "未知阶段"
@@ -126,16 +128,16 @@ class WindowHistoryManager:
         "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
         "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction"],
         "ClippingCutting": ["GallbladderDissection", "CleaningCoagulation"],
-        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging"],
-        "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
-        "CleaningCoagulation": ["GallbladderPackaging"],
-        "GallbladderPackaging": ["CleaningCoagulation"],  # 胆囊取出后只允许清洁凝血
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging", "GallbladderRetraction"],
+        "GallbladderRetraction": ["CleaningCoagulation", "GallbladderPackaging"],
+        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderRetraction"],
+        "GallbladderPackaging": ["CleaningCoagulation", "GallbladderRetraction"],
     }
     
     PHASE_DISPLAY_ORDER = [
         "Preparation", "CalotTriangleDissection", "ClippingCutting",
-        "GallbladderDissection", "GallbladderRetraction",
-        "CleaningCoagulation", "GallbladderPackaging",
+        "GallbladderDissection", "CleaningCoagulation",
+        "GallbladderPackaging", "GallbladderRetraction",
     ]
     
     def __init__(self):
@@ -219,7 +221,7 @@ class WindowHistoryManager:
         
         基于 ALLOWED_TRANSITIONS 规则表验证：
         - 如果某阶段已被连续确认，则后续阶段必须在其允许列表中
-        - 特别地，胆囊取出阶段确认后，只允许清洁凝血阶段
+        - 晚期的清洁凝血、装袋和标本袋牵拉取出可按实际画面交替
         
         Args:
             current_phase: 当前窗口的阶段
@@ -312,10 +314,10 @@ class PhaseConflictResolver:
         "Preparation": ["CalotTriangleDissection", "GallbladderRetraction"],
         "CalotTriangleDissection": ["ClippingCutting", "GallbladderRetraction"],
         "ClippingCutting": ["GallbladderDissection", "CleaningCoagulation"],
-        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging"],
-        "GallbladderRetraction": ["CalotTriangleDissection", "GallbladderDissection", "CleaningCoagulation"],
-        "CleaningCoagulation": ["GallbladderPackaging"],
-        "GallbladderPackaging": ["CleaningCoagulation"],
+        "GallbladderDissection": ["CleaningCoagulation", "GallbladderPackaging", "GallbladderRetraction"],
+        "GallbladderRetraction": ["CleaningCoagulation", "GallbladderPackaging"],
+        "CleaningCoagulation": ["GallbladderPackaging", "GallbladderRetraction"],
+        "GallbladderPackaging": ["CleaningCoagulation", "GallbladderRetraction"],
     }
     
     # CVS相关规则
@@ -589,7 +591,11 @@ class GLMClient:
         config = load_config()
         glm_config = config.get("services", {}).get("glm", {})
         
-        self.api_url = (api_url or glm_config.get("api_url", "http://localhost:8000/v1")).rstrip('/')
+        self.api_url = (
+            api_url
+            or os.environ.get("GLM_API_URL")
+            or glm_config.get("api_url", "http://localhost:8000/v1")
+        ).rstrip('/')
         self.model_name = model_name or glm_config.get("model_name", "GLM-4.6V-Flash")
         self.temperature = temperature or glm_config.get("temperature", 0.7)
         self.max_tokens = max_tokens or glm_config.get("max_tokens", 1000)
@@ -1289,7 +1295,7 @@ Output only the summary, no additional formatting."""
 【工具】使用的器械及用途
 【CVS】安全关键视角评估（肝胆三角解剖、夹闭切断或出现施夹/钛夹时必须评估）
 
-阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、胆囊牵拉、清洁凝血、胆囊取出
+阶段名称：准备、肝胆三角解剖、夹闭切断、胆囊分离、清洁凝血、胆囊取出、标本袋牵拉取出
 	工具中文名：Grasper→抓钳, Hook→电钩, Scissors→剪刀, Clipper→钛夹钳, Hem-o-lok→钛夹, Irrigator→冲吸器, Bipolar→双极电凝
 	如果出现钛夹钳、施夹器、Hem-o-lok或金属钛夹，必须明确写出钛夹、施夹、夹闭动作，并尽量判断目标是胆囊管还是胆囊动脉。
 	禁止单独把操作对象写成“管状结构”；必须在胆囊管和胆囊动脉中选择一个具体对象，证据不足时参考 Triplet 目标倾向。
@@ -1312,10 +1318,10 @@ Output only the summary, no additional formatting."""
             phase_constraints = []
             if "胆囊取出" in history_context:
                 phase_constraints.append(
-                    "⚠️ 历史已出现「胆囊取出」，当前窗口**仅允许**标注为「清洁凝血」或「胆囊取出」，"
-                    "**禁止**标注为「胆囊分离」「胆囊牵拉」「夹闭切断」「肝胆三角解剖」「准备阶段」"
+                    "⚠️ 历史已出现「胆囊取出」，当前窗口只允许晚期阶段「清洁凝血」「胆囊取出」"
+                    "或「标本袋牵拉取出」，禁止回退到胆囊分离及更早阶段"
                 )
-            if any(p in history_context for p in ["肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊牵拉", "胆囊取出", "清洁凝血"]):
+            if any(p in history_context for p in ["肝胆三角解剖", "夹闭切断", "胆囊分离", "胆囊取出", "标本袋牵拉取出", "清洁凝血"]):
                 phase_constraints.append("⚠️ 手术已进入正式阶段，当前窗口禁止回退到「准备阶段」")
             
             if phase_constraints:

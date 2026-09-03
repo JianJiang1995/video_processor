@@ -216,6 +216,10 @@ def get_embedding_service() -> Optional[EmbeddingService]:
         return _embedding_service
 
     try:
+        if os.environ.get("DISABLE_EXTERNAL_AI") == "1" or os.environ.get("DISABLE_EMBEDDINGS") == "1":
+            logger.info("[Embedding] Service disabled by runtime environment")
+            return None
+
         config_path = Path(__file__).parent.parent.parent / "config.json"
         with open(config_path) as f:
             config = json.load(f)

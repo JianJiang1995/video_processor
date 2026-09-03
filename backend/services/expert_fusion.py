@@ -18,6 +18,7 @@ section is skipped gracefully so the pipeline degrades instead of erroring.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set
@@ -45,12 +46,12 @@ CANONICAL_PHASE_ORDER: Dict[str, int] = {
     "ClippingCutting": 2,
     "GallbladderDissection": 3,
     "GallbladderRetraction": 4,
-    "CleaningCoagulation": 5,
-    "GallbladderPackaging": 6,
+    "CleaningCoagulation": 4,
+    "GallbladderPackaging": 4,
 }
 
 TRIPLET_INSTRUMENT_CN = {
-    "bipolar": "双极电凝",
+    "bipolar": "双极电凝钳",
     "clipper": "钛夹钳",
     "grasper": "抓钳",
     "hook": "电凝钩",
@@ -286,6 +287,63 @@ def _detect_short_action(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
     }
 
 
+def _detect_blue_bipolar_forceps(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
+    """Detect persistent blue-insulated bipolar jaws without a model call."""
+    hits: List[Dict[str, Any]] = []
+    analyzed = 0
+    max_blue_ratio = 0.0
+    for frame_index, frame in enumerate(frames_bgr):
+        if frame is None or frame.size == 0:
+            continue
+        analyzed += 1
+        h, w = frame.shape[:2]
+        if w > 960:
+            scale = 960.0 / w
+            frame = cv2.resize(frame, (960, max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+            h, w = frame.shape[:2]
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        blue = cv2.inRange(hsv, (90, 45, 45), (150, 255, 255))
+        blue = cv2.morphologyEx(blue, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        component_count, _, stats, _ = cv2.connectedComponentsWithStats(blue, 8)
+        component_ratios = sorted(
+            (
+                float(stats[index, cv2.CC_STAT_AREA]) / max(1, h * w)
+                for index in range(1, component_count)
+            ),
+            reverse=True,
+        )
+        total_ratio = float(np.count_nonzero(blue)) / max(1, h * w)
+        max_blue_ratio = max(max_blue_ratio, total_ratio)
+        largest = component_ratios[0] if component_ratios else 0.0
+        second = component_ratios[1] if len(component_ratios) > 1 else 0.0
+        paired_or_large = second >= 0.00008 or largest >= 0.00075
+        if total_ratio >= 0.00055 and largest >= 0.00022 and paired_or_large:
+            hits.append({
+                "frame_index": frame_index,
+                "blue_ratio": round(total_ratio, 5),
+                "largest_component_ratio": round(largest, 5),
+                "second_component_ratio": round(second, 5),
+            })
+
+    required_hits = max(2, int(math.ceil(analyzed * 0.30))) if analyzed else 2
+    detected = len(hits) >= required_hits
+    hit_ratio = len(hits) / max(1, analyzed)
+    confidence = min(0.97, 0.45 + hit_ratio * 0.48) if detected else min(0.45, hit_ratio)
+    return {
+        "detected": bool(detected),
+        "label": "blue_bipolar_forceps" if detected else "",
+        "description": "可见蓝色绝缘双钳口，符合双极电凝钳形态",
+        "frames_seen": len(hits),
+        "frames_analyzed": analyzed,
+        "required_frames": required_hits,
+        "hit_ratio": round(hit_ratio, 3),
+        "max_blue_ratio": round(max_blue_ratio, 5),
+        "confidence": round(float(confidence), 3),
+        "hits": hits[:8],
+    }
+
+
 def _aggregate_phase(
     per_frame: List[Dict[str, Any]],
     reached_phases: Optional[Set[str]] = None,
@@ -463,7 +521,7 @@ def _detect_hemlok_clip_action(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
     return {
         "detected": bool(detected),
         "label": "hemlok_clip_candidate" if detected else "",
-        "description": "可见疑似 Hem-o-lok夹和金属钛夹样亮白夹体，提示夹闭处理",
+        "description": "可见疑似已释放夹子，提示夹闭处理",
         "frames_seen": len(strong_hits),
         "max_score": round(float(max_score), 2),
         "mean_score": round(float(mean_score), 2),
@@ -479,6 +537,7 @@ def _format_text(
     triplet: Dict[str, Any],
     short_action: Optional[Dict[str, Any]] = None,
     hemlok_clip: Optional[Dict[str, Any]] = None,
+    blue_bipolar_forceps: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build a compact text block to paste into Gemini prompts.
 
@@ -495,7 +554,7 @@ def _format_text(
         lines.append("[YOLO Expert] 未检出工具")
     if clip_detector and clip_detector.get("detections_total", 0) > 0:
         lines.append(
-            "[Clip Detector] 检出已部署手术夹候选 "
+            "[Clip Detector] 检出已部署夹子候选 "
             f"{clip_detector.get('frames_seen', 0)}/{clip_detector.get('frames_analyzed', 0)} 帧，"
             f"总数 {clip_detector.get('detections_total', 0)}，"
             f"最高置信度 {clip_detector.get('max_confidence', 0):.2f}"
@@ -505,6 +564,13 @@ def _format_text(
         target_cn = "胆囊动脉" if target_hint["label"] == "cystic_artery" else "胆囊管"
         lines.append(f"[Triplet Target Hint] 夹闭剪切目标倾向: {target_cn} (conf {target_hint.get('confidence', 0):.2f})")
         op_phrases = _triplet_operation_phrases(triplet, phase_label=str(phase.get("label") or ""))
+        yolo_labels = {
+            str(tool.get("label") or "").strip().lower()
+            for tool in yolo.get("tools", [])
+            if isinstance(tool, dict)
+        }
+        if "scissors" not in yolo_labels:
+            op_phrases = [phrase for phrase in op_phrases if not phrase.startswith("剪刀")]
         if op_phrases:
             lines.append(f"[Triplet Core Operations] {', '.join(op_phrases)}")
         else:
@@ -515,6 +581,13 @@ def _format_text(
         lines.append(
             f"[Local Visual Cue] {hemlok_clip.get('description')} "
             f"(conf {hemlok_clip.get('confidence', 0):.2f})"
+        )
+    if blue_bipolar_forceps and blue_bipolar_forceps.get("detected"):
+        lines.append(
+            f"[Blue Jaw Cue] {blue_bipolar_forceps.get('description')} "
+            f"({blue_bipolar_forceps.get('frames_seen', 0)}/"
+            f"{blue_bipolar_forceps.get('frames_analyzed', 0)} frames, "
+            f"conf {blue_bipolar_forceps.get('confidence', 0):.2f})"
         )
     return "\n".join(lines)
 
@@ -544,6 +617,7 @@ def run_experts_on_window(
         "triplet": {},
         "short_action": {},
         "hemlok_clip": {},
+        "blue_bipolar_forceps": {},
         "available": [],
     }
     if not frames_bgr:
@@ -606,6 +680,14 @@ def run_experts_on_window(
         logger.warning(f"[ExpertFusion] Clip detector skipped: {e}")
 
     try:
+        blue_bipolar_forceps = _detect_blue_bipolar_forceps(frames_bgr)
+        out["blue_bipolar_forceps"] = blue_bipolar_forceps
+        if blue_bipolar_forceps.get("detected"):
+            out["available"].append("blue_bipolar_forceps")
+    except Exception as e:
+        logger.warning(f"[ExpertFusion] Blue bipolar cue skipped: {e}")
+
+    try:
         short_action = _detect_short_action(frames_bgr)
         out["short_action"] = short_action
         if short_action.get("detected"):
@@ -622,7 +704,8 @@ def run_experts_on_window(
         logger.warning(f"[ExpertFusion] Hem-o-lok cue skipped: {e}")
 
     out["text"] = _format_text(
-        out["yolo"], out["clip_detector"], out["phase"], out["triplet"], out["short_action"], out["hemlok_clip"]
+        out["yolo"], out["clip_detector"], out["phase"], out["triplet"], out["short_action"],
+        out["hemlok_clip"], out["blue_bipolar_forceps"]
     )
     logger.info(f"[ExpertFusion] available={out['available']}")
     return out

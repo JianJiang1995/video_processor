@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setConfig: (key, value) => ipcRenderer.invoke('set-config', key, value),
   getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
   setBackendUrl: (url) => ipcRenderer.invoke('set-backend-url', url),
+  loadReplayBundle: (specPath) => ipcRenderer.invoke('load-replay-bundle', specPath),
   
   // ============= 服务管理 (全部服务) =============
   getAllServiceStatuses: () => ipcRenderer.invoke('get-all-service-statuses'),

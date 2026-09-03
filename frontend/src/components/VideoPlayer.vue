@@ -24,7 +24,10 @@
         <div
           v-else-if="useCanvasStream"
           class="stream-image stream-buffer"
-          :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
+          :class="{
+            'hidden-by-sam3': showSam3 && sam3Frame,
+            'decklink-stream': isDeckLinkCapture
+          }"
           @click="togglePlay"
         >
           <img
@@ -105,6 +108,7 @@
           @loadedmetadata="onLoadedMetadata"
           @play="$emit('play')"
           @pause="$emit('pause')"
+          @ended="$emit('ended')"
           @click="togglePlay"
         ></video>
         
@@ -169,6 +173,19 @@
       <div v-if="isLoading" class="loading-overlay">
         <div class="loader"></div>
         <div class="loading-text">{{ mode === 'stream' ? t('video.connectingStream') : t('video.loadingVideo') }}</div>
+      </div>
+
+      <div
+        v-if="captureStatusVisible"
+        class="capture-status-overlay"
+        :class="`capture-status-${captureStatusTone}`"
+      >
+        <div class="capture-status-title">{{ captureStatusTitle }}</div>
+        <div class="capture-status-detail">{{ captureStatusDetail }}</div>
+        <div v-if="captureStatusFormat" class="capture-status-format">{{ captureStatusFormat }}</div>
+        <div v-if="captureStatus?.last_error" class="capture-status-error">
+          {{ captureStatus.last_error }}
+        </div>
       </div>
       
       <!-- Live/Ended Indicator -->
@@ -264,12 +281,14 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['timeupdate', 'play', 'pause', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning'])
+const emit = defineEmits(['timeupdate', 'play', 'pause', 'ended', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning', 'capture-status'])
 
 const videoRef = ref(null)
 const streamImgRef = ref(null)
 const containerRef = ref(null)
 const fileInput = ref(null)
+const nativeMetadataReady = ref(false)
+const pendingInitialSeek = ref(Math.max(0, Number(props.currentTime || 0)))
 const isLoading = ref(false)
 const videoPath = ref('')
 const frozenFrame = ref(null)  // Store captured frame when paused
@@ -312,6 +331,10 @@ const isCaptureDevice = computed(() => {
     props.session.video_path.startsWith('simulator://')
 })
 
+const isDeckLinkCapture = computed(() => {
+  return props.session?.video_path?.startsWith('decklink://') || false
+})
+
 const isSimulatorStream = computed(() => {
   return props.session?.video_path?.startsWith('simulator://') || false
 })
@@ -322,6 +345,88 @@ const isLiveStream = computed(() => isHttpMjpegStream.value || isRtspStream.valu
 const useCanvasStream = computed(() => {
   return props.mode === 'stream' && isLiveStream.value && !isSimulatorStream.value && !props.loopWindow
 })
+
+const captureStatus = ref(null)
+let captureStatusTimer = null
+let captureStatusRequestPending = false
+
+const captureStatusVisible = computed(() => {
+  if (!isDeckLinkCapture.value || !captureStatus.value) return false
+  return captureStatus.value.status_code !== 'streaming'
+})
+
+const captureStatusTone = computed(() => {
+  const code = captureStatus.value?.status_code
+  if (code === 'valid_signal_black_frame' || code === 'signal_stalled') return 'warning'
+  if (code === 'no_signal') return 'danger'
+  return 'info'
+})
+
+const captureStatusTitle = computed(() => {
+  const code = captureStatus.value?.status_code
+  if (code === 'no_signal') return t('video.captureNoSignal')
+  if (code === 'valid_signal_black_frame') return t('video.captureBlackFrame')
+  if (code === 'signal_stalled') return t('video.captureStalled')
+  if (code === 'reconnecting') return t('video.captureReconnecting')
+  return t('video.captureStarting')
+})
+
+const captureStatusDetail = computed(() => {
+  const code = captureStatus.value?.status_code
+  if (code === 'no_signal') return t('video.captureNoSignalDetail')
+  if (code === 'valid_signal_black_frame') return t('video.captureBlackFrameDetail')
+  if (code === 'signal_stalled') return t('video.captureStalledDetail')
+  if (code === 'reconnecting') return t('video.captureReconnectingDetail')
+  return t('video.captureStartingDetail')
+})
+
+const captureStatusFormat = computed(() => {
+  if (!captureStatus.value) return ''
+  const status = captureStatus.value
+  const parts = [String(status.connection || 'auto').toUpperCase(), status.mode || 'auto']
+  if (status.width && status.height) {
+    const fps = Number(status.fps || 0)
+    parts.push(`${status.width}×${status.height}${fps ? ` @ ${fps.toFixed(2)} fps` : ''}`)
+  }
+  return parts.join(' · ')
+})
+
+const stopCaptureStatusPolling = () => {
+  if (captureStatusTimer) {
+    clearInterval(captureStatusTimer)
+    captureStatusTimer = null
+  }
+  captureStatusRequestPending = false
+}
+
+const refreshCaptureStatus = async () => {
+  if (!isDeckLinkCapture.value || !props.session?.session_id || captureStatusRequestPending) return
+  captureStatusRequestPending = true
+  try {
+    const response = await fetch(
+      `${backendUrl.value}/api/video/capture-status/${props.session.session_id}`,
+      { cache: 'no-store' }
+    )
+    if (!response.ok) return
+    captureStatus.value = await response.json()
+    emit('capture-status', captureStatus.value)
+    if (captureStatus.value?.status_code !== 'streaming') {
+      isLoading.value = false
+    }
+  } catch (error) {
+    console.debug('[CaptureStatus] unavailable:', error?.message || error)
+  } finally {
+    captureStatusRequestPending = false
+  }
+}
+
+const startCaptureStatusPolling = () => {
+  stopCaptureStatusPolling()
+  captureStatus.value = null
+  if (!isDeckLinkCapture.value || !props.session?.session_id) return
+  refreshCaptureStatus()
+  captureStatusTimer = window.setInterval(refreshCaptureStatus, 1000)
+}
 
 // Computed: get the stream URL
 // Use the backend latest-frame display endpoint for live device/RTSP/HTTP
@@ -537,6 +642,12 @@ const fetchFrameFromBackend = async () => {
   console.log('[VideoPlayer] Backend URL:', backendUrl.value || '(relative path)')
 })()
 
+watch(
+  () => [backendUrl.value, props.session?.session_id, props.session?.video_path],
+  startCaptureStatusPolling,
+  { immediate: true }
+)
+
 // Watch for pause state changes to capture/clear frozen frame
 watch(() => props.isPaused, async (paused) => {
   if (paused && props.mode === 'stream') {
@@ -561,6 +672,10 @@ watch(() => props.isPaused, async (paused) => {
 // Use a small threshold (0.1s) to avoid unnecessary seeks during normal playback
 // but still allow precise seeking for loop playback and user interactions
 watch(() => props.currentTime, (newTime) => {
+  if (!nativeMetadataReady.value) {
+    pendingInitialSeek.value = Math.max(pendingInitialSeek.value, Number(newTime || 0))
+    return
+  }
   if (isSimulatorStream.value && props.isPlaying && !props.loopWindow) {
     return
   }
@@ -615,7 +730,7 @@ watch(
 
 let lastNativeTimeEmit = 0
 const onTimeUpdate = () => {
-  if (videoRef.value) {
+  if (videoRef.value && nativeMetadataReady.value) {
     if (
       isSimulatorStream.value &&
       !props.loopWindow &&
@@ -651,8 +766,21 @@ const onTimeUpdate = () => {
 
 const onLoadedMetadata = () => {
   isLoading.value = false
+  if (!isSimulatorStream.value && videoRef.value) {
+    const targetTime = Math.max(pendingInitialSeek.value, Number(props.currentTime || 0))
+    if (targetTime > 0.04 && Math.abs(videoRef.value.currentTime - targetTime) > 0.08) {
+      videoRef.value.currentTime = targetTime
+    }
+  }
+  nativeMetadataReady.value = true
+  pendingInitialSeek.value = 0
   restoreNativeSimulatorPlayback()
 }
+
+watch(() => props.session?.session_id, () => {
+  nativeMetadataReady.value = false
+  pendingInitialSeek.value = Math.max(0, Number(props.currentTime || 0))
+})
 
 const onNativePause = () => {
   if (isSimulatorStream.value && !props.loopWindow) {
@@ -1532,6 +1660,7 @@ onUnmounted(() => {
   // Stop loop playback
   stopLoopPlayback()
   stopCanvasStream()
+  stopCaptureStatusPolling()
   
   // IMPORTANT: Clear MJPEG stream img src to stop loading
   // This helps free up the HTTP connection to the stream
@@ -1542,6 +1671,64 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.capture-status-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  text-align: center;
+  color: #f7f7f7;
+  background: rgba(10, 10, 10, 0.78);
+  pointer-events: none;
+}
+
+.capture-status-title {
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+
+.capture-status-detail {
+  max-width: 720px;
+  font-size: 1rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.capture-status-format {
+  margin-top: 0.25rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.capture-status-error {
+  max-width: min(820px, 90%);
+  margin-top: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  color: #ffc9c9;
+}
+
+.capture-status-danger {
+  border: 2px solid rgba(239, 68, 68, 0.72);
+}
+
+.capture-status-warning {
+  border: 2px solid rgba(245, 185, 66, 0.72);
+}
+
+.capture-status-info {
+  border: 2px solid rgba(96, 165, 250, 0.62);
+}
+
 .time-overlay {
   position: absolute;
   top: 1rem;
@@ -1637,6 +1824,10 @@ onUnmounted(() => {
 
 .stream-buffer-frame.active {
   opacity: 1;
+}
+
+.stream-buffer.decklink-stream .stream-buffer-frame {
+  object-fit: contain;
 }
 
 .stream-image.frozen {

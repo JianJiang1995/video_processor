@@ -374,7 +374,21 @@ const windowCount = computed(() => {
 })
 
 const currentWindowId = computed(() => {
-  return Math.floor(props.currentTime / props.windowDuration)
+  const rawWindowId = Math.floor(Math.max(0, props.currentTime) / props.windowDuration)
+  // `windowCount` intentionally stays zero for live mode because live streams
+  // do not render fixed progress segments. The capture-card simulator is a
+  // finite live source, though, so derive a separate display bound from its
+  // duration and any summaries already received.
+  const durationWindowCount = Math.ceil(Math.max(0, props.duration || 0) / props.windowDuration)
+  const summaryWindowCount = props.summaries.reduce(
+    (count, summary) => Math.max(count, Number(summary?.window_id ?? -1) + 1),
+    0
+  )
+  const totalWindows = Math.max(durationWindowCount, summaryWindowCount)
+  // At an exact finite EOF (for example 100.0s with 5s windows), floor()
+  // points one slot beyond the final 95-100s window. Clamp the display to the
+  // last real window so the control bar agrees with the analysis panel.
+  return totalWindows > 0 ? Math.min(rawWindowId, totalWindows - 1) : rawWindowId
 })
 
 const togglePlay = () => {

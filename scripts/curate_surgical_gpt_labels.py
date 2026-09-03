@@ -76,6 +76,18 @@ def _iter_annotations(sources: Iterable[Path]) -> Iterable[Tuple[Path, Dict[str,
                 continue
 
 
+def _drop_source_label(source: Path, ann: Dict[str, Any], obj: Dict[str, Any], args: argparse.Namespace) -> bool:
+    label = _norm_label(obj.get("label"))
+    source_text = f"{source} {ann.get('video') or ''}"
+    for rule in args.drop_source_label:
+        if ":" not in rule:
+            continue
+        rule_label, pattern = rule.split(":", 1)
+        if _norm_label(rule_label) == label and re.search(pattern, source_text):
+            return True
+    return False
+
+
 def _source_image(source: Path, ann: Dict[str, Any]) -> Path:
     split = ann.get("split") or "train"
     video = Path(str(ann.get("video", ""))).with_suffix("").as_posix().strip("/")
@@ -138,7 +150,11 @@ def curate(args: argparse.Namespace) -> None:
         image_path = _source_image(source, ann)
         if not image_path.exists():
             continue
-        kept = [obj for obj in ann.get("objects") or [] if _keep_clip(obj, args)]
+        kept = [
+            obj
+            for obj in ann.get("objects") or []
+            if _keep_clip(obj, args) and not _drop_source_label(source, ann, obj, args)
+        ]
         if kept:
             if args.min_positive_gap_sec > 0:
                 video_key = str(ann.get("video") or image_path)
@@ -213,6 +229,12 @@ def main() -> None:
     parser.add_argument("--negative-ratio", type=float, default=2.0)
     parser.add_argument("--val-every", type=int, default=5)
     parser.add_argument("--min-positive-gap-sec", type=float, default=0.0)
+    parser.add_argument(
+        "--drop-source-label",
+        action="append",
+        default=[],
+        help="Drop labels from matching sources, format label:regex. Can be repeated.",
+    )
     parser.add_argument("--white-hemolok-only", action="store_true")
     parser.add_argument("--clean", action="store_true")
     args = parser.parse_args()

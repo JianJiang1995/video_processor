@@ -22,6 +22,7 @@
         :activeView="navActiveView"
         :isAnalyzing="isProcessing"
         :summaryCount="summaries.length"
+        :summaryReady="summaryReady"
         @navigate="handleNavigation"
         @toggleAnalyze="toggleAnalysis"
       />
@@ -37,7 +38,9 @@
 
           <div class="header-center">
             <span class="mode-badge" :class="mode">
-              {{ mode === 'local' ? `📁 ${t('app.localVideo')}` : `📡 ${t('app.liveStream')}` }}
+              {{ replayMode
+                ? `⏱ ${t('app.offlineReplay')}`
+                : (mode === 'local' ? `📁 ${t('app.localVideo')}` : `📡 ${t('app.liveStream')}`) }}
             </span>
             <span v-if="currentSession" class="header-session-id">
               {{ t('app.session') }} {{ currentSession.session_id?.substring(0, 8) || '' }}
@@ -48,6 +51,14 @@
           </div>
 
           <div class="header-actions">
+            <button
+              v-if="summaryReady"
+              class="btn summary-ready-btn"
+              @click="handleNavigation('report')"
+            >
+              <span aria-hidden="true">&#x1F4C4;</span>
+              {{ t('app.videoSummary') }}
+            </button>
             <div class="language-switch" :aria-label="t('lang.label')">
               <button
                 class="language-option"
@@ -94,10 +105,12 @@
                 @timeupdate="handleTimeUpdate"
                 @play="handlePlay"
                 @pause="handleVideoPause"
+                @ended="handleVideoEnded"
                 @seek="handleSeek"
                 @upload="handleUpload"
                 @load="handleLoad"
                 @sam3TimeUpdate="handleSam3TimeUpdate"
+                @capture-status="handleCaptureStatus"
                 @exitLoop="exitLoopMode"
                 @loopLoadFailed="handleLoopLoadFailed"
               />
@@ -341,6 +354,14 @@
         @back="handleOverviewBack"
         @seekToWindow="handleOverviewSeekToWindow"
       />
+
+      <ClinicalReportView
+        v-if="currentView === 'report'"
+        :session="currentSession"
+        :language="language"
+        :initialReport="replayReport"
+        @back="handleReportBack"
+      />
     </template>
   </div>
 </template>
@@ -348,7 +369,7 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
-import { apiUrl } from './utils/electronBridge.js'
+import { apiUrl, isElectron, loadReplayBundle } from './utils/electronBridge.js'
 import analysisQueue from './utils/AnalysisQueue.js'
 import ModeSelector from './components/ModeSelector.vue'
 import StreamInput from './components/StreamInput.vue'
@@ -358,6 +379,7 @@ import SummaryPanel from './components/SummaryPanel.vue'
 import VoiceChat from './components/VoiceChat.vue'
 import FrameAnalysisPopup from './components/FrameAnalysisPopup.vue'
 import WindowOverview from './components/WindowOverview.vue'
+import ClinicalReportView from './components/ClinicalReportView.vue'
 import NavRail from './components/NavRail.vue'
 import RightPanel from './components/RightPanel.vue'
 import { useI18n } from './i18n.js'
@@ -365,7 +387,7 @@ import { useI18n } from './i18n.js'
 const { language, setLanguage, t } = useI18n()
 
 // View state
-const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview'
+const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview', 'report'
 const mode = ref('local')  // 'local' or 'stream'
 
 // State
@@ -375,6 +397,13 @@ const duration = ref(0)
 const isPlaying = ref(false)
 const volume = ref(0.8)
 const summaries = ref([])
+const replayMode = ref(false)
+const replayAllSummaries = ref([])
+const replayAllEvents = ref([])
+const replayReport = ref(null)
+const replayFinalUpdateDelay = ref(1.25)
+let replaySummarySignature = ''
+let replayEventSignature = ''
 const bottomViewMode = ref(localStorage.getItem('surg_bottom_view_mode') || 'events')
 const eventNodes = ref([])
 const eventNodesLoading = ref(false)
@@ -409,13 +438,13 @@ const viewportWidth = ref(window.innerWidth)
 const viewportHeight = ref(window.innerHeight)
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 const RIGHT_PANEL_STORAGE_KEY = 'surg_right_panel_width_v2'
-const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v2'
+const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v3'
 const minRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.26), 480, 540)
 const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.28), 500, 680)
 const maxRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.42), 680, 960)
-const minBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.22), 300, 350)
-const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.27), 340, 400)
-const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.48), 460, 620)
+const minBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.24), 360, 420)
+const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.30), 430, 520)
+const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.50), 520, 700)
 const rightPanelWidth = ref(clamp(
   Number(localStorage.getItem(RIGHT_PANEL_STORAGE_KEY)) || defaultRightPanelWidth(),
   minRightPanelWidth(),
@@ -464,6 +493,10 @@ let eventNodesRefreshPending = false
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
 const streamEnded = ref(false)  // Whether the video stream has ended
 const streamWasActive = ref(false)  // Track if stream was ever active (for reliable end detection)
+const captureInputStatus = ref(null)
+let captureStatusReceivedAt = 0
+let pendingDeckLinkAutoAnalyze = false
+let deckLinkAnalysisStarted = false
 
 // Global AbortController for session-related requests
 // When goHome is called, this will abort all pending requests
@@ -759,10 +792,134 @@ const upsertSummary = (payload) => {
   return data
 }
 
+const syncReplayTimeline = (time, { forceFinal = false } = {}) => {
+  if (!replayMode.value) return
+  const replayTime = Math.max(0, Number(time || 0))
+  const all = replayAllSummaries.value
+
+  let lo = 0
+  let hi = all.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    const endTime = Number(all[mid]?.end_time ?? all[mid]?.window_end ?? 0)
+    if (endTime <= replayTime + 0.04) lo = mid + 1
+    else hi = mid
+  }
+
+  const visibleCount = lo
+  const latest = visibleCount > 0 ? all[visibleCount - 1] : null
+  const latestEnd = Number(latest?.end_time ?? latest?.window_end ?? 0)
+  const stage1 = cleanUserSummaryText(latest?.stage1_summary || latest?.others?.stage1_summary || '')
+  const finalText = cleanUserSummaryText(latest?.summary || '')
+  const showExpertStage = Boolean(
+    latest
+    && !forceFinal
+    && stage1
+    && finalText
+    && stage1 !== finalText
+    && replayTime < latestEnd + replayFinalUpdateDelay.value
+  )
+  const nextSummarySignature = `${visibleCount}:${showExpertStage ? 'expert' : 'final'}:${forceFinal ? 1 : 0}`
+
+  if (nextSummarySignature !== replaySummarySignature) {
+    const previousIds = new Set(summaries.value.map(item => Number(item.window_id)))
+    const visible = all.slice(0, visibleCount).map((item, index) => {
+      const cleaned = cleanSummaryPayload(item)
+      if (showExpertStage && index === visibleCount - 1) {
+        return {
+          ...cleaned,
+          summary: stage1,
+          stage: 1,
+          replay_stage: 'expert',
+        }
+      }
+      return { ...cleaned, replay_stage: 'final' }
+    })
+    summaries.value = visible
+    visible.forEach((item) => {
+      if (!previousIds.has(Number(item.window_id))) enqueueBottomThumbnail(item)
+    })
+    replaySummarySignature = nextSummarySignature
+  }
+
+  const visibleEvents = replayAllEvents.value.filter((node) => {
+    const availableAt = Number(node?.end_time ?? node?.start_time ?? 0)
+    return availableAt <= replayTime + 0.04 || forceFinal
+  })
+  const nextEventSignature = visibleEvents.map(node => node?.id || `${node?.start_time}-${node?.title}`).join('|')
+  if (nextEventSignature !== replayEventSignature) {
+    eventNodes.value = visibleEvents
+      .map(normalizeEventNode)
+      .filter(node => node.window_ids.length > 0)
+    eventNodesError.value = ''
+    eventNodesLoading.value = false
+    replayEventSignature = nextEventSignature
+    resetEventNodeScroll()
+  }
+
+  const endAt = Number(duration.value || currentSession.value?.duration || 0)
+  isProcessing.value = isPlaying.value && (!endAt || replayTime < endAt - 0.04)
+}
+
+const loadOfflineReplayFromQuery = async () => {
+  const query = new URLSearchParams(window.location.search)
+  const specPath = query.get('replaySpec')
+  if (!specPath) return false
+  if (!isElectron()) throw new Error('Offline replay requires the Electron application')
+
+  const bundle = await loadReplayBundle(specPath)
+  if (!bundle?.success) throw new Error(bundle?.error || 'Failed to load offline replay')
+
+  abortAllSessionRequests()
+  createSessionAbortController()
+  replayMode.value = true
+  replayAllSummaries.value = (bundle.summaries || []).map(cleanSummaryPayload)
+  replayAllEvents.value = Array.isArray(bundle.events) ? bundle.events : []
+  replayReport.value = bundle.report || null
+  replayFinalUpdateDelay.value = Math.max(0, Number(bundle.spec?.final_update_delay || 1.25))
+  replaySummarySignature = ''
+  replayEventSignature = ''
+
+  setLanguage(bundle.spec?.language || 'zh')
+  mode.value = 'local'
+  currentView.value = 'main'
+  navActiveView.value = 'analysis'
+  rightPanelTab.value = 'analysis'
+  bottomViewMode.value = 'events'
+  currentSession.value = bundle.session
+  duration.value = Number(bundle.session?.duration || 0)
+  const requestedStartAt = Number(query.get('replayStartAt') || 0)
+  const initialTime = Number.isFinite(requestedStartAt)
+    ? Math.min(duration.value, Math.max(0, requestedStartAt))
+    : 0
+  currentTime.value = initialTime
+  livePlaybackTime.value = initialTime
+  isPlaying.value = false
+  isProcessing.value = false
+  streamEnded.value = false
+  summaries.value = []
+  eventNodes.value = []
+  clearBottomThumbnails()
+  rightPanelWidth.value = defaultRightPanelWidth()
+  bottomStripHeight.value = defaultBottomStripHeight()
+  syncReplayTimeline(initialTime, { forceFinal: initialTime >= duration.value - 0.04 })
+
+  await nextTick()
+  if (bundle.spec?.auto_play !== false) {
+    const delay = Math.max(100, Number(bundle.spec?.auto_start_delay_ms || 900))
+    window.setTimeout(() => {
+      if (!replayMode.value || currentSession.value?.session_id !== bundle.session?.session_id) return
+      handlePlay()
+    }, delay)
+  }
+  console.log('[Replay] Loaded offline analysis bundle:', bundle.paths)
+  return true
+}
+
 const isSevereBleedingSummary = (summary) => {
   const text = `${summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
   if (/(无(?:明显)?出血|未见(?:明显)?出血|没有(?:明显)?出血|无活动性出血|未见活动性出血|no bleeding|without bleeding)/i.test(text)) return false
-  return /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|active bleeding|heavy bleeding|massive bleeding|profuse bleeding)/i.test(text)
+  return /(大量(?:活动性)?出血|明显(?:活动性)?出血|持续(?:活动性)?出血|喷涌出血|喷射性出血|涌血|明确出血源|影响视野的持续渗血|heavy bleeding|massive bleeding|profuse bleeding|significant bleeding)/i.test(text)
 }
 
 const isBleedingResolvedSummary = (summary) => {
@@ -804,6 +961,52 @@ const isSimulatorSession = computed(() => (
   currentSession.value?.video_path?.startsWith('simulator://')
 ))
 
+const isDeckLinkSession = computed(() => (
+  mode.value === 'stream' &&
+  currentSession.value?.video_path?.startsWith('decklink://')
+))
+
+const isCaptureSignalActive = (status) => (
+  status?.status_code === 'streaming' || status?.status_code === 'valid_signal_black_frame'
+)
+
+const captureTimelineSeconds = (status) => {
+  const sequence = Number(status?.sequence || 0)
+  const fps = Number(status?.fps || 0)
+  if (!Number.isFinite(sequence) || !Number.isFinite(fps) || fps <= 0) return 0
+  return Math.max(0, sequence / fps)
+}
+
+const startDeckLinkAnalysisWhenReady = () => {
+  if (!pendingDeckLinkAutoAnalyze || deckLinkAnalysisStarted || !currentSession.value) return
+  deckLinkAnalysisStarted = true
+  pendingDeckLinkAutoAnalyze = false
+  startSurgR1Continuous(currentSession.value.session_id)
+  startAnalysis()
+}
+
+const handleCaptureStatus = (status) => {
+  if (!isDeckLinkSession.value || !status) return
+  captureInputStatus.value = status
+  captureStatusReceivedAt = performance.now()
+
+  const capturedTime = captureTimelineSeconds(status)
+  if (isPlaying.value) {
+    if (Number(status.sequence || 0) === 0 && !isCaptureSignalActive(status)) {
+      currentTime.value = 0
+      duration.value = 0
+    } else {
+      currentTime.value = Math.max(Number(currentTime.value || 0), capturedTime)
+      duration.value = Math.max(Number(duration.value || 0), currentTime.value)
+    }
+    livePlaybackTime.value = currentTime.value
+  }
+
+  if (isCaptureSignalActive(status) && Number(status.sequence || 0) > 0) {
+    startDeckLinkAnalysisWhenReady()
+  }
+}
+
 const maxPlayableTime = () => {
   const sessionDuration = Number(currentSession.value?.duration || 0)
   const displayDuration = Number(duration.value || 0)
@@ -841,6 +1044,12 @@ const stopDetachedPlaybackClock = () => {
 const analyzedWindows = computed(() => {
   return summaries.value.map(s => s.window_id)
 })
+
+const summaryReady = computed(() => Boolean(
+  currentSession.value
+  && summaries.value.length > 0
+  && !isProcessing.value
+))
 
 // Mode selection handlers
 const handleModeSelect = (selectedMode) => {
@@ -894,6 +1103,11 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   isProcessing.value = false
   streamEnded.value = false
   streamWasActive.value = false
+  captureInputStatus.value = null
+  captureStatusReceivedAt = 0
+  pendingDeckLinkAutoAnalyze = false
+  deckLinkAnalysisStarted = false
+  pausedAt = null
   
   currentSession.value = session
   duration.value = Number(session.duration || 0) || 0
@@ -906,11 +1120,17 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   // Restart service status polling when entering main view
   restartAnalysisStatusInterval()
   
-  // Auto-start SurgR1 continuous processing when stream connects
-  startSurgR1Continuous(session.session_id)
-  
-  if (autoAnalyze) {
-    startAnalysis()
+  const deckLinkSession = session.video_path?.startsWith('decklink://')
+  if (deckLinkSession) {
+    // A physical capture card may be connected before its source is live.
+    // Start analysis on the first valid frame so waiting time cannot create
+    // fake windows or advance the clinical timeline.
+    pendingDeckLinkAutoAnalyze = Boolean(autoAnalyze)
+  } else {
+    startSurgR1Continuous(session.session_id)
+    if (autoAnalyze) {
+      startAnalysis()
+    }
   }
   
   startStreamTimer()
@@ -939,7 +1159,7 @@ const goHome = () => {
   }
   
   // 5. Stop SurgR1 continuous processing on backend (use sendBeacon for reliability)
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     // Use sendBeacon to ensure the stop request is sent even if page navigation happens
     const sessionId = currentSession.value.session_id
     try {
@@ -972,6 +1192,12 @@ const goHome = () => {
   currentView.value = 'select'
   currentSession.value = null
   summaries.value = []
+  replayMode.value = false
+  replayAllSummaries.value = []
+  replayAllEvents.value = []
+  replayReport.value = null
+  replaySummarySignature = ''
+  replayEventSignature = ''
   clearEventNodes()
   clearBottomThumbnails()
   isProcessing.value = false
@@ -984,6 +1210,11 @@ const goHome = () => {
   frameAnalysisPopup.value = { visible: false, data: null, isLoading: false, position: { x: 0, y: 0 } }
   streamEnded.value = false
   streamWasActive.value = false
+  captureInputStatus.value = null
+  captureStatusReceivedAt = 0
+  pendingDeckLinkAutoAnalyze = false
+  deckLinkAnalysisStarted = false
+  pausedAt = null
   
   console.log('[goHome] Cleanup complete')
 }
@@ -1016,6 +1247,7 @@ const handleTimeUpdate = (time) => {
     return
   }
   currentTime.value = time
+  if (replayMode.value) syncReplayTimeline(time)
   if (mode.value === 'stream') {
     livePlaybackTime.value = time
     duration.value = Math.max(duration.value || 0, time)
@@ -1055,6 +1287,10 @@ const handlePlay = () => {
     return
   }
   isPlaying.value = true
+  if (replayMode.value) {
+    syncReplayTimeline(currentTime.value)
+    return
+  }
   if (currentSession.value) {
     if (mode.value === 'stream') {
       // Resume stream timer
@@ -1073,6 +1309,10 @@ const handlePause = () => {
     return
   }
   isPlaying.value = false
+  if (replayMode.value) {
+    syncReplayTimeline(currentTime.value)
+    return
+  }
   if (currentSession.value) {
     if (mode.value === 'stream') {
       // Pause stream timer
@@ -1095,8 +1335,19 @@ const handleVideoPause = () => {
   handlePause()
 }
 
+const handleVideoEnded = () => {
+  const endAt = Number(duration.value || currentSession.value?.duration || currentTime.value || 0)
+  if (endAt > 0) currentTime.value = endAt
+  isPlaying.value = false
+  if (replayMode.value) {
+    syncReplayTimeline(endAt, { forceFinal: true })
+    isProcessing.value = false
+  }
+}
+
 const handleSeek = (time) => {
   currentTime.value = time
+  if (replayMode.value) syncReplayTimeline(time)
   
   // If this is a manual seek (not triggered by loop), exit loop mode
   if (!isLoopSeek && loopWindow.value) {
@@ -1104,7 +1355,7 @@ const handleSeek = (time) => {
     loopWindow.value = null
   }
   
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     axios.post(`/api/video/control/${currentSession.value.session_id}`, {
       action: 'seek',
       position: time
@@ -1131,7 +1382,7 @@ const exitLoopMode = (forcePlaying = null) => {
     userSelectedWindow.value = false
     highlightedWindowId.value = -1
     selectedWindowId.value = -1
-    if (currentSession.value) {
+    if (currentSession.value && !replayMode.value) {
       axios.post(`/api/video/control/${currentSession.value.session_id}`, {
         action: shouldPlay ? 'play' : 'pause',
         position: currentTime.value
@@ -1383,6 +1634,22 @@ const stopSurgR1StatusPolling = () => {
 
 const startAnalysis = async () => {
   if (!currentSession.value) return
+  if (replayMode.value) {
+    if (isPlaying.value) handlePause()
+    else handlePlay()
+    return
+  }
+
+  if (isDeckLinkSession.value && !isCaptureSignalActive(captureInputStatus.value)) {
+    pendingDeckLinkAutoAnalyze = true
+    showToast(t('app.analysisWaitingForSignal'))
+    return
+  }
+
+  if (isDeckLinkSession.value && !deckLinkAnalysisStarted) {
+    deckLinkAnalysisStarted = true
+    startSurgR1Continuous(currentSession.value.session_id)
+  }
 
   const { surgr1Available, glmAvailable } = await ensureRequiredAnalysisServices()
 
@@ -1537,7 +1804,8 @@ const eventNodeDisplayWindowIds = (node) => {
 const EVENT_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
 const EVENT_NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
 const EVENT_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野|起雾|雾|烟雾|模糊|镜头|体外|手术室|腹腔外|套管口|腹壁外)/
-const EVENT_RISK_RE = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+const EVENT_RISK_RE = /(CVS未达成|安全视野|剪刀|scissors|大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
+const SCISSORS_ACTIVITY_RE = /(?:剪刀|电剪|scissors).{0,20}(?:出现|可见|进入|操作|接触|靠近|分离|剪切|剪断|切断)|(?:剪切|剪断|切断).{0,16}(?:胆囊管|胆囊动脉|cystic duct|cystic artery)/i
 const FOG_ACTIVE_RE = /(镜头)?(?:起雾|雾气|烟雾|烟雾弥漫|水汽|模糊|视野不清|视野受遮挡|视野受限|fogging|foggy|fog (?:obscures|obscured|limits|blocks)|smoke|smoky|haze|hazy|blur(?:red|ry)?|obscur(?:ed|ing))/i
 const FOG_RESOLVED_RE = /(雾(?:已|已经)?(?:去除|清除|消散|解除)|烟雾(?:已|已经)?(?:清除|消散)|视野(?:恢复|转为|变得)(?:清晰|可辨)|镜头(?:恢复|转为|变得)清晰|fog (?:cleared|resolved)|smoke (?:cleared|resolved)|view (?:restored|clear))/i
 const OUT_OF_BODY_RE = /(镜头|腹腔镜|视野|画面).{0,12}(?:移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外|切换至手术室|手术室场景)|(?:体外|腹腔外|套管口|腹壁外|手术室场景|器械台|trocar|trocar outside|outside the body|outside-body|extracorporeal|operating room scene|extra-abdominal)/i
@@ -1684,6 +1952,49 @@ const cvsStatusNode = computed(() => {
   }
 })
 
+const summaryScissorsFlags = (summary) => {
+  const text = `${summary?.summary || ''} ${summary?.summary_en || ''}`
+  const visual = summary?.others?.visual_gpt || summary?.others?.experts?.open_vlm?.visual || {}
+  const scissors = visual?.scissors || {}
+  const confidence = Number(scissors.confidence || 0)
+  const visualScissors = (
+    (Boolean(scissors.visible) || Boolean(scissors.cutting))
+    && (!confidence || confidence >= 0.35)
+  )
+  return visualScissors || SCISSORS_ACTIVITY_RE.test(text)
+}
+
+const scissorsBeforeCvsNode = computed(() => {
+  if (!cvsStatusNode.value || cvsStatusNode.value.severity !== 'critical') return null
+  const scissorsSummaries = summaries.value.filter(summaryScissorsFlags)
+  if (!scissorsSummaries.length) return null
+
+  const first = scissorsSummaries[0]
+  const latest = scissorsSummaries[scissorsSummaries.length - 1]
+  const windowIds = scissorsSummaries
+    .map(s => Number(s.window_id))
+    .filter(id => Number.isFinite(id))
+  if (!windowIds.length) return null
+
+  const zh = language.value !== 'en'
+  return {
+    id: 'event_scissors_before_cvs',
+    type: 'risk',
+    severity: 'critical',
+    title: zh ? 'CVS未达成时出现剪刀操作' : 'Scissors before CVS confirmation',
+    summary: zh
+      ? '检测到剪刀操作，但CVS尚未达成，剪断胆囊管或胆囊动脉前需继续核查。'
+      : 'Scissors activity is detected before CVS confirmation; verify safety before dividing the cystic duct or artery.',
+    window_ids: [...new Set(windowIds)],
+    representative_window_id: Number(latest.window_id),
+    start_time: Number(first.start_time ?? first.window_start ?? 0),
+    end_time: Number(latest.end_time ?? latest.window_end ?? 0),
+    confidence: 0.76,
+    source: 'scissors-cvs-status',
+    pinned: true,
+  }
+})
+
 const summaryVisibilityFlags = (summary) => {
   const text = `${summary?.summary || ''} ${summary?.summary_en || ''}`
   const visual = summary?.others?.visual_gpt || summary?.others?.experts?.open_vlm?.visual || {}
@@ -1772,9 +2083,11 @@ const isFogVisibilityNode = (node) => {
 
 const sortedEventNodes = computed(() => {
   const nodes = [
+    ...(scissorsBeforeCvsNode.value ? [scissorsBeforeCvsNode.value] : []),
     ...(cvsStatusNode.value ? [cvsStatusNode.value] : []),
     ...(fogStatusNode.value ? [fogStatusNode.value] : []),
     ...eventNodes.value.filter(node => {
+      if (scissorsBeforeCvsNode.value && /CVS未达成时出现剪刀操作|Scissors before CVS/i.test(`${node.title || ''} ${node.summary || ''}`)) return false
       if (cvsStatusNode.value && node.type === 'cvs') return false
       if (fogStatusNode.value && isFogVisibilityNode(node)) return false
       return true
@@ -1819,6 +2132,7 @@ const resetEventNodeScroll = () => {
 }
 
 const scheduleEventNodesRefresh = (delay = 2500) => {
+  if (replayMode.value) return
   if (!currentSession.value || summaries.value.length < 1) return
   if (eventNodesTimer) {
     clearTimeout(eventNodesTimer)
@@ -1830,6 +2144,10 @@ const scheduleEventNodesRefresh = (delay = 2500) => {
 }
 
 const requestEventNodes = async ({ force = false } = {}) => {
+  if (replayMode.value) {
+    syncReplayTimeline(currentTime.value, { forceFinal: currentTime.value >= duration.value - 0.04 })
+    return
+  }
   const sid = currentSession.value?.session_id
   if (!sid || summaries.value.length < 1) return
   if (eventNodesLoading.value && !force) {
@@ -1908,9 +2226,13 @@ const eventNodeRepresentativeSummary = (node) => {
 
 const eventNodeThumbnailSummary = (node) => {
   const related = relatedSummariesForEventNode(node)
+  const representative = eventNodeRepresentativeSummary(node) || related[0] || null
+  if (representative) {
+    const retries = Number(bottomThumbRetries[representative.window_id] || 0)
+    if (bottomThumbnails[representative.window_id] || retries < 2) return representative
+  }
   return related.find(summary => bottomThumbnails[summary.window_id])
-    || related[0]
-    || eventNodeRepresentativeSummary(node)
+    || representative
 }
 
 const eventNodeThumbnail = (node) => {
@@ -1986,6 +2308,7 @@ const ensureEnglishSummaries = () => {
 }
 
 const refreshCurrentWindowSummary = async (time) => {
+  if (replayMode.value) return
   if (!currentSession.value || loopWindow.value) return
   const now = performance.now()
   const windowId = Math.floor(time / windowDuration.value)
@@ -2110,9 +2433,17 @@ const handleNavigation = (view) => {
     rightPanelTab.value = 'chat'
   } else if (view === 'overview') {
     enterOverview()
+  } else if (view === 'report') {
+    navActiveView.value = 'report'
+    currentView.value = 'report'
   } else if (view === 'home') {
     goHome()
   }
+}
+
+const handleReportBack = () => {
+  currentView.value = 'main'
+  navActiveView.value = 'analysis'
 }
 
 const toggleAnalysis = () => {
@@ -2202,6 +2533,27 @@ const startStreamTimer = () => {
   // Reset stream ended state
   streamEnded.value = false
   streamWasActive.value = false
+
+  if (isDeckLinkSession.value) {
+    // A physical capture timeline advances only when the card receives frames.
+    // This keeps unplugged/unsupported inputs at 00:00 and freezes cleanly on
+    // signal loss instead of creating wall-clock analysis windows.
+    streamTimerInterval = setInterval(() => {
+      if (loopWindow.value || !isPlaying.value || streamEnded.value) return
+      const status = captureInputStatus.value
+      if (!isCaptureSignalActive(status)) return
+
+      const capturedTime = captureTimelineSeconds(status)
+      const sinceStatus = captureStatusReceivedAt
+        ? Math.min(1.25, Math.max(0, (performance.now() - captureStatusReceivedAt) / 1000))
+        : 0
+      const displayTime = Math.max(Number(currentTime.value || 0), capturedTime + sinceStatus)
+      currentTime.value = displayTime
+      livePlaybackTime.value = displayTime
+      duration.value = Math.max(Number(duration.value || 0), displayTime)
+    }, 250)
+    return
+  }
 
   const fixedDuration = isSimulatorSession.value ? Number(currentSession.value?.duration || 0) : 0
   if (isSimulatorSession.value) {
@@ -2366,6 +2718,28 @@ const handleStreamEnded = () => {
     loopWindow.value = null
     userSelectedWindow.value = false
     highlightedWindowId.value = -1
+  }
+
+  // A finite capture-card simulation has a real EOF. Its frame writer may
+  // stop just before the duration boundary (for example at 99.5s for a 100s
+  // source), while the summarizer still needs to flush the final 95-100s
+  // window. Treating this as a user cancellation used to discard that tail.
+  // Keep the analysis/SSE alive and let the backend mark it completed after
+  // all persisted capture frames have been summarized.
+  if (isSimulatorSession.value && currentSession.value) {
+    const endAt = Number(currentSession.value.duration || duration.value || currentTime.value || 0)
+    if (endAt > 0) {
+      currentTime.value = endAt
+      livePlaybackTime.value = endAt
+      axios.post(`/api/video/control/${currentSession.value.session_id}`, {
+        action: 'position',
+        position: endAt
+      }).catch((error) => {
+        console.warn('[Stream] Failed to persist simulator EOF position:', error)
+      })
+    }
+    console.log(`[Stream] Simulator reached EOF at ${currentTime.value.toFixed(1)}s; waiting for final analysis window`)
+    return
   }
   
   // Stop SurgR1 continuous processing
@@ -2739,7 +3113,7 @@ const restartAnalysisStatusInterval = () => {
 
 // Handle page close/refresh - use sendBeacon for reliable cleanup
 const handleBeforeUnload = () => {
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     navigator.sendBeacon(
       apiUrl(`/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`),
       ''
@@ -2750,6 +3124,13 @@ const handleBeforeUnload = () => {
 onMounted(async () => {
   // 首先获取配置
   await fetchConfig()
+
+  try {
+    await loadOfflineReplayFromQuery()
+  } catch (error) {
+    console.error('[Replay] Startup failed:', error)
+    alert(`离线分析回放加载失败: ${error.message}`)
+  }
   
   checkAnalysisServices()
   // Refresh status every 30 seconds
@@ -2775,7 +3156,7 @@ onUnmounted(() => {
   analysisQueue.clear()
   
   // Stop SurgR1 continuous processing when leaving
-  if (currentSession.value) {
+  if (currentSession.value && !replayMode.value) {
     navigator.sendBeacon(
       apiUrl(`/api/analysis/stop-surgr1-continuous/${currentSession.value.session_id}`),
       ''
@@ -2960,6 +3341,24 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.summary-ready-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 1px solid rgba(48, 196, 126, 0.72);
+  background: rgba(36, 151, 94, 0.18);
+  color: #79e2ad;
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.summary-ready-btn:hover {
+  background: rgba(36, 151, 94, 0.28);
+  border-color: rgba(80, 220, 150, 0.9);
 }
 
 .language-switch {

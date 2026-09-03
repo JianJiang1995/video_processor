@@ -10,6 +10,7 @@ Summary Compressor Service
 """
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -102,6 +103,8 @@ class SummaryCompressor:
     
     def should_compress(self) -> bool:
         """检查是否需要执行压缩"""
+        if os.environ.get("DISABLE_EXTERNAL_AI") == "1" or os.environ.get("DISABLE_SUMMARY_COMPRESSION") == "1":
+            return False
         uncompressed_count = self.mysql_service.get_uncompressed_window_count(self.session_id)
         return uncompressed_count >= self.compress_window_count
     
@@ -124,6 +127,13 @@ class SummaryCompressor:
         Returns:
             包含压缩结果的字典
         """
+        if os.environ.get("DISABLE_EXTERNAL_AI") == "1" or os.environ.get("DISABLE_SUMMARY_COMPRESSION") == "1":
+            logger.info("[SummaryCompressor] Disabled by runtime environment")
+            return {
+                "success": False,
+                "error": "Summary compression disabled by runtime environment",
+            }
+
         start_time = time.time()
         
         # 获取未压缩的窗口

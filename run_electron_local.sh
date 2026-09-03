@@ -8,8 +8,8 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:8001}"
 
 if [ -z "${DISPLAY:-}" ]; then
-    echo "ERROR: DISPLAY is not set. Run this on the Ubuntu desktop session, or connect with VNC/NoMachine/X11 forwarding."
-    echo "Example on a physical desktop: export DISPLAY=:0"
+    echo "ERROR: DISPLAY is not set. Run this from the local Ubuntu desktop session."
+    echo "Example: export DISPLAY=:0 (or use the display number of the active local session)"
     exit 1
 fi
 
@@ -25,6 +25,21 @@ if command -v curl >/dev/null 2>&1; then
         echo "WARN: backend is not healthy at $BACKEND_URL."
         echo "      Start it in another terminal with: cd $ROOT_DIR && bash run_backend.sh"
     fi
+fi
+
+if [ -e "/dev/blackmagic/io0" ]; then
+    echo "[Capture] DeckLink driver node detected: /dev/blackmagic/io0"
+    if ! gst-inspect-1.0 decklinkvideosrc >/dev/null 2>&1; then
+        echo "WARN: DeckLink hardware exists but the GStreamer decklinkvideosrc plugin is unavailable."
+    fi
+    echo "[Capture] Preflight: $ROOT_DIR/scripts/decklink_preflight.sh --connection hdmi --mode auto --wait 8"
+else
+    echo "WARN: /dev/blackmagic/io0 is missing; DeckLink capture will not be available."
+fi
+
+if [ "${SURGR1_RUN_CAPTURE_PREFLIGHT:-0}" = "1" ]; then
+    echo "[Capture] Running optional HDMI preflight before Electron..."
+    "$ROOT_DIR/scripts/decklink_preflight.sh" --connection hdmi --mode auto --wait 6 || true
 fi
 
 export ELECTRON_DISABLE_SANDBOX=1

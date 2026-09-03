@@ -22,6 +22,7 @@ VLM Factory - Factory pattern for VLM client selection
     )
 """
 import logging
+import os
 from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,8 @@ def get_vlm_client():
     provider = get_summarization_provider()
     
     if provider == "gemini":
+        if os.environ.get("DISABLE_EXTERNAL_AI") == "1":
+            raise RuntimeError("Cloud VLM disabled by runtime environment")
         from .gemini_client import get_gemini_client
         logger.info("[VLMFactory] Using Gemini API (cloud)")
         return get_gemini_client()
@@ -106,6 +109,8 @@ async def ensure_vlm_available():
     provider = get_summarization_provider()
     
     if provider == "gemini":
+        if os.environ.get("DISABLE_EXTERNAL_AI") == "1":
+            raise RuntimeError("Cloud VLM disabled by runtime environment")
         from .gemini_client import ensure_gemini_available
         return await ensure_gemini_available()
     else:
@@ -123,6 +128,15 @@ async def check_vlm_health() -> dict:
     provider = get_summarization_provider()
     
     try:
+        if provider == "gemini" and os.environ.get("DISABLE_EXTERNAL_AI") == "1":
+            return {
+                "provider": "gemini",
+                "provider_name": "Google Gemini",
+                "available": False,
+                "error": "Cloud VLM disabled by runtime environment",
+                "api_type": "cloud",
+            }
+
         client = get_vlm_client()
         is_healthy = await client.check_health()
         

@@ -20,7 +20,12 @@ logger = logging.getLogger(__name__)
 
 CLIP_COLORS = {
     "surgical_clip": (0, 70, 255),
+    "clip": (0, 70, 255),
+    "hemolok_clip": (0, 70, 255),
+    "titanium_clip": (40, 190, 255),
 }
+
+CLIP_BODY_LABELS = {"clip", "surgical_clip", "hemolok_clip", "titanium_clip"}
 
 
 class ClipDetectorService:
@@ -32,19 +37,24 @@ class ClipDetectorService:
         device: str = "cuda:1",
         conf_threshold: float = 0.25,
         max_area_ratio: float = 0.12,
+        imgsz: int = 960,
     ):
+        import torch
         from ultralytics import YOLO
 
         logger.info(f"[ClipDetector] Loading model from {model_path} on {device}")
         self.model = YOLO(model_path)
-        self.device = device
+        if isinstance(device, str) and device.isdigit():
+            device = f"cuda:{device}"
+        self.device = torch.device(device) if isinstance(device, str) else device
         self.conf_threshold = float(conf_threshold)
         self.max_area_ratio = float(max_area_ratio)
+        self.imgsz = int(imgsz)
         self._ready = False
 
         try:
             dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-            self.model(dummy, verbose=False, conf=0.99, device=self.device)
+            self.model(dummy, verbose=False, conf=0.99, device=self.device, imgsz=self.imgsz)
             logger.info("[ClipDetector] Warmed up")
         except Exception as exc:
             logger.warning(f"[ClipDetector] Warmup skipped: {exc}")
@@ -99,7 +109,7 @@ class ClipDetectorService:
         conf = float(conf_threshold if conf_threshold is not None else self.conf_threshold)
         frame = self._to_bgr(image)
         h, w = frame.shape[:2]
-        results = self.model(frame, verbose=False, conf=conf, device=self.device)
+        results = self.model(frame, verbose=False, conf=conf, device=self.device, imgsz=self.imgsz)
 
         detections: List[Dict] = []
         if results and len(results) > 0:
@@ -109,7 +119,12 @@ class ClipDetectorService:
                     continue
                 cls_id = int(box.cls[0])
                 conf_val = float(box.conf[0])
-                label = "surgical_clip" if cls_id == 0 else self.model.names.get(cls_id, f"class_{cls_id}")
+                raw_label = str(self.model.names.get(cls_id, f"class_{cls_id}"))
+                if raw_label not in CLIP_BODY_LABELS and cls_id not in {0, 1}:
+                    continue
+                # Downstream UI/summary should not oscillate between Hem-o-lok
+                # and titanium wording; subtype is kept only for audit/debug.
+                label = "surgical_clip"
                 detections.append(
                     {
                         "x1": x1,
@@ -117,6 +132,8 @@ class ClipDetectorService:
                         "x2": x2,
                         "y2": y2,
                         "label": label,
+                        "display_label": "夹子",
+                        "raw_label": raw_label,
                         "confidence": round(conf_val, 3),
                         "class_id": cls_id,
                         "area_ratio": round(((x2 - x1) * (y2 - y1)) / float(max(1, w * h)), 5),
@@ -174,9 +191,10 @@ def get_clip_detector_service() -> Optional[ClipDetectorService]:
             return None
 
         device = os.environ.get("CLIP_DETECTOR_DEVICE") or cfg.get("device", "cuda:1")
-        conf = float(cfg.get("confidence_threshold", 0.25))
-        max_area_ratio = float(cfg.get("max_area_ratio", 0.12))
-        _clip_detector_service = ClipDetectorService(model_path, device, conf, max_area_ratio)
+        conf = float(os.environ.get("CLIP_DETECTOR_CONF") or cfg.get("confidence_threshold", 0.25))
+        max_area_ratio = float(os.environ.get("CLIP_DETECTOR_MAX_AREA_RATIO") or cfg.get("max_area_ratio", 0.12))
+        imgsz = int(os.environ.get("CLIP_DETECTOR_IMGSZ") or cfg.get("imgsz", 960))
+        _clip_detector_service = ClipDetectorService(model_path, device, conf, max_area_ratio, imgsz)
         return _clip_detector_service
     except Exception as exc:
         logger.error(f"[ClipDetector] Failed to initialize: {exc}")
