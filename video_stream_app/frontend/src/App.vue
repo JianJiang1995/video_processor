@@ -110,6 +110,7 @@
                 @upload="handleUpload"
                 @load="handleLoad"
                 @sam3TimeUpdate="handleSam3TimeUpdate"
+                @capture-status="handleCaptureStatus"
                 @exitLoop="exitLoopMode"
                 @loopLoadFailed="handleLoopLoadFailed"
               />
@@ -492,6 +493,10 @@ let eventNodesRefreshPending = false
 const streamStartTime = ref(null)  // When stream started (for elapsed time)
 const streamEnded = ref(false)  // Whether the video stream has ended
 const streamWasActive = ref(false)  // Track if stream was ever active (for reliable end detection)
+const captureInputStatus = ref(null)
+let captureStatusReceivedAt = 0
+let pendingDeckLinkAutoAnalyze = false
+let deckLinkAnalysisStarted = false
 
 // Global AbortController for session-related requests
 // When goHome is called, this will abort all pending requests
@@ -956,6 +961,52 @@ const isSimulatorSession = computed(() => (
   currentSession.value?.video_path?.startsWith('simulator://')
 ))
 
+const isDeckLinkSession = computed(() => (
+  mode.value === 'stream' &&
+  currentSession.value?.video_path?.startsWith('decklink://')
+))
+
+const isCaptureSignalActive = (status) => (
+  status?.status_code === 'streaming' || status?.status_code === 'valid_signal_black_frame'
+)
+
+const captureTimelineSeconds = (status) => {
+  const sequence = Number(status?.sequence || 0)
+  const fps = Number(status?.fps || 0)
+  if (!Number.isFinite(sequence) || !Number.isFinite(fps) || fps <= 0) return 0
+  return Math.max(0, sequence / fps)
+}
+
+const startDeckLinkAnalysisWhenReady = () => {
+  if (!pendingDeckLinkAutoAnalyze || deckLinkAnalysisStarted || !currentSession.value) return
+  deckLinkAnalysisStarted = true
+  pendingDeckLinkAutoAnalyze = false
+  startSurgR1Continuous(currentSession.value.session_id)
+  startAnalysis()
+}
+
+const handleCaptureStatus = (status) => {
+  if (!isDeckLinkSession.value || !status) return
+  captureInputStatus.value = status
+  captureStatusReceivedAt = performance.now()
+
+  const capturedTime = captureTimelineSeconds(status)
+  if (isPlaying.value) {
+    if (Number(status.sequence || 0) === 0 && !isCaptureSignalActive(status)) {
+      currentTime.value = 0
+      duration.value = 0
+    } else {
+      currentTime.value = Math.max(Number(currentTime.value || 0), capturedTime)
+      duration.value = Math.max(Number(duration.value || 0), currentTime.value)
+    }
+    livePlaybackTime.value = currentTime.value
+  }
+
+  if (isCaptureSignalActive(status) && Number(status.sequence || 0) > 0) {
+    startDeckLinkAnalysisWhenReady()
+  }
+}
+
 const maxPlayableTime = () => {
   const sessionDuration = Number(currentSession.value?.duration || 0)
   const displayDuration = Number(duration.value || 0)
@@ -1052,6 +1103,11 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   isProcessing.value = false
   streamEnded.value = false
   streamWasActive.value = false
+  captureInputStatus.value = null
+  captureStatusReceivedAt = 0
+  pendingDeckLinkAutoAnalyze = false
+  deckLinkAnalysisStarted = false
+  pausedAt = null
   
   currentSession.value = session
   duration.value = Number(session.duration || 0) || 0
@@ -1064,11 +1120,17 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
   // Restart service status polling when entering main view
   restartAnalysisStatusInterval()
   
-  // Auto-start SurgR1 continuous processing when stream connects
-  startSurgR1Continuous(session.session_id)
-  
-  if (autoAnalyze) {
-    startAnalysis()
+  const deckLinkSession = session.video_path?.startsWith('decklink://')
+  if (deckLinkSession) {
+    // A physical capture card may be connected before its source is live.
+    // Start analysis on the first valid frame so waiting time cannot create
+    // fake windows or advance the clinical timeline.
+    pendingDeckLinkAutoAnalyze = Boolean(autoAnalyze)
+  } else {
+    startSurgR1Continuous(session.session_id)
+    if (autoAnalyze) {
+      startAnalysis()
+    }
   }
   
   startStreamTimer()
@@ -1148,6 +1210,11 @@ const goHome = () => {
   frameAnalysisPopup.value = { visible: false, data: null, isLoading: false, position: { x: 0, y: 0 } }
   streamEnded.value = false
   streamWasActive.value = false
+  captureInputStatus.value = null
+  captureStatusReceivedAt = 0
+  pendingDeckLinkAutoAnalyze = false
+  deckLinkAnalysisStarted = false
+  pausedAt = null
   
   console.log('[goHome] Cleanup complete')
 }
@@ -1571,6 +1638,17 @@ const startAnalysis = async () => {
     if (isPlaying.value) handlePause()
     else handlePlay()
     return
+  }
+
+  if (isDeckLinkSession.value && !isCaptureSignalActive(captureInputStatus.value)) {
+    pendingDeckLinkAutoAnalyze = true
+    showToast(t('app.analysisWaitingForSignal'))
+    return
+  }
+
+  if (isDeckLinkSession.value && !deckLinkAnalysisStarted) {
+    deckLinkAnalysisStarted = true
+    startSurgR1Continuous(currentSession.value.session_id)
   }
 
   const { surgr1Available, glmAvailable } = await ensureRequiredAnalysisServices()
@@ -2455,6 +2533,27 @@ const startStreamTimer = () => {
   // Reset stream ended state
   streamEnded.value = false
   streamWasActive.value = false
+
+  if (isDeckLinkSession.value) {
+    // A physical capture timeline advances only when the card receives frames.
+    // This keeps unplugged/unsupported inputs at 00:00 and freezes cleanly on
+    // signal loss instead of creating wall-clock analysis windows.
+    streamTimerInterval = setInterval(() => {
+      if (loopWindow.value || !isPlaying.value || streamEnded.value) return
+      const status = captureInputStatus.value
+      if (!isCaptureSignalActive(status)) return
+
+      const capturedTime = captureTimelineSeconds(status)
+      const sinceStatus = captureStatusReceivedAt
+        ? Math.min(1.25, Math.max(0, (performance.now() - captureStatusReceivedAt) / 1000))
+        : 0
+      const displayTime = Math.max(Number(currentTime.value || 0), capturedTime + sinceStatus)
+      currentTime.value = displayTime
+      livePlaybackTime.value = displayTime
+      duration.value = Math.max(Number(duration.value || 0), displayTime)
+    }, 250)
+    return
+  }
 
   const fixedDuration = isSimulatorSession.value ? Number(currentSession.value?.duration || 0) : 0
   if (isSimulatorSession.value) {

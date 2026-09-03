@@ -25,7 +25,12 @@ from ..database import get_db, create_video_session, get_video_session, get_all_
 from ..services.video_processor import VideoProcessor, ProcessingState
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
-from ..services.decklink_capture import DeckLinkCapture
+from ..services.decklink_capture import (
+    DeckLinkCapture,
+    build_decklink_uri,
+    get_decklink_status,
+    parse_decklink_uri,
+)
 from ..services.local_video_source import (
     SIMULATOR_URI,
     get_simulator_source,
@@ -280,7 +285,8 @@ class CaptureDeviceConnectRequest(BaseModel):
     device_id: int = 0  # Device index (0, 1, 2, ...)
     device_name: str = ""  # Optional device name for Windows DirectShow
     backend: str = "auto"  # auto, decklink, v4l2, default
-    mode: str = "1080p30"  # DeckLink display mode
+    mode: str = "auto"  # DeckLink display mode; auto negotiates the source
+    connection: str = "hdmi"  # DeckLink physical input: hdmi, sdi, or auto
     auto_analyze: bool = True
 
 
@@ -291,37 +297,41 @@ def _list_capture_devices():
     """
     devices = []
 
-    simulated_device = _simulator_capture_device()
-    if simulated_device:
-        devices.append(simulated_device)
-
     decklink_modes = [
-        "1080p30", "1080p2997", "1080p25", "1080p24", "1080p50", "1080p60", "1080p5994",
+        "auto",
+        "1080i5994", "1080i60", "1080i50",
+        "1080p5994", "1080p60", "1080p50", "1080p30", "1080p2997", "1080p25", "1080p24",
         "720p60", "720p5994", "720p50",
         "2160p30", "2160p2997", "2160p25", "2160p24",
     ]
 
     try:
-        if glob.glob("/dev/blackmagic/io*"):
-            monitor = subprocess.run(
-                ["gst-device-monitor-1.0", "Video/Source"],
+        decklink_nodes = sorted(glob.glob("/dev/blackmagic/io*"))
+        if decklink_nodes:
+            plugin = subprocess.run(
+                ["gst-inspect-1.0", "decklinkvideosrc"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=3,
             )
-            output = monitor.stdout + monitor.stderr
-            if "DeckLink" in output or "decklink" in output.lower():
-                devices.append({
-                    "device_id": 0,
-                    "device_name": "DeckLink Mini Recorder 4K",
-                    "device_path": "/dev/blackmagic/io0",
-                    "width": 1920,
-                    "height": 1080,
-                    "fps": 30.0,
-                    "backend": "decklink",
-                    "default_mode": "1080p30",
-                    "supported_modes": decklink_modes,
-                })
+            if plugin.returncode == 0:
+                for fallback_index, device_path in enumerate(decklink_nodes):
+                    suffix = device_path.rsplit("io", 1)[-1]
+                    device_number = int(suffix) if suffix.isdigit() else fallback_index
+                    devices.append({
+                        "device_id": device_number,
+                        "device_name": "DeckLink Mini Recorder 4K",
+                        "device_path": device_path,
+                        "width": 1920,
+                        "height": 1080,
+                        "fps": 30.0,
+                        "backend": "decklink",
+                        "default_mode": "auto",
+                        "supported_modes": decklink_modes,
+                        "default_connection": "hdmi",
+                        "supported_connections": ["hdmi", "sdi", "auto"],
+                        "hardware_ready": True,
+                    })
     except Exception as e:
         logger.debug(f"[Capture] DeckLink detection skipped: {e}")
     
@@ -360,7 +370,7 @@ def _list_capture_devices():
                 # Extract device number
                 dev_num = int(dev_path.replace("/dev/video", ""))
                 # Check if already in list
-                if not any(d["device_id"] == dev_num for d in devices):
+                if not any(d["device_id"] == dev_num and d.get("backend") in {"v4l2", "default"} for d in devices):
                     cap = cv2.VideoCapture(dev_path, cv2.CAP_V4L2)
                     if cap.isOpened():
                         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -381,6 +391,12 @@ def _list_capture_devices():
                             })
             except Exception:
                 pass
+
+    # Keep physical hardware first so local Electron auto-connect never chooses
+    # the simulator when a real capture card is installed.
+    simulated_device = _simulator_capture_device()
+    if simulated_device:
+        devices.append(simulated_device)
     
     return devices
 
@@ -404,7 +420,13 @@ def _open_simulator_capture():
     return cap, None
 
 
-def _open_capture_device(device_id: int, device_name: str = ""):
+def _open_capture_device(
+    device_id: int,
+    device_name: str = "",
+    backend: str = "auto",
+    mode: str = "auto",
+    connection: str = "auto",
+):
     """
     Open a capture device by ID or name.
     Supports Windows DirectShow and Linux V4L2.
@@ -415,15 +437,20 @@ def _open_capture_device(device_id: int, device_name: str = ""):
     error = None
     
     try:
-        if device_name.startswith("decklink:"):
-            mode = device_name.split(":", 1)[1] or "1080p30"
-            cap = DeckLinkCapture(f"decklink://{device_id}?mode={mode}")
+        if backend == "decklink" or device_name.startswith("decklink:"):
+            if device_name.startswith("decklink:"):
+                mode = device_name.split(":", 1)[1] or mode
+            uri = build_decklink_uri(device_id, mode=mode, connection=connection)
+            cap = DeckLinkCapture(uri)
             if not cap.isOpened():
-                return None, f"无法打开 DeckLink 采集设备 {device_id} ({mode})"
-            ret, _ = cap.read()
-            if not ret:
+                status = cap.status() or {}
+                detail = status.get("last_error") or "DeckLink GStreamer 管线未能启动"
                 cap.release()
-                return None, f"无法从 DeckLink 采集设备读取帧，请确认输入源模式为 {mode}"
+                return None, f"无法打开 DeckLink 采集设备 {device_id}: {detail}"
+
+            # No signal is not a connection failure. Keep the session usable so
+            # the UI can wait for a cable/source and report diagnostics live.
+            cap.read(timeout=1.0)
             return cap, None
 
         if platform.system() == "Windows" and device_name:
@@ -452,6 +479,22 @@ def _open_capture_device(device_id: int, device_name: str = ""):
         if cap:
             cap.release()
         return None, str(e)
+
+
+def _decklink_mode_defaults(mode: str):
+    """Return conservative metadata until automatic negotiation sees a frame."""
+    mode = str(mode or "auto").lower()
+    if mode.startswith("2160"):
+        return 3840, 2160, 30.0
+    if mode.startswith("720"):
+        return 1280, 720, 60.0
+    if mode.startswith("ntsc"):
+        return 720, 486, 29.97
+    if mode.startswith("pal"):
+        return 720, 576, 25.0
+    if mode.startswith("1556"):
+        return 2048, 1556, 24.0
+    return 1920, 1080, 30.0
 
 
 @router.get("/capture-devices")
@@ -497,9 +540,8 @@ async def connect_to_capture_device(
     """
     loop = asyncio.get_event_loop()
     backend = (request.backend or "auto").lower()
-    probe_name = request.device_name
-    if backend == "decklink":
-        probe_name = f"decklink:{request.mode or '1080p30'}"
+    mode = (request.mode or "auto").lower()
+    connection = (request.connection or "auto").lower()
 
     try:
         if backend == "simulator":
@@ -513,17 +555,21 @@ async def connect_to_capture_device(
                     None,
                     _open_capture_device,
                     request.device_id,
-                    probe_name,
+                    request.device_name,
+                    backend,
+                    mode,
+                    connection,
                 ),
-                timeout=10.0,
+                timeout=15.0,
             )
     except asyncio.TimeoutError:
-        raise HTTPException(408, f"连接采集设备超时 (10秒)")
+        raise HTTPException(408, "连接采集设备超时 (15秒)")
     
     if error or cap is None:
         raise HTTPException(400, f"无法连接采集设备: {error or '未知错误'}")
     
     # Get device properties
+    capture_status = cap.status() if backend == "decklink" and hasattr(cap, "status") else None
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -538,14 +584,18 @@ async def connect_to_capture_device(
     else:
         duration = 0.0
         total_frames = 0
+        if backend == "decklink" and (width <= 0 or height <= 0):
+            default_width, default_height, default_fps = _decklink_mode_defaults(mode)
+            width = width or default_width
+            height = height or default_height
+            fps = fps or default_fps
     
     # Create a device URL for internal use
     # Format: device://{device_id} or device://{device_name}
     if backend == "simulator":
         device_url = SIMULATOR_URI
     elif backend == "decklink":
-        mode = request.mode or "1080p30"
-        device_url = f"decklink://{request.device_id}?mode={mode}"
+        device_url = build_decklink_uri(request.device_id, mode=mode, connection=connection)
     else:
         device_url = f"device://{request.device_id}"
     if request.device_name and backend not in {"decklink", "simulator"}:
@@ -555,7 +605,7 @@ async def connect_to_capture_device(
     if backend == "simulator":
         device_display_name = SIMULATED_CAPTURE_NAME
     elif backend == "decklink":
-        device_display_name = f"{device_display_name} ({request.mode or '1080p30'})"
+        device_display_name = f"{device_display_name} ({connection.upper()} / {mode})"
     
     # Create database session
     session = create_video_session(
@@ -608,6 +658,7 @@ async def connect_to_capture_device(
         "width": width,
         "height": height,
         "storage_path": storage_path,
+        "capture_status": capture_status,
         "message": f"成功连接采集设备: {device_display_name}"
     }
 
@@ -900,6 +951,70 @@ async def get_session_info(
         "current_position": session.get("current_position", 0),
         "is_paused": session.get("is_paused", False),
         "created_at": session.get("created_at", "")
+    }
+
+
+@router.get("/capture-status/{session_id}")
+async def get_capture_status(
+    session_id: str,
+    db: Session = Depends(get_db),
+):
+    """Return live DeckLink signal and negotiated-format diagnostics."""
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    video_path = session.get("video_path", "")
+    if not video_path.startswith("decklink://"):
+        return {
+            "success": True,
+            "backend": "other",
+            "phase": "streaming",
+            "status_code": "streaming",
+        }
+
+    status = get_decklink_status(video_path)
+    if status is None:
+        device_number, mode, connection = parse_decklink_uri(video_path)
+        status = {
+            "uri": video_path,
+            "device_number": device_number,
+            "mode": mode,
+            "connection": connection,
+            "phase": "idle",
+            "opened": False,
+            "signal": False,
+            "width": 0,
+            "height": 0,
+            "fps": 0,
+            "interlace_mode": "unknown",
+            "sequence": 0,
+            "last_frame_age": None,
+            "near_black": False,
+            "last_error": "",
+            "restart_count": 0,
+            "readers": 0,
+        }
+
+    phase = status.get("phase", "idle")
+    if phase == "streaming" and status.get("near_black"):
+        status_code = "valid_signal_black_frame"
+    elif phase == "streaming":
+        status_code = "streaming"
+    elif phase == "waiting_signal":
+        status_code = "no_signal"
+    elif phase == "stalled":
+        status_code = "signal_stalled"
+    elif phase == "reconnecting":
+        status_code = "reconnecting"
+    else:
+        status_code = phase
+
+    return {
+        "success": True,
+        "backend": "decklink",
+        "status_code": status_code,
+        **status,
     }
 
 

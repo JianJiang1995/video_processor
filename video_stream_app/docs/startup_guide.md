@@ -63,7 +63,7 @@ pip install ultralytics google-genai pymysql
 
 ```bash
 # /data2/jj/proj/video_processor/.env
-GEMINI_API_KEY=AIzaSyCOtraBROBrwOjaVl7uNe0K62sVYH3UoLA
+GEMINI_API_KEY=${GEMINI_API_KEY}
 OPENAI_API_KEY=...   # 可选，备用 TTS
 ```
 

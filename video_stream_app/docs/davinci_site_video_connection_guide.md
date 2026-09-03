@@ -1,14 +1,71 @@
 # 达芬奇视频采集连接与采购说明
 
-更新时间：2026-07-15
+更新时间：2026-07-24
 
 适用范围：当前提供的达芬奇接口照片，以及服务器内已经安装的
 `DeckLink Mini Recorder 4K` 采集卡。
+
+明天现场的逐步接线、软件预检和故障对照表见
+[`or_capture_day_runbook_20260725.md`](./or_capture_day_runbook_20260725.md)。应用现已支持
+HDMI/SDI 选择、输入制式自动探测、1080i 去隔行、最新帧低延迟显示、掉线重连和黑屏诊断。
 
 > 重要说明：根据接口排列、`TilePro`、`Video Out L/R` 和 `DVI (SXGA)`
 > 等标识判断，照片很像 **da Vinci Si 医生控制台背面的接口区**。以下对照片中
 > 接口用途的判断可信度较高，但正式接线前仍应由医院设备科或 Intuitive 工程师
 > 根据机器型号确认。不要拔除照片中已有的连接线。
+
+## 2026-07-23 最新采购结论
+
+由于目前难以买到规格明确的 DVI/SXGA 转 SDI 缩放器，现场优先方案调整为直接
+购买一台能够采集计算机 DVI/SXGA 时序的 USB 采集设备：
+
+```text
+达芬奇 Video Out L：DVI (SXGA)
+→ DVI-D 24+1 公对公线
+→ Magewell USB Capture DVI Plus（P/N 32080）的 DVI IN
+→ 随机 USB 3.0 线
+→ 服务器 USB 3.0 接口
+```
+
+`Magewell USB Capture DVI Plus` 官方明确支持：
+
+- DVI-I 输入和最高 2048 x 2160 的输入分辨率；
+- Linux、V4L2 和 GStreamer；
+- 硬件缩放、裁剪、宽高比转换和帧率转换；
+- 24 x 7 连续运行；
+- USB 3.0 输出，随机附带 USB 3.0 线。
+
+项目后端已经具备 `/dev/video*` 和 OpenCV V4L2 采集入口。正式接入前仍应把显示、
+存帧和分析统一到一个共享采集器，避免多个模块同时打开同一 USB 设备，但这属于小范围
+软件适配，不需要重做分析架构。
+
+购买入口：
+
+- [Magewell USB Capture DVI Plus 官方规格](https://www.magewell.com/products/usb-capture-dvi-plus)
+- [京东搜索：美乐威 USB Capture DVI Plus 32080](https://search.jd.com/Search?keyword=%E7%BE%8E%E4%B9%90%E5%A8%81%20USB%20Capture%20DVI%20Plus%2032080)
+- [淘宝搜索：美乐威 USB Capture DVI Plus 32080](https://s.taobao.com/search?q=%E7%BE%8E%E4%B9%90%E5%A8%81%20USB%20Capture%20DVI%20Plus%2032080)
+- [京东搜索：DVI-D 24+1 公对公 1.5 米](https://search.jd.com/Search?keyword=DVI-D%2024%2B1%20%E5%85%AC%E5%AF%B9%E5%85%AC%201.5%E7%B1%B3)
+
+采用这条路线时，不需要购买 SDI 线、HDMI to SDI 转换器或 DVI to SDI 缩放器，
+现有 DeckLink 可以保留为未来连接标准 SDI/HDMI 视频源的备用采集卡。
+
+### 可以先做的低成本 DeckLink 直连试验
+
+被动 DVI-D 转 HDMI 线在电气上可以把数字 DVI 接到 DeckLink HDMI IN，但它不会
+把 1280 x 1024 SXGA 转成 720p/1080p。当前 DeckLink/GStreamer 报告的输入模式中
+没有 1280 x 1024，因此不能把直连当作确定可用的现场方案。
+
+可购买一根普通 HDMI to HDMI 线，在服务器本地进行以下测试：
+
+```text
+服务器 NVIDIA 显卡 HDMI OUT（设置成 1280 x 1024 @ 60 Hz）
+→ HDMI to HDMI 线
+→ DeckLink HDMI IN
+```
+
+如果 DeckLink 无法锁定该信号，就已经证明达芬奇 SXGA 经被动 DVI to HDMI 线也
+不会工作。如果它能锁定，再购买 DVI-D 24+1 to HDMI 线去现场做第二次实机测试；
+但医院部署仍应携带支持 SXGA 的 USB DVI 采集设备作为确定方案。
 
 ![达芬奇机器接口照片](../../达芬奇机器接口.jpg)
 
@@ -19,23 +76,22 @@
    它是把外部画面送入达芬奇的**输入口**，不是我们要采集的输出口。
 3. 照片上方两个 SDI 也属于 `TilePro Input L/R`，是**输入口**，不能直接拿来
    给 DeckLink 采集。
-4. 正式现场的首选方案不是使用照片中的 DVI，而是找到 Vision Cart/Core/CCU
-   上可用的 **HD-SDI Video Out**，用一根 75 欧姆 BNC SDI 线直接接到服务器
-   DeckLink。采用这种方案时，**不需要 HDMI to SDI 转换器**。
+4. 如果能找到独立的 **HD-SDI Video Out**，可用 75 欧姆 SDI 线直接进入
+   DeckLink；如果现场只有照片中的接口，则首选 `Video Out L` 直接进入
+   `Magewell USB Capture DVI Plus`，再通过 USB 3.0 接服务器。
 5. `Micro Converter HDMI to SDI 3G wPSU` 主要用于实验室把第二台电脑的 HDMI
    输出模拟成 SDI。它不是正式连接达芬奇 SDI 输出时的必需设备。
 
 ## 如果现场确实只有照片中的接口
 
-此时仍然可以使用达芬奇的视频输出，但不是直接裸接：
+此时仍然可以使用达芬奇的视频输出，推荐直接进入支持 SXGA 的 USB DVI 采集设备：
 
 ```text
 空着的 Video Out L：DVI (SXGA)
         ↓
-支持 SXGA 输入的有源视频缩放器
-将 1280 x 1024 缩放为 1920 x 1080p59.94/60
-        ↓ HDMI
-服务器 DeckLink Mini Recorder 4K 的 HDMI IN
+Magewell USB Capture DVI Plus
+        ↓ USB 3.0
+服务器
 ```
 
 也就是说：
@@ -45,14 +101,14 @@
 - **不能依赖普通 DVI 转 HDMI 被动线直接采集**。DVI 与 HDMI 的数字信号在电气
   层面相近，但当前 DeckLink 驱动报告的输入模式中没有 1280 x 1024 SXGA；普通
   线缆也不会改变分辨率。
-- 中间设备必须明确支持 `1280 x 1024 @ 60 Hz` 输入，并能固定输出 DeckLink
-  支持的 `1080p59.94/60`、`1080p30` 或 `720p59.94`。
+- 采集设备必须明确支持 `1280 x 1024 @ 60 Hz` 的计算机视频时序；Magewell
+  DVI Plus 满足这个要求，并能在硬件内完成缩放与宽高比转换。
 - `Micro Converter HDMI to SDI 3G wPSU` **不能单独解决这个问题**：它没有 DVI
   输入，也不是分辨率缩放器。
 
-如果服务器距离达芬奇较近，缩放器输出 HDMI 后直接进入 DeckLink HDMI 是设备
-最少的方案。如果布线距离较长，应选择直接带 HD-SDI 输出的 DVI/SXGA 缩放器，
-再用 75 欧姆 SDI 线进入 DeckLink，避免串联多个小转换盒。
+如果 USB 3.0 距离需要超过约 3 米，应将服务器或采集设备放得更近，或者使用经过
+验证的有源 USB 3.0 延长方案。只有必须进行更长距离布线时，才回到带缩放功能的
+DVI/SXGA to SDI 方案。
 
 ## 一、照片中的接口分别是什么
 
@@ -84,8 +140,8 @@
   实测时假定它能直接采集 SXGA。
 - 简单的 DVI 转 HDMI 线只改变接头形状，不会把 SXGA 缩放成 720p 或 1080p。
 
-因此，`Video Out L` 可以输出，但现场首选仍是 Vision Cart/Core/CCU 上的
-标准 HD-SDI 视频输出。
+因此，`Video Out L` 可以输出。如果没有其他标准 HD-SDI 输出，当前现场首选就是
+通过 `Magewell USB Capture DVI Plus` 直接采集这个 DVI/SXGA 输出。
 
 ### 2. 照片里已经插着的 DVI 是做什么的？
 
@@ -142,7 +198,7 @@ Blackmagic 官方标价为 85 美元，国内实际价格取决于经销商。�
 
 ## 三、如果只考虑医院现场，应该买什么
 
-### 推荐方案：达芬奇 HD-SDI 直接进入 DeckLink
+### 存在标准 HD-SDI 输出时：直接进入 DeckLink
 
 ```text
 da Vinci Vision Cart/Core/CCU
@@ -295,15 +351,112 @@ gst-launch-1.0 decklinkvideosrc \
 
 ### B. 确认只有照片中的 DVI (SXGA) Video Out L/R
 
-1. 购买或借测一台支持 `1280 x 1024 @ 60 Hz` 输入的有源缩放器。
-2. 优先选择固定输出 `1920 x 1080p59.94/60` HDMI 的型号，直接进入 DeckLink
-   HDMI IN；长距离布线则选择带 HD-SDI 输出的型号。
-3. 暂时不要购买普通 DVI 转 HDMI 被动线作为正式方案。
-4. 不购买 `Micro Converter HDMI to SDI 3G wPSU` 作为唯一转换设备，因为它不做
-   SXGA 到标准视频制式的缩放。
+1. 购买 `Magewell USB Capture DVI Plus`（P/N 32080）。
+2. 购买一根 1.5 米或 2 米 DVI-D 24+1 公对公线。
+3. 使用随机 USB 3.0 线接入服务器，不再经过 DeckLink。
+4. 普通 DVI 转 HDMI 被动线只用于低成本兼容性测试，不作为确定的正式方案。
+5. 不购买 `Micro Converter HDMI to SDI 3G wPSU`。
 
 在无法确认还有其他视频输出口的前提下，当前更符合照片的现场路线是 **B：使用
-空着的 `Video Out L`，经过有源缩放器进入 DeckLink**。
+空着的 `Video Out L`，直接进入支持 SXGA 的 USB DVI 采集设备**。
+
+## 八、备用路线：DVI to SDI 缩放器购物清单
+
+以下路线仅在能够买到并确认转换器规格时使用。当前首选方案是前文的
+`Magewell USB Capture DVI Plus` 直接 DVI 采集。
+
+### 最终连线
+
+```text
+达芬奇 Video Out L：DVI (SXGA)
+→ 1.5 米 DVI-D 24+1 公对公线
+→ 带缩放功能的 DVI to 3G-SDI 扫描转换器
+→ 75 欧姆 3G-SDI BNC 公对公线
+→ 服务器 DeckLink Mini Recorder 4K：SDI IN
+```
+
+转换器放在达芬奇旁边，短距离传输 DVI；较长距离使用 SDI 到服务器。这样比在现场
+长距离传输 HDMI 更稳定。
+
+### 需要购买的三项
+
+| 序号 | 物品 | 数量 | 明确规格 | 用途 |
+| --- | --- | --- | --- | --- |
+| 1 | DVI to 3G-SDI **缩放/扫描转换器** | 1 台 | 必须接收 1280x1024@60，输出 1080p59.94/60 3G-SDI，支持保持画面比例 | 将达芬奇 SXGA 转成 DeckLink 支持的广播格式 |
+| 2 | DVI-D 24+1 公对公线 | 1 根 | 1.5 米或 2 米，Single Link 即可 | 达芬奇 Video Out L 到转换器 |
+| 3 | 75 欧姆 3G/6G-SDI BNC 公对公成品线 | 2 根 | 推荐佳耐美 L-5CFB 或 Belden 1694A 同级；按现场距离购买，例如 10 米主线加 5 米备用 | 转换器到 DeckLink SDI IN |
+
+### 转换器选择
+
+#### 预算测试方案：CE-LINK 工程级 DVI to SDI 缩放转换器
+
+- 参考价格：页面当前约 1399 元，价格可能变化。
+- 商品标题包含“工程级、DVI 转 SDI、变频、可调分辨率、医疗/内窥镜”。
+- [天猫商品链接，商品 ID 42052336549](https://detail.tmall.com/item.htm?id=42052336549)
+- [淘宝搜索：CE-LINK DVI 转 SDI 缩放](https://s.taobao.com/search?q=CE-LINK%20DVI%E8%BD%ACSDI%20%E7%BC%A9%E6%94%BE)
+
+该商品页面没有公开足够完整的时序表，因此下单前必须让卖家用文字确认下一节列出的
+四项要求，并选择支持七天退换的订单。若卖家不能确认 `1280x1024@60` 输入，不买。
+
+类似的可验证国产型号是 `LINK-MI LM-AS01` 或 `LM-PDS01`。其中 LM-AS01 的说明书
+明确描述 DVI/VGA 输入缩放为 HD/3G-SDI；购买时仍应核对具体型号，不能只看外壳和
+“DVI 转 SDI”标题。
+
+#### 专业确定方案：AJA ROI-DVI
+
+- 官方型号：`AJA ROI-DVI`。
+- 明确支持 VGA 至 WUXGA（最高 1920x1200@60）的计算机 DVI 输入。
+- 可做分辨率、帧率和宽高比转换，并输出 720p、1080i、1080p 3G-SDI。
+- 官方电源适配器包含在内，提供 DVI 环通输出。
+- 官方 MSRP 为 1399 美元，国内通常是万元级，明显比预算方案贵。
+- [AJA ROI-DVI 官方规格](https://www.aja.com/products/roi-dvi)
+- [京东搜索：AJA ROI-DVI](https://search.jd.com/Search?keyword=AJA%20ROI-DVI)
+- [淘宝搜索：AJA ROI-DVI](https://s.taobao.com/search?q=AJA%20ROI-DVI)
+
+本节设备仅作为必须走 SDI 长距离布线时的备用选择。一般情况下优先采用前文的
+USB DVI 采集方案，设备更容易购买，链路也更短。
+
+### 线材购买入口
+
+- [京东搜索：DVI-D 24+1 公对公 1.5 米](https://search.jd.com/Search?keyword=DVI-D%2024%2B1%20%E5%85%AC%E5%AF%B9%E5%85%AC%201.5%E7%B1%B3)
+- [淘宝搜索：DVI-D 24+1 公对公 1.5 米](https://s.taobao.com/search?q=DVI-D%2024%2B1%20%E5%85%AC%E5%AF%B9%E5%85%AC%201.5%E7%B1%B3)
+- [京东搜索：佳耐美 L-5CFB 3G-SDI BNC 10 米](https://search.jd.com/Search?keyword=%E4%BD%B3%E8%80%90%E7%BE%8E%20L-5CFB%203G-SDI%20BNC%2010%E7%B1%B3)
+- [淘宝搜索：佳耐美 L-5CFB 3G-SDI BNC 10 米](https://s.taobao.com/search?q=%E4%BD%B3%E8%80%90%E7%BE%8E%20L-5CFB%203G-SDI%20BNC%2010%E7%B1%B3)
+
+不要购买 DVI 24+5 转 VGA 模拟线，也不要购买 50 欧姆射频 BNC 线。连接 DeckLink
+需要的是 75 欧姆视频 SDI 成品线。
+
+### 下单前发给转换器卖家的确认文字
+
+```text
+我的输入源是医疗设备的 DVI 数字输出，固定为 SXGA 1280x1024@60Hz，非 HDCP。
+请书面确认该设备可以直接接收这个时序，并主动缩放输出为
+3G-SDI 1920x1080p59.94（Level A）或 1080p60。
+还需要支持 KEEP/保持原比例，允许左右留黑边，不能把 5:4 画面强行拉伸成 16:9。
+请提供对应型号说明书或输入输出时序表截图，并确认电源适配器包含在内。
+```
+
+卖家只回复“支持 1080P”是不够的，必须明确回答输入端支持 `1280x1024@60`，并且
+设备内部有 scaler/缩放和帧率转换功能。
+
+### 明确不要购买
+
+| 物品 | 原因 |
+| --- | --- |
+| Blackmagic Micro Converter HDMI to SDI 3G wPSU | 只有 HDMI 输入，而且不负责把 SXGA 缩放成标准 1080p；它只适合实验室用电脑 HDMI 模拟 SDI |
+| 普通 DVI 转 HDMI 被动线作为正式方案 | 只改变插头，不改变 1280x1024 分辨率；当前 DeckLink 不报告支持 SXGA |
+| 几十元的“DVI 转 SDI”无缩放盒 | 很多只接受标准 720p/1080p DVI 时序，无法接受固定 SXGA 输出 |
+| 无源 BNC 三通 | 会破坏 75 欧姆阻抗和 SDI 信号完整性 |
+
+### 到货后的验收要求
+
+1. 先用一台电脑设置为 `1280x1024@60`，代替达芬奇进行实验室测试。
+2. 转换器设置为 `1080p59.94 Level A`；没有 59.94 时使用 `1080p60`。
+3. 画面比例使用 `KEEP`，允许左右黑边，不能拉伸手术画面。
+4. 连续运行至少 8 小时，检查黑屏、掉帧、颜色异常、重连恢复和设备温度。
+5. 再连接本机 DeckLink 和 Electron 应用，验证实时预览与分析不会积压。
+6. 通过医院设备科电气安全审核后，才能带入现场使用；该链路只能接辅助视频输出，
+   不能串入医生主显示链路。
 
 ## 参考资料
 

@@ -27,6 +27,21 @@ if command -v curl >/dev/null 2>&1; then
     fi
 fi
 
+if [ -e "/dev/blackmagic/io0" ]; then
+    echo "[Capture] DeckLink driver node detected: /dev/blackmagic/io0"
+    if ! gst-inspect-1.0 decklinkvideosrc >/dev/null 2>&1; then
+        echo "WARN: DeckLink hardware exists but the GStreamer decklinkvideosrc plugin is unavailable."
+    fi
+    echo "[Capture] Preflight: $ROOT_DIR/scripts/decklink_preflight.sh --connection hdmi --mode auto --wait 8"
+else
+    echo "WARN: /dev/blackmagic/io0 is missing; DeckLink capture will not be available."
+fi
+
+if [ "${SURGR1_RUN_CAPTURE_PREFLIGHT:-0}" = "1" ]; then
+    echo "[Capture] Running optional HDMI preflight before Electron..."
+    "$ROOT_DIR/scripts/decklink_preflight.sh" --connection hdmi --mode auto --wait 6 || true
+fi
+
 export ELECTRON_DISABLE_SANDBOX=1
 export VITE_DEV_SERVER_URL="${VITE_DEV_SERVER_URL:-http://127.0.0.1:5133}"
 export VITE_DEFAULT_SOURCE="${VITE_DEFAULT_SOURCE:-capture}"
