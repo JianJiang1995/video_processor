@@ -101,7 +101,10 @@ def main() -> None:
     parser.add_argument("--upstream", action="append", required=True)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    web.run_app(build_app(args.upstream, args.timeout), host=args.host, port=args.port)
+    # Cancel the upstream request when the API caller times out/disconnects.
+    # Otherwise abandoned event-summary jobs keep occupying the VLM queue.
+    web.run_app(build_app(args.upstream, args.timeout), host=args.host, port=args.port,
+                handler_cancellation=True)
 
 
 if __name__ == "__main__":

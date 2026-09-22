@@ -17,16 +17,6 @@
 
     <!-- Main Video Analyzer View -->
     <template v-else>
-      <!-- Nav Rail (left) -->
-      <NavRail
-        :activeView="navActiveView"
-        :isAnalyzing="isProcessing"
-        :summaryCount="summaries.length"
-        :summaryReady="summaryReady"
-        @navigate="handleNavigation"
-        @toggleAnalyze="toggleAnalysis"
-      />
-
       <!-- Center + Right layout -->
       <div class="app-main-wrapper">
         <!-- Header -->
@@ -101,6 +91,7 @@
                 :loopWindow="loopWindow"
                 :streamEnded="streamEnded"
                 :resumeNonce="playbackResumeNonce"
+                :seekNonce="playbackSeekNonce"
                 :windowDuration="windowDuration"
                 @timeupdate="handleTimeUpdate"
                 @play="handlePlay"
@@ -218,28 +209,32 @@
                   @pointerdown.stop
                   @click="handleEventNodeClick(node)"
                 >
-                  <div class="event-node-head">
-                    <span class="event-node-kind">{{ eventNodeTypeLabel(node.type) }}</span>
-                    <span class="event-node-time">{{ eventNodeTimeLabel(node) }}</span>
-                  </div>
-                  <div class="event-node-thumb">
-                    <img
-                      v-if="eventNodeThumbnail(node)"
-                      :src="eventNodeThumbnail(node)"
-                      alt=""
-                      @error="handleEventNodeThumbError(node, $event)"
-                    />
-                    <div
-                      v-else
-                      class="bcs-card-thumb-placeholder"
-                      :class="{ loading: eventNodeThumbLoading(node) }"
-                    ></div>
-                  </div>
-                  <div class="event-node-title">{{ node.title }}</div>
-                  <div class="event-node-summary">{{ node.summary }}</div>
-                  <div class="event-node-meta">
-                    <span>{{ eventNodeWindowLabel(node) }}</span>
-                    <span v-if="node.confidence != null">{{ t('app.eventConfidence', { value: Math.round(node.confidence * 100) }) }}</span>
+                  <div class="event-node-content">
+                    <div class="event-node-thumb">
+                      <img
+                        v-if="eventNodeThumbnail(node)"
+                        :src="eventNodeThumbnail(node)"
+                        alt=""
+                        @error="handleEventNodeThumbError(node, $event)"
+                      />
+                      <div
+                        v-else
+                        class="bcs-card-thumb-placeholder"
+                        :class="{ loading: eventNodeThumbLoading(node) }"
+                      ></div>
+                    </div>
+                    <div class="event-node-copy">
+                      <div class="event-node-head">
+                        <span class="event-node-kind">{{ eventNodeTypeLabel(node.type) }}</span>
+                        <span class="event-node-time">{{ eventNodeTimeLabel(node) }}</span>
+                      </div>
+                      <div class="event-node-title">{{ node.title }}</div>
+                      <div class="event-node-summary">{{ node.summary }}</div>
+                      <div class="event-node-meta">
+                        <span>{{ eventNodeWindowLabel(node) }}</span>
+                        <span v-if="node.confidence != null">{{ t('app.eventConfidence', { value: Math.round(node.confidence * 100) }) }}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -310,9 +305,23 @@
             :sessionId="currentSession?.session_id || ''"
             :isProcessing="isProcessing"
             @tts="handleTTS"
-            @seekToWindow="handleSeekToWindow"
+            @seekToWindow="openReviewWindow"
+            @review="openReview"
             @chatMessage="handleVoiceMessage"
           />
+
+          <div
+            class="layout-corner-resize-handle"
+            :style="{
+              right: (rightPanelWidth + 3) + 'px',
+              bottom: (bottomStripHeight + 3) + 'px'
+            }"
+            :title="t('app.resizeCornerTitle')"
+            @pointerdown="startCornerResize"
+            @dblclick="resetMainLayout"
+          >
+            <span></span>
+          </div>
         </main>
       </div>
 
@@ -353,6 +362,9 @@
         :windowDuration="windowDuration"
         @back="handleOverviewBack"
         @seekToWindow="handleOverviewSeekToWindow"
+        :reviewJobs="reviewJobs"
+        :reviewBusy="reviewBusy"
+        @reanalyze="reanalyzeWindow"
       />
 
       <ClinicalReportView
@@ -361,6 +373,19 @@
         :language="language"
         :initialReport="replayReport"
         @back="handleReportBack"
+      />
+      <VideoReviewModal
+        v-if="reviewRange && currentSession"
+        :session="currentSession"
+        :range="reviewRange"
+        :summaries="localizedSummaries"
+        :mode="mode"
+        :windowDuration="windowDuration"
+        @close="reviewRange = null"
+        @review="openReview"
+        :reviewJobs="reviewJobs"
+        :reviewBusy="reviewBusy"
+        @reanalyze="reanalyzeWindow"
       />
     </template>
   </div>
@@ -380,9 +405,11 @@ import VoiceChat from './components/VoiceChat.vue'
 import FrameAnalysisPopup from './components/FrameAnalysisPopup.vue'
 import WindowOverview from './components/WindowOverview.vue'
 import ClinicalReportView from './components/ClinicalReportView.vue'
-import NavRail from './components/NavRail.vue'
 import RightPanel from './components/RightPanel.vue'
+import VideoReviewModal from './components/VideoReviewModal.vue'
+import { resolveReviewRange } from './utils/chatTimestamps.js'
 import { useI18n } from './i18n.js'
+import { captureLocalVideoThumbnail } from './utils/localVideoThumbnail.js'
 
 const { language, setLanguage, t } = useI18n()
 
@@ -397,6 +424,47 @@ const duration = ref(0)
 const isPlaying = ref(false)
 const volume = ref(0.8)
 const summaries = ref([])
+const reviewRange = ref(null)
+const reviewJobs = reactive({})
+const reviewBusy = computed(() => Object.values(reviewJobs).some(job => job.status === 'pending'))
+const reanalyzeWindow = async windowId => {
+  const sid = currentSession.value?.session_id
+  if (!sid || reviewBusy.value) return
+  const key = `${sid}:${windowId}`
+  reviewJobs[key] = { status: 'pending' }
+  try {
+    const { data } = await axios.post(apiUrl(`/api/analysis/reanalyze-window/${encodeURIComponent(sid)}/${windowId}`), {}, { timeout: 105000 })
+    // This task belongs to the application, not the modal. Closing the modal
+    // does not cancel a successful save or update a different video's records.
+    if (currentSession.value?.session_id === sid) {
+      upsertSummary(data)
+      if (replayMode.value) {
+        const index = replayAllSummaries.value.findIndex(s => s.window_id === windowId)
+        if (index >= 0) replayAllSummaries.value[index] = cleanSummaryPayload(data)
+      }
+      replayReport.value = null
+      if (language.value === 'en') requestSummaryTranslation(data)
+    }
+    reviewJobs[key] = { status: 'done' }
+  } catch (error) {
+    const code = error.response?.data?.detail
+    const messages = {
+      review_busy: 'review.busy', review_frames_unavailable: 'review.noFrames',
+      review_timeout: 'review.timeout', review_invalid_result: 'review.invalidResult',
+      review_local_only: 'review.localOnly', review_window_missing: 'review.missingWindow',
+      review_session_missing: 'review.missingWindow',
+    }
+    reviewJobs[key] = { status: 'error', error: messages[code] || (error.code === 'ECONNABORTED' ? 'review.timeout' : 'review.failed') }
+  }
+}
+const openReview = reference => {
+  reviewRange.value = resolveReviewRange(reference, summaries.value)
+}
+const openReviewWindow = windowId => {
+  const summary = summaries.value.find(s => s.window_id === windowId)
+  if (summary) openReview(summary)
+}
+watch(() => currentSession.value?.session_id, () => { reviewRange.value = null })
 const replayMode = ref(false)
 const replayAllSummaries = ref([])
 const replayAllEvents = ref([])
@@ -428,6 +496,7 @@ const playbackResumeNonce = ref(0)
 let isLoopSeek = false
 let detachedPlaybackWallStart = null
 let detachedPlaybackBaseTime = 0
+let detachedPlaybackTimer = null
 const sam3Time = ref(null)  // SAM3 frame timestamp (may differ from currentTime due to processing delay)
 
 // New E3 layout state
@@ -437,14 +506,20 @@ const navActiveView = ref('analysis')  // Nav rail active view
 const viewportWidth = ref(window.innerWidth)
 const viewportHeight = ref(window.innerHeight)
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
-const RIGHT_PANEL_STORAGE_KEY = 'surg_right_panel_width_v2'
-const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v3'
-const minRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.26), 480, 540)
-const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.28), 500, 680)
-const maxRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.42), 680, 960)
-const minBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.24), 360, 420)
-const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.30), 430, 520)
-const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.50), 520, 700)
+const RIGHT_PANEL_STORAGE_KEY = 'surg_right_panel_width_v3'
+const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v5'
+const minRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.21), 390, 450)
+const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.24), 430, 560)
+const maxRightPanelWidth = () => Math.max(
+  minRightPanelWidth(),
+  Math.min(
+    clamp(Math.round(viewportWidth.value * 0.42), 680, 960),
+    viewportWidth.value - 820
+  )
+)
+const minBottomStripHeight = () => 250
+const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.29), 260, 300)
+const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.46), 420, 600)
 const rightPanelWidth = ref(clamp(
   Number(localStorage.getItem(RIGHT_PANEL_STORAGE_KEY)) || defaultRightPanelWidth(),
   minRightPanelWidth(),
@@ -560,6 +635,23 @@ const fetchBottomThumbnail = async (summary) => {
   const startTime = Number(summary.start_time ?? summary.window_start ?? 0)
   const endTime = Number(summary.end_time ?? summary.window_end ?? startTime + windowDuration.value)
   const midTime = Math.max(0, (startTime + endTime) / 2)
+
+  if (replayMode.value && currentSession.value?.replay_video_url) {
+    try {
+      const thumbnail = await captureLocalVideoThumbnail(
+        currentSession.value.replay_video_url,
+        midTime,
+        { width: 420, quality: 0.74 }
+      )
+      if (currentSession.value?.session_id === sid) {
+        bottomThumbnails[wid] = thumbnail
+        delete bottomThumbRetries[wid]
+      }
+      return
+    } catch (error) {
+      console.warn(`[BottomStrip] local replay thumbnail failed for window ${wid}:`, error.message)
+    }
+  }
 
   const setThumbnail = (frame) => {
     if (!frame || currentSession.value?.session_id !== sid) return false
@@ -764,11 +856,14 @@ const upsertSummary = (payload) => {
 
   const existingIndex = summaries.value.findIndex(s => s.window_id === data.window_id)
   if (existingIndex >= 0) {
+    const previous = summaries.value[existingIndex]
+    if (previous.others?.manual_review && !data.others?.manual_review) return previous
+    if (previous.others?.manual_review?.completed_at > (data.others?.manual_review?.completed_at || '')) return previous
     summaries.value[existingIndex] = {
       ...summaries.value[existingIndex],
       ...data,
       summary: data.summary || summaries.value[existingIndex].summary,
-      summary_en: data.summary_en || summaries.value[existingIndex].summary_en,
+      summary_en: data.others?.manual_review ? data.summary_en : (data.summary_en || summaries.value[existingIndex].summary_en),
     }
   } else {
     const arr = summaries.value
@@ -1022,6 +1117,8 @@ const startDetachedPlaybackClock = () => {
     Number(currentTime.value || 0),
     Number(loopReturnTime.value || 0)
   )
+  clearInterval(detachedPlaybackTimer)
+  detachedPlaybackTimer = setInterval(advanceDetachedPlaybackClock, 250)
 }
 
 const advanceDetachedPlaybackClock = () => {
@@ -1030,11 +1127,14 @@ const advanceDetachedPlaybackClock = () => {
   const nextTime = Math.min(maxPlayableTime(), Math.max(0, detachedPlaybackBaseTime + elapsed))
   livePlaybackTime.value = nextTime
   currentTime.value = nextTime
+  sendPlaybackPosition(nextTime)
   return nextTime
 }
 
 const stopDetachedPlaybackClock = () => {
   const nextTime = advanceDetachedPlaybackClock()
+  clearInterval(detachedPlaybackTimer)
+  detachedPlaybackTimer = null
   detachedPlaybackWallStart = null
   detachedPlaybackBaseTime = 0
   return nextTime
@@ -1187,6 +1287,7 @@ const goHome = () => {
     dragDebounceTimer.value = null
   }
   
+  stopDetachedPlaybackClock()
   // 8. Reset all state
   showSam3.value = false
   currentView.value = 'select'
@@ -1222,6 +1323,16 @@ const goHome = () => {
 // Video handlers
 let lastAcceptedTimeUpdate = 0
 let lastPositionHeartbeat = 0
+const sendPlaybackPosition = (time) => {
+  const now = performance.now()
+  if (!currentSession.value || replayMode.value || mode.value !== 'stream'
+      || now - lastPositionHeartbeat < 1000) return
+  lastPositionHeartbeat = now
+  axios.post(`/api/video/control/${currentSession.value.session_id}`, {
+    action: 'position', position: time
+  }).catch(() => {})
+}
+const playbackSeekNonce = ref(0)
 const handleTimeUpdate = (time) => {
   const now = performance.now()
   if (mode.value === 'stream' && now - lastAcceptedTimeUpdate < 250) {
@@ -1251,13 +1362,7 @@ const handleTimeUpdate = (time) => {
   if (mode.value === 'stream') {
     livePlaybackTime.value = time
     duration.value = Math.max(duration.value || 0, time)
-    if (currentSession.value && now - lastPositionHeartbeat >= 1000) {
-      lastPositionHeartbeat = now
-      axios.post(`/api/video/control/${currentSession.value.session_id}`, {
-        action: 'position',
-        position: time
-      }).catch(() => {})
-    }
+    sendPlaybackPosition(time)
     refreshCurrentWindowSummary(time)
   }
   
@@ -1326,12 +1431,6 @@ const handlePause = () => {
 }
 
 const handleVideoPause = () => {
-  // The simulator preview uses a latest-frame WebSocket path for recording.
-  // Ignore renderer/native-video pause events in this mode; the bottom control
-  // bar remains the explicit user pause path.
-  if (mode.value === 'stream' && isSimulatorSession.value && !loopWindow.value) {
-    return
-  }
   handlePause()
 }
 
@@ -1346,7 +1445,10 @@ const handleVideoEnded = () => {
 }
 
 const handleSeek = (time) => {
+  if (loopWindow.value) stopDetachedPlaybackClock()
   currentTime.value = time
+  livePlaybackTime.value = time
+  playbackSeekNonce.value += 1
   if (replayMode.value) syncReplayTimeline(time)
   
   // If this is a manual seek (not triggered by loop), exit loop mode
@@ -1805,7 +1907,6 @@ const EVENT_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电�
 const EVENT_NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
 const EVENT_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野|起雾|雾|烟雾|模糊|镜头|体外|手术室|腹腔外|套管口|腹壁外)/
 const EVENT_RISK_RE = /(CVS未达成|安全视野|剪刀|scissors|大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
-const SCISSORS_ACTIVITY_RE = /(?:剪刀|电剪|scissors).{0,20}(?:出现|可见|进入|操作|接触|靠近|分离|剪切|剪断|切断)|(?:剪切|剪断|切断).{0,16}(?:胆囊管|胆囊动脉|cystic duct|cystic artery)/i
 const FOG_ACTIVE_RE = /(镜头)?(?:起雾|雾气|烟雾|烟雾弥漫|水汽|模糊|视野不清|视野受遮挡|视野受限|fogging|foggy|fog (?:obscures|obscured|limits|blocks)|smoke|smoky|haze|hazy|blur(?:red|ry)?|obscur(?:ed|ing))/i
 const FOG_RESOLVED_RE = /(雾(?:已|已经)?(?:去除|清除|消散|解除)|烟雾(?:已|已经)?(?:清除|消散)|视野(?:恢复|转为|变得)(?:清晰|可辨)|镜头(?:恢复|转为|变得)清晰|fog (?:cleared|resolved)|smoke (?:cleared|resolved)|view (?:restored|clear))/i
 const OUT_OF_BODY_RE = /(镜头|腹腔镜|视野|画面).{0,12}(?:移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外|切换至手术室|手术室场景)|(?:体外|腹腔外|套管口|腹壁外|手术室场景|器械台|trocar|trocar outside|outside the body|outside-body|extracorporeal|operating room scene|extra-abdominal)/i
@@ -1952,49 +2053,6 @@ const cvsStatusNode = computed(() => {
   }
 })
 
-const summaryScissorsFlags = (summary) => {
-  const text = `${summary?.summary || ''} ${summary?.summary_en || ''}`
-  const visual = summary?.others?.visual_gpt || summary?.others?.experts?.open_vlm?.visual || {}
-  const scissors = visual?.scissors || {}
-  const confidence = Number(scissors.confidence || 0)
-  const visualScissors = (
-    (Boolean(scissors.visible) || Boolean(scissors.cutting))
-    && (!confidence || confidence >= 0.35)
-  )
-  return visualScissors || SCISSORS_ACTIVITY_RE.test(text)
-}
-
-const scissorsBeforeCvsNode = computed(() => {
-  if (!cvsStatusNode.value || cvsStatusNode.value.severity !== 'critical') return null
-  const scissorsSummaries = summaries.value.filter(summaryScissorsFlags)
-  if (!scissorsSummaries.length) return null
-
-  const first = scissorsSummaries[0]
-  const latest = scissorsSummaries[scissorsSummaries.length - 1]
-  const windowIds = scissorsSummaries
-    .map(s => Number(s.window_id))
-    .filter(id => Number.isFinite(id))
-  if (!windowIds.length) return null
-
-  const zh = language.value !== 'en'
-  return {
-    id: 'event_scissors_before_cvs',
-    type: 'risk',
-    severity: 'critical',
-    title: zh ? 'CVS未达成时出现剪刀操作' : 'Scissors before CVS confirmation',
-    summary: zh
-      ? '检测到剪刀操作，但CVS尚未达成，剪断胆囊管或胆囊动脉前需继续核查。'
-      : 'Scissors activity is detected before CVS confirmation; verify safety before dividing the cystic duct or artery.',
-    window_ids: [...new Set(windowIds)],
-    representative_window_id: Number(latest.window_id),
-    start_time: Number(first.start_time ?? first.window_start ?? 0),
-    end_time: Number(latest.end_time ?? latest.window_end ?? 0),
-    confidence: 0.76,
-    source: 'scissors-cvs-status',
-    pinned: true,
-  }
-})
-
 const summaryVisibilityFlags = (summary) => {
   const text = `${summary?.summary || ''} ${summary?.summary_en || ''}`
   const visual = summary?.others?.visual_gpt || summary?.others?.experts?.open_vlm?.visual || {}
@@ -2083,11 +2141,9 @@ const isFogVisibilityNode = (node) => {
 
 const sortedEventNodes = computed(() => {
   const nodes = [
-    ...(scissorsBeforeCvsNode.value ? [scissorsBeforeCvsNode.value] : []),
     ...(cvsStatusNode.value ? [cvsStatusNode.value] : []),
     ...(fogStatusNode.value ? [fogStatusNode.value] : []),
     ...eventNodes.value.filter(node => {
-      if (scissorsBeforeCvsNode.value && /CVS未达成时出现剪刀操作|Scissors before CVS/i.test(`${node.title || ''} ${node.summary || ''}`)) return false
       if (cvsStatusNode.value && node.type === 'cvs') return false
       if (fogStatusNode.value && isFogVisibilityNode(node)) return false
       return true
@@ -2268,7 +2324,8 @@ const handleEventNodeClick = (node) => {
 const requestSummaryTranslation = async (summary) => {
   const s = cleanSummaryPayload(summary)
   if (!s?.summary || s.summary_en || !currentSession.value) return
-  const key = `${currentSession.value.session_id}:${s.window_id}:en`
+  const sid = currentSession.value.session_id
+  const key = `${sid}:${s.window_id}:en:${s.summary}`
   if (translationInFlight.has(key)) return
   translationInFlight.add(key)
   try {
@@ -2281,7 +2338,7 @@ const requestSummaryTranslation = async (summary) => {
     })
     if (res.data?.text) {
       const idx = summaries.value.findIndex(item => item.window_id === s.window_id)
-      if (idx >= 0) {
+      if (currentSession.value?.session_id === sid && idx >= 0 && summaries.value[idx].summary === s.summary) {
         summaries.value[idx] = {
           ...summaries.value[idx],
           summary_en: cleanUserSummaryText(res.data.text),
@@ -2379,6 +2436,39 @@ const startVideoResize = (event) => {
   window.addEventListener('pointerup', onUp, { once: true })
 }
 
+const startCornerResize = (event) => {
+  event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  const startX = event.clientX
+  const startY = event.clientY
+  const startRightWidth = rightPanelWidth.value
+  const startBottomHeight = bottomStripHeight.value
+  document.body.classList.add('is-resizing-layout')
+
+  const onMove = (e) => {
+    rightPanelWidth.value = clamp(
+      startRightWidth - (e.clientX - startX),
+      minRightPanelWidth(),
+      maxRightPanelWidth()
+    )
+    bottomStripHeight.value = clamp(
+      startBottomHeight - (e.clientY - startY),
+      minBottomStripHeight(),
+      maxBottomStripHeight()
+    )
+  }
+  const onUp = () => {
+    localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth.value))
+    localStorage.setItem(BOTTOM_STRIP_STORAGE_KEY, String(bottomStripHeight.value))
+    document.body.classList.remove('is-resizing-layout')
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp, { once: true })
+}
+
 const resetRightPanelWidth = () => {
   rightPanelWidth.value = defaultRightPanelWidth()
   localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(rightPanelWidth.value))
@@ -2387,6 +2477,11 @@ const resetRightPanelWidth = () => {
 const resetBottomStripHeight = () => {
   bottomStripHeight.value = defaultBottomStripHeight()
   localStorage.setItem(BOTTOM_STRIP_STORAGE_KEY, String(bottomStripHeight.value))
+}
+
+const resetMainLayout = () => {
+  resetRightPanelWidth()
+  resetBottomStripHeight()
 }
 
 const handleViewportResize = () => {
@@ -2456,10 +2551,7 @@ const toggleAnalysis = () => {
 
 const handleBottomCardClick = (summary) => {
   if (bottomScrollClickSuppressed.value) return
-  selectedWindowId.value = summary.window_id
-  rightPanelTab.value = 'analysis'
-  // Also seek to this window
-  handleSeekToWindow(summary.window_id)
+  openReview(summary)
 }
 
 const clearBottomScrollDragHandlers = () => {
@@ -3142,6 +3234,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  clearInterval(detachedPlaybackTimer)
   // Abort all pending session requests
   abortAllSessionRequests()
   
@@ -3184,7 +3277,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* E3 Layout: NavRail + Main Wrapper */
+/* Main application layout */
 .app-container {
   display: flex;
   /* 100vh 而非 min-height：整个 app 锁在视口内，底部"历史窗口分析"条不再掉到屏幕下方 */
@@ -3198,6 +3291,62 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+}
+
+.app-main {
+  position: relative;
+}
+
+.app-header {
+  min-height: 36px;
+  padding: 3px 10px;
+  flex: 0 0 auto;
+}
+
+.logo {
+  gap: 7px;
+}
+
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+}
+
+.logo-text {
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.header-center {
+  gap: 10px;
+  min-width: 0;
+}
+
+.mode-badge {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.header-session-id,
+.session-name {
+  font-size: 12px;
+}
+
+.header-actions {
+  gap: 7px;
+}
+
+.header-actions .btn {
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.language-option {
+  min-width: 48px;
+  padding: 5px 8px;
+  font-size: 12px;
 }
 
 .video-resize-handle {
@@ -3216,12 +3365,15 @@ onUnmounted(() => {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 108px;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--bg-elevated);
+  width: 76px;
+  height: 10px;
+  border: 1px solid var(--border-medium);
+  border-radius: 5px;
+  background-color: var(--bg-elevated);
+  background-image: radial-gradient(circle, var(--text-tertiary) 1.3px, transparent 1.5px);
+  background-size: 8px 8px;
   transform: translate(-50%, -50%);
-  box-shadow: 0 -4px 0 var(--bg-elevated), 0 4px 0 var(--bg-elevated);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
 }
 
 .video-resize-handle:hover {
@@ -3229,8 +3381,9 @@ onUnmounted(() => {
 }
 
 .video-resize-handle:hover::before {
-  background: var(--accent-primary);
-  box-shadow: 0 -4px 0 var(--accent-primary), 0 4px 0 var(--accent-primary);
+  border-color: var(--accent-primary);
+  background-color: rgba(240, 160, 48, 0.18);
+  background-image: radial-gradient(circle, var(--accent-primary) 1.3px, transparent 1.5px);
 }
 
 .right-panel-resize-handle {
@@ -3249,12 +3402,15 @@ onUnmounted(() => {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 4px;
-  height: 108px;
-  border-radius: 999px;
-  background: var(--bg-elevated);
+  width: 10px;
+  height: 76px;
+  border: 1px solid var(--border-medium);
+  border-radius: 5px;
+  background-color: var(--bg-elevated);
+  background-image: radial-gradient(circle, var(--text-tertiary) 1.3px, transparent 1.5px);
+  background-size: 8px 8px;
   transform: translate(-50%, -50%);
-  box-shadow: -4px 0 0 var(--bg-elevated), 4px 0 0 var(--bg-elevated);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
 }
 
 .right-panel-resize-handle:hover {
@@ -3262,12 +3418,66 @@ onUnmounted(() => {
 }
 
 .right-panel-resize-handle:hover::before {
+  border-color: var(--accent-primary);
+  background-color: rgba(240, 160, 48, 0.18);
+  background-image: radial-gradient(circle, var(--accent-primary) 1.3px, transparent 1.5px);
+}
+
+.layout-corner-resize-handle {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  z-index: 180;
+  cursor: nwse-resize;
+  border: 1px solid var(--border-medium);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+  display: grid;
+  place-items: center;
+  touch-action: none;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.layout-corner-resize-handle span,
+.layout-corner-resize-handle span::before,
+.layout-corner-resize-handle span::after {
+  display: block;
+  width: 13px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--text-tertiary);
+  transform: rotate(-45deg);
+}
+
+.layout-corner-resize-handle span {
+  position: relative;
+}
+
+.layout-corner-resize-handle span::before,
+.layout-corner-resize-handle span::after {
+  content: '';
+  position: absolute;
+  left: 0;
+}
+
+.layout-corner-resize-handle span::before { top: -5px; }
+.layout-corner-resize-handle span::after { top: 5px; }
+
+.layout-corner-resize-handle:hover {
+  border-color: var(--accent-primary);
+  background: rgba(240, 160, 48, 0.16);
+}
+
+.layout-corner-resize-handle:hover span,
+.layout-corner-resize-handle:hover span::before,
+.layout-corner-resize-handle:hover span::after {
   background: var(--accent-primary);
-  box-shadow: -4px 0 0 var(--accent-primary), 4px 0 0 var(--accent-primary);
 }
 
 :global(body.is-resizing-panel),
-:global(body.is-resizing-video) {
+:global(body.is-resizing-video),
+:global(body.is-resizing-layout) {
   user-select: none;
 }
 
@@ -3277,6 +3487,10 @@ onUnmounted(() => {
 
 :global(body.is-resizing-video *) {
   cursor: row-resize !important;
+}
+
+:global(body.is-resizing-layout *) {
+  cursor: nwse-resize !important;
 }
 
 .stream-setup {
@@ -3294,12 +3508,12 @@ onUnmounted(() => {
 .header-center {
   display: flex;
   align-items: center;
-  gap: 1.1rem;
+  gap: 8px;
 }
 
 .mode-badge {
-  font-size: 0.9rem;
-  padding: 0.42rem 0.85rem;
+  font-size: 12px;
+  padding: 3px 7px;
   border-radius: var(--radius-sm);
   background: var(--bg-tertiary);
 }
@@ -3325,7 +3539,7 @@ onUnmounted(() => {
 }
 
 .session-name {
-  font-size: 1rem;
+  font-size: 12px;
   color: var(--text-secondary);
   max-width: 200px;
   overflow: hidden;
@@ -3340,18 +3554,18 @@ onUnmounted(() => {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 6px;
 }
 
 .summary-ready-btn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 30px;
   border: 1px solid rgba(48, 196, 126, 0.72);
   background: rgba(36, 151, 94, 0.18);
   color: #79e2ad;
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -3364,7 +3578,7 @@ onUnmounted(() => {
 .language-switch {
   display: inline-flex;
   align-items: center;
-  padding: 3px;
+  padding: 2px;
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -3372,15 +3586,15 @@ onUnmounted(() => {
 }
 
 .language-option {
-  min-width: 64px;
-  padding: 0.38rem 0.7rem;
+  min-width: 48px;
+  padding: 4px 7px;
   border: 0;
   border-radius: calc(var(--radius-sm) - 2px);
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
   font-family: var(--font-display);
-  font-size: 0.85rem;
+  font-size: 12px;
   line-height: 1;
   transition: background 0.15s, color 0.15s;
 }

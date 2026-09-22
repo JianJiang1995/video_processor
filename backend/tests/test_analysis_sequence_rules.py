@@ -24,11 +24,80 @@ from backend.routers.analysis import (
     _strip_unsupported_stapler_wording,
     _strip_unverified_target_specific_clip_claims,
 )
-from backend.services.expert_fusion import _detect_blue_bipolar_forceps
+from backend.services.expert_fusion import _detect_blue_bipolar_forceps, _aggregate_yolo
 import numpy as np
 
 
 class AnalysisSequenceRulesTest(unittest.TestCase):
+    def test_blue_clip_color_cannot_override_consistent_hook_detections(self):
+        experts = {'phase': {'label': 'calot_triangle_dissection'},
+                   'yolo': {'tools': [{'label': 'hook', 'frames_seen': 12}]},
+                   'blue_bipolar_forceps': {'detected': True, 'confidence': .93},
+                   'triplet': {'instrument': [{'label': 'bipolar', 'confidence': .995}],
+                               'triplet': [{'label': '[bipolar]-[dissect]-[liver]', 'confidence': .99}]}}
+        self.assertFalse(_bipolar_forceps_evidence(experts)['resolved'])
+        text = _expert_snapshot_summary(experts, 0, 5, 12)
+        self.assertIn('电凝钩', text)
+        self.assertNotIn('双极电凝钳', text)
+
+    def test_multiple_boxes_in_one_frame_are_not_multiple_frame_confirmations(self):
+        result = _aggregate_yolo([
+            [{"label": "scissors"}] * 4,
+            [{"label": "hook"}, {"label": "hook"}],
+            [{"label": "hook"}],
+        ])
+        self.assertEqual({t['label']: t['frames_seen'] for t in result['tools']},
+                         {'scissors': 1, 'hook': 2})
+        self.assertEqual(result['total_detections'], 7)
+
+    def test_bipolar_presence_without_action_does_not_invent_dissection(self):
+        experts = {'phase': {'label': 'calot_triangle_dissection'},
+                   'yolo': {'tools': [{'label': 'bipolar', 'frames_seen': 10}]},
+                   'triplet': {}}
+        text = _expert_snapshot_summary(experts, 25, 30, 12)
+        self.assertNotIn('双极电凝钳夹持', text)
+        self.assertNotIn('反复开合', text)
+
+    def test_triplet_bipolar_needs_detector_or_review_support(self):
+        experts = {'phase': {'label': 'calot_triangle_dissection'},
+                   'yolo': {'tools': [{'label': 'hook', 'frames_seen': 12}]},
+                   'triplet': {'triplet': [
+                       {'label': '[bipolar]-[retract]-[cystic_duct]', 'confidence': .99}]}}
+        self.assertNotIn('双极电凝钳', _expert_snapshot_summary(experts, 55, 60, 12))
+        experts['yolo']['tools'].append({'label': 'bipolar', 'frames_seen': 6})
+        self.assertIn('双极电凝钳', _expert_snapshot_summary(experts, 55, 60, 12))
+
+    def test_full_inventory_can_remove_stale_bipolar_but_preserves_coexistence(self):
+        text = '双极电凝钳牵拉胆囊体。电凝钩分离局部组织。'
+        review = {'success': True, 'classification': 'electrocautery_hook',
+                  'tip_geometry': 'single_hook', 'confidence': .95,
+                  'visible_instruments': ['electrocautery_hook', 'grasper']}
+        filtered = _strip_focused_scissors_instrument_conflicts(text, {'clip_secondary_review': review})
+        self.assertNotIn('双极', filtered)
+        self.assertIn('电凝钩', filtered)
+        review['visible_instruments'].append('bipolar')
+        self.assertIn('双极', _strip_focused_scissors_instrument_conflicts(text, {'clip_secondary_review': review}))
+        del review['visible_instruments']
+        self.assertIn('双极', _strip_focused_scissors_instrument_conflicts(text, {'clip_secondary_review': review}))
+
+    def test_tool_presence_does_not_invent_clipping_or_cutting(self):
+        for tool in ('clipper', 'scissors'):
+            experts = {'phase': {'label': 'clipping_cutting'},
+                       'yolo': {'tools': [{'label': tool, 'frames_seen': 12}]},
+                       'triplet': {}}
+            summary = _expert_snapshot_summary(experts, 50, 55, 12)
+            self.assertNotIn('钛夹钳夹闭胆囊管', summary)
+            self.assertNotIn('剪刀正在切断胆囊管', summary)
+
+    def test_triplet_clipper_claim_requires_detector_agreement(self):
+        experts = {'phase': {'label': 'calot_triangle_dissection'},
+                   'yolo': {'tools': [{'label': 'hook', 'frames_seen': 12}]},
+                   'triplet': {'triplet': [
+                       {'label': '[clipper]-[clip]-[cystic_duct]', 'confidence': .8}]}}
+        self.assertNotIn('钛夹钳夹闭', _expert_snapshot_summary(experts, 50, 55, 12))
+        experts['yolo']['tools'] = [{'label': 'clipper', 'frames_seen': 12}]
+        self.assertIn('钛夹钳夹闭胆囊管', _expert_snapshot_summary(experts, 50, 55, 12))
+
     def test_focused_active_applier_can_start_clipping_before_phase_model(self):
         visual = {
             "clip_secondary_review": {
@@ -72,6 +141,14 @@ class AnalysisSequenceRulesTest(unittest.TestCase):
                 "clamped_on_tissue": False,
             }
         }
+        self.assertFalse(_focused_clip_action_confirmed(visual))
+
+    def test_static_clip_does_not_advance_irreversible_phase(self):
+        visual = {"clip_secondary_review": {
+            "success": True, "classification": "clip", "confidence": .99,
+            "independent_from_instrument": True, "clamped_on_tissue": True,
+            "motion": "clip_release",
+        }}
         self.assertFalse(_focused_clip_action_confirmed(visual))
 
     def test_phase_does_not_regress_after_clipping_started(self):

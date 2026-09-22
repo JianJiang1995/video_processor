@@ -6,6 +6,7 @@ import asyncio
 import time
 import logging
 import threading
+import math
 import urllib.request
 import subprocess
 import glob
@@ -25,6 +26,7 @@ from ..database import get_db, create_video_session, get_video_session, get_all_
 from ..services.video_processor import VideoProcessor, ProcessingState
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
+from ..services.playback_proxy import request_preview
 from ..services.decklink_capture import (
     DeckLinkCapture,
     build_decklink_uri,
@@ -32,9 +34,16 @@ from ..services.decklink_capture import (
     parse_decklink_uri,
 )
 from ..services.local_video_source import (
+    INPUT_LAYOUT_FULL,
+    PacedVideoCapture,
     SIMULATOR_URI,
+    apply_input_layout_to_image,
     get_simulator_source,
+    layout_output_dimensions,
+    normalize_input_layout,
     resolve_video_source,
+    with_input_layout,
+    wrap_capture_for_layout,
 )
 from ..config import settings
 
@@ -106,8 +115,8 @@ class DisplayStreamState:
         resolved = resolve_video_source(self.video_path)
         if resolved.is_simulator and resolved.source != self.video_path:
             logger.info("[DisplayStream] Using simulator source file directly: %s", resolved.source)
-            return resolved.source, True, float(resolved.fps or self.fps)
-        return resolved.source, False, self.fps
+            return self.video_path, True, float(resolved.fps or self.fps)
+        return self.video_path, False, self.fps
 
     def start(self):
         with self.lock:
@@ -148,13 +157,16 @@ class DisplayStreamState:
         cap = None
         try:
             source_path, self._local_file_mode, source_fps = self._resolve_source()
-            cap = _open_live_video_source(source_path)
+            cap = _open_live_video_source(source_path, sample_fps=self.fps)
             if not cap.isOpened():
                 logger.error(f"[DisplayStream] Cannot open video: {source_path}")
                 return
 
             encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.quality]
-            publish_fps = min(self.fps, max(1.0, float(source_fps or self.fps)))
+            source_fps = float(cap.get(cv2.CAP_PROP_FPS) or source_fps or self.fps)
+            # Integer decimation gives 25fps from 50fps and 30fps from 60fps,
+            # avoiding the alternating intervals of a forced 50 -> 30 cadence.
+            publish_fps = source_fps / max(1, math.ceil(source_fps / self.fps))
             min_interval = 1.0 / publish_fps
             last_publish = 0.0
             next_frame_time = time.perf_counter()
@@ -178,20 +190,21 @@ class DisplayStreamState:
                         time.sleep(min(0.01, next_frame_time - now_perf))
                         continue
                 elif last_publish:
-                    wait_time = min_interval - (time.time() - last_publish)
+                    current_fps = float(cap.get(cv2.CAP_PROP_FPS) or source_fps)
+                    min_interval = max(1, math.ceil(current_fps / self.fps)) / max(1.0, current_fps)
+                    wait_time = min_interval - (time.monotonic() - last_publish)
                     if wait_time > 0:
-                        time.sleep(min(wait_time, 0.02))
+                        time.sleep(wait_time)
 
                 ret, frame = cap.read()
                 if not ret:
                     if self._local_file_mode:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        next_frame_time = time.perf_counter() + min_interval
+                        break
                     else:
                         time.sleep(0.02)
                     continue
 
-                last_publish = time.time()
+                last_publish = time.monotonic()
 
                 if self._local_file_mode:
                     next_frame_time = max(next_frame_time + min_interval, time.perf_counter())
@@ -217,21 +230,25 @@ class DisplayStreamState:
 display_streams = {}
 
 
-def _open_live_video_source(video_path: str):
+def _open_live_video_source(video_path: str, sample_fps: Optional[float] = None):
     """Open a live display source, including local capture-card device URIs."""
     import platform
 
     resolved = resolve_video_source(video_path)
     if resolved.is_simulator and resolved.source != video_path:
-        cap = cv2.VideoCapture(resolved.source, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        return cap
+        prepared = request_preview(resolved.source)
+        display_path = prepared["path"] if prepared["status"] == "ready" else resolved.source
+        display_fps = prepared["preview"]["fps"] if prepared["status"] == "ready" else resolved.fps
+        cap = PacedVideoCapture(display_path, fps=display_fps, loop=False, sample_fps=sample_fps)
+        return wrap_capture_for_layout(cap, resolved.input_layout)
 
-    if video_path.startswith("decklink://"):
-        return DeckLinkCapture(video_path)
+    clean_source = resolved.source
 
-    if video_path.startswith("device://"):
-        device_spec = video_path.replace("device://", "")
+    if clean_source.startswith("decklink://"):
+        return wrap_capture_for_layout(DeckLinkCapture(clean_source), resolved.input_layout)
+
+    if clean_source.startswith("device://"):
+        device_spec = clean_source.replace("device://", "")
         try:
             device_id = int(device_spec)
             if platform.system() == "Linux":
@@ -244,10 +261,10 @@ def _open_live_video_source(video_path: str):
             else:
                 cap = cv2.VideoCapture(device_spec)
     else:
-        cap = cv2.VideoCapture(video_path, cv2.CAP_FFMPEG)
+        cap = cv2.VideoCapture(clean_source, cv2.CAP_FFMPEG)
 
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return cap
+    return wrap_capture_for_layout(cap, resolved.input_layout)
 
 
 class VideoUploadResponse(BaseModel):
@@ -278,6 +295,7 @@ class ControlRequest(BaseModel):
 class StreamConnectRequest(BaseModel):
     stream_url: str
     auto_analyze: bool = True
+    input_layout: str = INPUT_LAYOUT_FULL
 
 
 class CaptureDeviceConnectRequest(BaseModel):
@@ -288,6 +306,7 @@ class CaptureDeviceConnectRequest(BaseModel):
     mode: str = "auto"  # DeckLink display mode; auto negotiates the source
     connection: str = "hdmi"  # DeckLink physical input: hdmi, sdi, or auto
     auto_analyze: bool = True
+    input_layout: str = INPUT_LAYOUT_FULL
 
 
 def _list_capture_devices():
@@ -542,6 +561,7 @@ async def connect_to_capture_device(
     backend = (request.backend or "auto").lower()
     mode = (request.mode or "auto").lower()
     connection = (request.connection or "auto").lower()
+    input_layout = normalize_input_layout(request.input_layout)
 
     try:
         if backend == "simulator":
@@ -600,6 +620,8 @@ async def connect_to_capture_device(
         device_url = f"device://{request.device_id}"
     if request.device_name and backend not in {"decklink", "simulator"}:
         device_url = f"device://{request.device_name}"
+    device_url = with_input_layout(device_url, input_layout)
+    width, height = layout_output_dimensions(width, height, input_layout)
     
     device_display_name = request.device_name or f"Capture Device {request.device_id}"
     if backend == "simulator":
@@ -647,7 +669,10 @@ async def connect_to_capture_device(
     # Mark as processing (live)
     update_session_status(db, session_id, "processing")
     
-    logger.info(f"[Capture] Connected to device {request.device_id}: {width}x{height} @ {fps}fps")
+    logger.info(
+        f"[Capture] Connected to device {request.device_id}: {width}x{height} @ {fps}fps "
+        f"(layout={input_layout})"
+    )
     
     return {
         "session_id": session_id,
@@ -659,6 +684,7 @@ async def connect_to_capture_device(
         "height": height,
         "storage_path": storage_path,
         "capture_status": capture_status,
+        "input_layout": input_layout,
         "message": f"成功连接采集设备: {device_display_name}"
     }
 
@@ -827,27 +853,30 @@ async def connect_to_stream(
 ):
     """Connect to a live video stream (RTSP, HTTP, etc.)"""
     
-    stream_url = request.stream_url
+    source_stream_url = request.stream_url
+    input_layout = normalize_input_layout(request.input_layout)
     
     # Run blocking cv2.VideoCapture in thread pool with timeout
     loop = asyncio.get_event_loop()
     
     try:
         cap, error = await asyncio.wait_for(
-            loop.run_in_executor(None, _sync_open_stream, stream_url),
+            loop.run_in_executor(None, _sync_open_stream, source_stream_url),
             timeout=10.0  # 10 second timeout
         )
     except asyncio.TimeoutError:
-        raise HTTPException(408, f"连接超时 (10秒): {stream_url}")
+        raise HTTPException(408, f"连接超时 (10秒): {source_stream_url}")
     
     if error or cap is None:
-        raise HTTPException(400, f"无法连接视频流: {stream_url} - {error or '未知错误'}")
+        raise HTTPException(400, f"无法连接视频流: {source_stream_url} - {error or '未知错误'}")
     
     # Get stream properties
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0  # Default to 25fps if not available
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
+    width, height = layout_output_dimensions(width, height, input_layout)
+    stream_url = with_input_layout(source_stream_url, input_layout)
     
     # Extract stream name from URL
     from urllib.parse import urlparse
@@ -901,6 +930,7 @@ async def connect_to_stream(
         "width": width,
         "height": height,
         "storage_path": storage_path,
+        "input_layout": input_layout,
         "is_live": True,
         "message": "Connected to live stream"
     }
@@ -1105,9 +1135,22 @@ async def control_video(
         raise HTTPException(400, f"Unknown action: {action}")
 
 
+@router.get("/playback-info/{session_id}")
+async def playback_info(session_id: str, db: Session = Depends(get_db)):
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    resolved = await asyncio.to_thread(resolve_video_source, session.get("video_path", ""))
+    if not Path(resolved.source).is_file():
+        return {"status": "live"}
+    result = await asyncio.to_thread(request_preview, resolved.source)
+    return {key: value for key, value in result.items() if key != "path"}
+
+
 @router.get("/stream/{session_id}")
 async def stream_video(
     session_id: str,
+    preview: bool = Query(False),
     db: Session = Depends(get_db)
 ):
     """Stream video file for playback"""
@@ -1121,6 +1164,10 @@ async def stream_video(
     video_path = Path(resolved.source)
     if not video_path.exists():
         raise HTTPException(404, "Video file not found")
+    if preview:
+        prepared = await asyncio.to_thread(request_preview, str(video_path))
+        if prepared["status"] == "ready":
+            video_path = Path(prepared["path"])
     
     return FileResponse(
         path=str(video_path),
@@ -1397,13 +1444,13 @@ async def websocket_display_stream(
     fps: float = Query(18.0, ge=1.0, le=30.0),
     quality: int = Query(64, ge=40, le=90),
     max_width: int = Query(960, ge=320, le=1920),
+    ack: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     """Latest-frame WebSocket display stream.
 
-    This is the browser preview path for remote/X11 testing. It sends binary
-    JPEG frames and keeps no per-client backlog, so a slow renderer naturally
-    drops old frames instead of drifting behind realtime.
+    Binary JPEG preview for local capture devices. Acknowledged clients allow
+    only one in-flight frame, including the WebSocket/TCP/browser buffers.
     """
     session = get_video_session(db, session_id)
     if not session:
@@ -1432,7 +1479,9 @@ async def websocket_display_stream(
             if jpeg and seq != last_seq:
                 last_seq = seq
                 await websocket.send_bytes(jpeg)
-            await asyncio.sleep(frame_interval)
+                if ack:
+                    await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+            await asyncio.sleep(0.002 if ack else frame_interval)
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -1453,7 +1502,8 @@ async def get_frame(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    video_source = resolve_video_source(session.get("video_path", "")).source
+    resolved = resolve_video_source(session.get("video_path", ""))
+    video_source = resolved.source
     processor = VideoProcessor(
         video_path=video_source,
         window_duration=settings.WINDOW_DURATION
@@ -1462,6 +1512,7 @@ async def get_frame(
     frame = processor.extract_frame(timestamp)
     if frame is None:
         raise HTTPException(400, "Cannot extract frame")
+    frame.image = apply_input_layout_to_image(frame.image, resolved.input_layout)
     
     return {
         "frame_idx": frame.frame_idx,
@@ -1484,12 +1535,14 @@ async def get_thumbnail(
     if not session:
         raise HTTPException(404, "Session not found")
     
-    video_source = resolve_video_source(session.get("video_path", "")).source
+    resolved = resolve_video_source(session.get("video_path", ""))
+    video_source = resolved.source
     processor = VideoProcessor(video_path=video_source)
     frame = processor.extract_frame(timestamp)
     
     if frame is None:
         raise HTTPException(400, "Cannot extract thumbnail")
+    frame.image = apply_input_layout_to_image(frame.image, resolved.input_layout)
     
     # Resize for thumbnail
     thumb = frame.image.copy()

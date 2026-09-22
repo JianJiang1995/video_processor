@@ -1,10 +1,23 @@
-const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, screen, protocol, net } = require('electron')
 const Store = require('electron-store')
 const path = require('path')
+const { pathToFileURL } = require('url')
+const { randomUUID } = require('crypto')
 const fs = require('fs').promises
 const fsSync = require('fs')
 const FrameCache = require('./frameCache.cjs')
 const { ServiceManager } = require('./serviceManager.cjs')
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'surgr1-media',
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    corsEnabled: true,
+    stream: true,
+  },
+}])
 
 if (process.env.ELECTRON_USER_DATA_DIR) {
   app.setPath('userData', path.resolve(process.env.ELECTRON_USER_DATA_DIR))
@@ -90,6 +103,37 @@ const cacheDir = path.join(app.getPath('userData'), 'cache')
 const frameCache = new FrameCache(cacheDir)
 
 let mainWindow = null
+const replayMediaAssets = new Map()
+
+function registerReplayMediaProtocol() {
+  protocol.handle('surgr1-media', async (request) => {
+    try {
+      const requestUrl = new URL(request.url)
+      const token = requestUrl.pathname.split('/').filter(Boolean)[0]
+      const videoPath = requestUrl.hostname === 'replay' ? replayMediaAssets.get(token) : null
+      if (!videoPath || !fsSync.existsSync(videoPath)) {
+        return new Response('Replay media not found', { status: 404 })
+      }
+
+      const response = await net.fetch(pathToFileURL(videoPath).toString(), {
+        method: request.method,
+        headers: request.headers,
+        bypassCustomProtocolHandlers: true,
+      })
+      const headers = new Headers(response.headers)
+      headers.set('Access-Control-Allow-Origin', '*')
+      headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      })
+    } catch (error) {
+      console.error('[Replay] Failed to serve local media:', error)
+      return new Response('Replay media unavailable', { status: 500 })
+    }
+  })
+}
 
 function getInitialWindowBounds() {
   const { workAreaSize } = screen.getPrimaryDisplay()
@@ -114,6 +158,7 @@ function createWindow() {
     minHeight: Math.min(860, initialBounds.height),
     resizable: true,
     maximizable: true,
+    autoHideMenuBar: true,
     backgroundColor: '#242424',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -127,6 +172,8 @@ function createWindow() {
     title: 'Video Analyzer',
     show: false
   })
+
+  mainWindow.setMenuBarVisibility(false)
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
@@ -275,6 +322,8 @@ ipcMain.handle('load-replay-bundle', async (event, requestedSpecPath) => {
     const sessionSpec = spec.session && typeof spec.session === 'object' ? spec.session : {}
     const sessionId = String(sessionSpec.session_id || spec.session_id || '').trim()
     if (!sessionId) throw new Error('Replay spec must define an existing session_id')
+    const replayMediaToken = randomUUID()
+    replayMediaAssets.set(replayMediaToken, videoPath)
 
     return {
       success: true,
@@ -296,6 +345,7 @@ ipcMain.handle('load-replay-bundle', async (event, requestedSpecPath) => {
         height: Number(sessionSpec.height || spec.height || 0),
         status: 'completed',
         replay_mode: true,
+        replay_video_url: `surgr1-media://replay/${replayMediaToken}/${encodeURIComponent(path.basename(videoPath))}`,
       },
       summaries,
       events: eventItems,
@@ -532,6 +582,8 @@ ipcMain.handle('get-app-info', () => {
 // ============= App Lifecycle =============
 
 app.whenReady().then(async () => {
+  registerReplayMediaProtocol()
+
   // Initialize service manager
   const resourcesPath = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', '..')
   serviceManager.init(resourcesPath, appConfig, app.isPackaged)

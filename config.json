@@ -182,7 +182,7 @@
             "thinking_level": "none",
             "max_tokens": 1000,
             "temperature": 0.0,
-      "timeout": 8.0,
+            "timeout": 15.0,
             "transport": "curl",
             "trust_env": true,
             "max_windows": 100,

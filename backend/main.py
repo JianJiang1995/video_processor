@@ -13,6 +13,7 @@ import logging
 from .config import settings
 from .database import init_db
 from .routers import video_router, analysis_router, model_router, webrtc_router, voice_router
+from .routers.review import router as review_router
 from .middleware import APILoggingMiddleware, api_logger
 from .services.frame_storage_service import get_sessions_storage_base
 
@@ -47,6 +48,7 @@ app.add_middleware(APILoggingMiddleware)
 # Include routers
 app.include_router(video_router)
 app.include_router(analysis_router)
+app.include_router(review_router)
 app.include_router(model_router)
 app.include_router(webrtc_router)
 app.include_router(voice_router)
@@ -66,6 +68,12 @@ if sessions_path.exists():
 @app.on_event("startup")
 async def startup_event():
     """Initialize on startup"""
+    import cv2
+    import torch
+    # On large servers OpenCV otherwise fans each small resize out to every
+    # logical CPU, competing with playback and concurrent expert inference.
+    cv2.setNumThreads(max(1, int(os.environ.get("OPENCV_THREADS", "4"))))
+    torch.set_num_threads(max(1, int(os.environ.get("EXPERT_CPU_THREADS", "4"))))
     logger.info(f"Starting {settings.APP_NAME}")
     logger.info(f"Database: {settings.DATABASE_URL}")
     logger.info(f"Upload directory: {settings.UPLOAD_DIR}")

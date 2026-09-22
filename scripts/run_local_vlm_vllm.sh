@@ -12,10 +12,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-GPU="${VLM_GPU:-2}"
+if [ -n "${VLM_GPU:-}" ]; then
+  GPU="$VLM_GPU"
+else
+  GPU="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null \
+    | awk -F',' '{gsub(/ /, "", $1); gsub(/ /, "", $2); print $1, $2}' \
+    | sort -k2,2nr \
+    | awk 'NR == 1 {print $1}')"
+fi
+if [ -z "$GPU" ]; then
+  echo "[vLLM] no NVIDIA GPU detected" >&2
+  exit 1
+fi
 PORT="${VLM_PORT:-8010}"
 MODEL_PATH="${VLM_MODEL_PATH:-models/local_vlm/qwen3-vl-8b-instruct}"
 SERVED_NAME="${VLM_SERVED_NAME:-Qwen3-VL-8B-Instruct}"
+GPU_MEMORY_UTILIZATION="${VLM_GPU_MEMORY_UTILIZATION:-0.93}"
 
 VENV="$ROOT_DIR/../.venv"
 export LD_LIBRARY_PATH="$VENV/lib/python3.10/site-packages/nvidia/cu13/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -28,6 +40,6 @@ exec env CUDA_VISIBLE_DEVICES="$GPU" "$VENV/bin/vllm" serve "$MODEL_PATH" \
   --served-model-name "$SERVED_NAME" \
   --host 127.0.0.1 \
   --port "$PORT" \
-  --gpu-memory-utilization 0.93 \
+  --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
   --max-model-len 12288 \
   --trust-remote-code

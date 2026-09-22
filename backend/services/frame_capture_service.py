@@ -28,7 +28,7 @@ import platform
 
 from .frame_storage_service import get_frame_storage_service, FrameStorageService
 from .decklink_capture import DeckLinkCapture
-from .local_video_source import PacedVideoCapture, resolve_video_source
+from .local_video_source import PacedVideoCapture, resolve_video_source, wrap_capture_for_layout
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ _capture_states: Dict[str, FrameCaptureState] = {}
 _capture_lock = threading.Lock()
 
 
-def open_video_source(video_source: str) -> Optional[cv2.VideoCapture]:
+def open_video_source(video_source: str, sample_fps: Optional[float] = None) -> Optional[cv2.VideoCapture]:
     """
     打开视频源（支持多种格式）
     
@@ -112,22 +112,24 @@ def open_video_source(video_source: str) -> Optional[cv2.VideoCapture]:
     try:
         resolved = resolve_video_source(video_source)
         if resolved.is_simulator and resolved.source != video_source:
-            cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=False)
+            cap = PacedVideoCapture(resolved.source, fps=resolved.fps, loop=False, sample_fps=sample_fps)
             if cap.isOpened():
                 logger.info(
                     "[FrameCaptureService] Using paced simulator source: %s @ %.1ffps",
                     resolved.source,
                     cap.get(cv2.CAP_PROP_FPS),
                 )
-                return cap
+                return wrap_capture_for_layout(cap, resolved.input_layout)
             logger.error(f"[FrameCaptureService] Failed to open simulator source: {resolved.source}")
             return None
 
-        if video_source.startswith("decklink://"):
-            return DeckLinkCapture(video_source)
+        clean_source = resolved.source
 
-        if video_source.startswith("device://"):
-            device_spec = video_source.replace("device://", "")
+        if clean_source.startswith("decklink://"):
+            return wrap_capture_for_layout(DeckLinkCapture(clean_source), resolved.input_layout)
+
+        if clean_source.startswith("device://"):
+            device_spec = clean_source.replace("device://", "")
             try:
                 device_id = int(device_spec)
                 if platform.system() == "Linux":
@@ -139,23 +141,31 @@ def open_video_source(video_source: str) -> Optional[cv2.VideoCapture]:
                     cap = cv2.VideoCapture(f"video={device_spec}", cv2.CAP_DSHOW)
                 else:
                     cap = cv2.VideoCapture(device_spec)
-        elif video_source.startswith(("rtsp://", "http://", "https://")):
+        elif clean_source.startswith(("rtsp://", "http://", "https://")):
             # 网络流
-            cap = cv2.VideoCapture(video_source)
+            cap = cv2.VideoCapture(clean_source)
             # 设置缓冲区大小以减少延迟
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
         else:
             # 本地文件
-            cap = cv2.VideoCapture(video_source)
+            cap = cv2.VideoCapture(clean_source)
         
         if cap.isOpened():
-            return cap
+            return wrap_capture_for_layout(cap, resolved.input_layout)
         else:
             logger.error(f"[FrameCaptureService] Failed to open video source: {video_source}")
             return None
     except Exception as e:
         logger.error(f"[FrameCaptureService] Error opening video source: {e}")
         return None
+
+
+def frame_retention_seconds(config: Dict[str, Any], is_realtime: bool, is_finite_simulator: bool) -> int:
+    # Finite replay sessions need their early thumbnails and analysis frames
+    # after EOF. Only unbounded live inputs use the rolling retention budget.
+    if not is_realtime or is_finite_simulator:
+        return 0
+    return max(0, int(config.get("live_retention_seconds", 0)))
 
 
 def frame_capture_thread_func(
@@ -193,7 +203,7 @@ def frame_capture_thread_func(
         preview_fps=int(config.get("live_preview_fps", config["preview_fps"])) if is_realtime_stream else int(config["preview_fps"]),
         quality=int(config.get("live_quality", config["quality"])) if is_realtime_stream else int(config["quality"]),
         preview_quality=int(config["preview_quality"]),
-        retention_seconds=int(config.get("live_retention_seconds", 0)) if is_realtime_stream else 0,
+        retention_seconds=frame_retention_seconds(config, is_realtime_stream, is_finite_simulator),
         prune_every_frames=int(config.get("prune_every_frames", 50))
     )
     
@@ -211,7 +221,7 @@ def frame_capture_thread_func(
         f"retention={state.retention_seconds or 'unlimited'}s"
     )
     # 打开视频源
-    cap = open_video_source(video_source)
+    cap = open_video_source(video_source, sample_fps=max(state.capture_fps, state.preview_fps))
     if not cap or not cap.isOpened():
         logger.error(f"[FrameCaptureService] Cannot open video source: {video_source}")
         state.is_running = False
@@ -272,8 +282,8 @@ def frame_capture_thread_func(
             
             # 检查是否需要保存帧（根据capture_fps）
             # 注意：对于本地文件，视频帧间隔可能 > 或 < capture_interval
-            should_save_frame = (current_time - last_save_time >= capture_interval)
-            should_save_preview = (current_time - last_preview_save_time >= preview_interval)
+            should_save_frame = (current_time - last_save_time + 1e-4 >= capture_interval)
+            should_save_preview = (current_time - last_preview_save_time + 1e-4 >= preview_interval)
             
             loop_count += 1
             
@@ -356,7 +366,10 @@ def frame_capture_thread_func(
                     time.sleep(wait_time)
             else:
                 # 实时流：最小延迟
-                time.sleep(0.001)
+                # DeckLink keeps one latest frame independently. Consume it at
+                # analysis sampling rate instead of copying every 50/60fps frame.
+                wait_time = min(capture_interval, preview_interval) - (time.time() - loop_start)
+                time.sleep(max(0.001, wait_time) if not is_finite_simulator else 0.001)
     
     except Exception as e:
         logger.error(f"[FrameCaptureService] Error in capture thread: {e}")

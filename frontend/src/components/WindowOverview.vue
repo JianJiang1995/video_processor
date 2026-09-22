@@ -117,7 +117,7 @@
                 <span>{{ t('overview.noPreview') }}</span>
               </div>
               <div v-else class="thumb-placeholder thumb-pending"></div>
-              <span class="card-index-overlay">#{{ s.window_id }}</span>
+              <span class="card-index-overlay">#{{ Number(s.window_id) + 1 }}</span>
               <span class="card-time-overlay">
                 {{ formatTime(s.start_time) }} – {{ formatTime(s.end_time) }}
               </span>
@@ -139,8 +139,15 @@
       </div>
 
       <!-- Smart Chat side panel -->
+      <div
+        v-if="showChat"
+        class="overview-chat-resize-handle"
+        :title="t('overview.resizeChatTitle')"
+        @pointerdown="startChatPanelResize"
+        @dblclick="resetChatPanelWidth"
+      ></div>
       <Transition name="slide-chat">
-        <div v-if="showChat" class="chat-panel">
+        <div v-if="showChat" class="chat-panel" :style="{ width: chatPanelWidth + 'px' }">
           <div class="chat-panel-header">
             <span class="chat-panel-title">
               <span class="chat-panel-icon">🤖</span>
@@ -167,7 +174,7 @@
             >
               <div class="chat-msg-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
               <div class="chat-msg-bubble">
-                <div class="chat-msg-text">{{ msg.content }}</div>
+                <div class="chat-msg-text"><ChatMessageText v-if="msg.role === 'assistant'" :text="msg.content" :summaries="summaries" @review="openReview" /><template v-else>{{ msg.content }}</template></div>
               </div>
             </div>
             <div v-if="chatLoading" class="chat-msg assistant">
@@ -203,50 +210,19 @@
       </Transition>
     </div>
 
-    <!-- Loop Playback Modal -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="activeWindow" class="modal-overlay" @click.self="closeModal">
-          <div class="modal-content">
-            <div class="modal-header">
-              <div class="modal-title-group">
-                <span class="modal-index">#{{ activeWindow.window_id }}</span>
-                <span class="modal-time-range">
-                  {{ formatTime(activeWindow.start_time) }} – {{ formatTime(activeWindow.end_time) }}
-                </span>
-              </div>
-              <button class="modal-close" @click="closeModal">
-                <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
-                </svg>
-              </button>
-            </div>
-
-            <div class="modal-body">
-              <div v-if="mode === 'stream'" class="modal-player">
-                <VideoPlayer
-                  :session="session"
-                  :currentTime="modalCurrentTime"
-                  :isPlaying="true"
-                  :isPaused="false"
-                  :mode="mode"
-                  :loopWindow="activeLoopWindow"
-                  :streamEnded="false"
-                  :windowDuration="windowDuration"
-                  @timeupdate="modalCurrentTime = $event"
-                  @exitLoop="closeModal"
-                  @loopLoadFailed="closeModal"
-                />
-              </div>
-              <div class="modal-summary-section">
-                <div class="modal-summary-label">{{ t('overview.analysisSummary') }}</div>
-                <p class="modal-summary-text">{{ displaySummary(activeWindow) }}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+    <VideoReviewModal
+      v-if="activeWindow"
+      :session="session"
+      :range="activeWindow"
+      :summaries="summaries"
+      :mode="mode"
+      :windowDuration="windowDuration"
+      :reviewJobs="reviewJobs"
+      :reviewBusy="reviewBusy"
+      @close="closeModal"
+      @review="openReview"
+      @reanalyze="$emit('reanalyze', $event)"
+    />
   </div>
 </template>
 
@@ -254,12 +230,17 @@
 import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { apiUrl } from '@/utils/electronBridge'
-import VideoPlayer from './VideoPlayer.vue'
+import { captureLocalVideoThumbnail } from '@/utils/localVideoThumbnail'
+import VideoReviewModal from './VideoReviewModal.vue'
+import ChatMessageText from './ChatMessageText.vue'
+import { resolveReviewRange } from '@/utils/chatTimestamps'
 import { useI18n } from '@/i18n'
 
 const { t, language } = useI18n()
 
 const props = defineProps({
+  reviewJobs: { type: Object, default: () => ({}) },
+  reviewBusy: { type: Boolean, default: false },
   summaries: {
     type: Array,
     default: () => []
@@ -279,7 +260,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['back', 'seekToWindow'])
+const emit = defineEmits(['back', 'seekToWindow', 'reanalyze'])
 
 // Search
 const filterText = ref('')
@@ -292,10 +273,48 @@ const chatMessages = ref([])
 const chatLoading = ref(false)
 const chatMessagesRef = ref(null)
 const gridAreaRef = ref(null)
+const CHAT_PANEL_STORAGE_KEY = 'surg_overview_chat_width_v1'
+const defaultChatPanelWidth = () => Math.min(520, Math.max(380, Math.round(window.innerWidth * 0.23)))
+const maxChatPanelWidth = () => Math.max(380, Math.min(760, window.innerWidth - 680))
+const chatPanelWidth = ref(Math.min(
+  maxChatPanelWidth(),
+  Math.max(340, Number(localStorage.getItem(CHAT_PANEL_STORAGE_KEY)) || defaultChatPanelWidth())
+))
+
+const clampChatPanelWidth = (value) => Math.min(maxChatPanelWidth(), Math.max(340, value))
+
+const startChatPanelResize = (event) => {
+  event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  const startX = event.clientX
+  const startWidth = chatPanelWidth.value
+  document.body.classList.add('is-resizing-overview-chat')
+
+  const onMove = (e) => {
+    chatPanelWidth.value = clampChatPanelWidth(startWidth - (e.clientX - startX))
+  }
+  const onUp = () => {
+    localStorage.setItem(CHAT_PANEL_STORAGE_KEY, String(chatPanelWidth.value))
+    document.body.classList.remove('is-resizing-overview-chat')
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp, { once: true })
+}
+
+const resetChatPanelWidth = () => {
+  chatPanelWidth.value = clampChatPanelWidth(defaultChatPanelWidth())
+  localStorage.setItem(CHAT_PANEL_STORAGE_KEY, String(chatPanelWidth.value))
+}
+
+const handleOverviewViewportResize = () => {
+  chatPanelWidth.value = clampChatPanelWidth(chatPanelWidth.value)
+}
 
 // Modal
 const activeWindow = ref(null)
-const modalCurrentTime = ref(0)
 
 // Thumbnails
 const thumbnails = reactive({})
@@ -309,15 +328,6 @@ const filteredSummaries = computed(() => {
   return props.summaries.filter(s =>
     displaySummary(s).toLowerCase().includes(keyword)
   )
-})
-
-const activeLoopWindow = computed(() => {
-  if (!activeWindow.value) return null
-  return {
-    window_id: activeWindow.value.window_id,
-    start_time: activeWindow.value.start_time,
-    end_time: activeWindow.value.end_time
-  }
 })
 
 const totalDuration = computed(() => {
@@ -434,12 +444,11 @@ function displaySummary(summary) {
 
 // Methods
 function handleCardClick(summary) {
-  if (props.mode === 'stream') {
-    activeWindow.value = summary
-    modalCurrentTime.value = summary.start_time
-  } else {
-    emit('seekToWindow', summary.window_id)
-  }
+  openReview(summary)
+}
+
+function openReview(reference) {
+  activeWindow.value = resolveReviewRange(reference, props.summaries)
 }
 
 function closeModal() {
@@ -554,6 +563,20 @@ async function fetchThumbnail(summary) {
   const sid = props.session?.session_id
   if (!sid) return
 
+  if (props.session?.replay_video_url) {
+    try {
+      thumbnails[wid] = await captureLocalVideoThumbnail(
+        props.session.replay_video_url,
+        midTime,
+        { width: 420, quality: 0.72 }
+      )
+      thumbnailStatus[wid] = 'loaded'
+      return
+    } catch (error) {
+      console.warn(`[Overview] local replay thumbnail failed for window ${wid}:`, error.message)
+    }
+  }
+
   try {
     const start = Math.max(0, midTime - 1)
     const end = midTime + 1
@@ -660,6 +683,7 @@ function primeInitialThumbnails() {
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  window.addEventListener('resize', handleOverviewViewportResize)
   for (const s of props.summaries) {
     widToSummary.set(s.window_id, s)
   }
@@ -706,6 +730,8 @@ watch(() => props.summaries.length, async () => {
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', handleOverviewViewportResize)
+  document.body.classList.remove('is-resizing-overview-chat')
   if (thumbObserver) {
     thumbObserver.disconnect()
     thumbObserver = null
@@ -923,8 +949,55 @@ onUnmounted(() => {
 
 .grid-area {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: 0 1.5rem 2rem;
+}
+
+.overview-chat-resize-handle {
+  position: relative;
+  flex: 0 0 14px;
+  width: 14px;
+  cursor: col-resize;
+  touch-action: none;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  transition: background 0.12s ease;
+}
+
+.overview-chat-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 72px;
+  border: 1px solid var(--border-medium);
+  border-radius: 5px;
+  background-color: var(--bg-elevated);
+  background-image: radial-gradient(circle, var(--text-tertiary) 1.3px, transparent 1.5px);
+  background-size: 8px 8px;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+}
+
+.overview-chat-resize-handle:hover {
+  background: rgba(240, 160, 48, 0.08);
+}
+
+.overview-chat-resize-handle:hover::before {
+  border-color: var(--accent-primary);
+  background-color: rgba(240, 160, 48, 0.18);
+  background-image: radial-gradient(circle, var(--accent-primary) 1.3px, transparent 1.5px);
+}
+
+:global(body.is-resizing-overview-chat) {
+  user-select: none;
+}
+
+:global(body.is-resizing-overview-chat *) {
+  cursor: col-resize !important;
 }
 
 /* ===== Empty State ===== */
@@ -1086,7 +1159,9 @@ onUnmounted(() => {
 
 /* ===== Chat Panel ===== */
 .chat-panel {
-  width: 360px;
+  width: 420px;
+  min-width: 340px;
+  max-width: 760px;
   flex-shrink: 0;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border-subtle);

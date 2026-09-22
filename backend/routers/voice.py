@@ -4,12 +4,13 @@ Handles speech recognition (ASR) and text-to-speech (TTS) via external APIs.
 """
 import asyncio
 import json
+import math
 import time
 from typing import Optional, List, Dict
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import base64
 import logging
 
@@ -67,6 +68,34 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="Message content")
     timestamp: Optional[float] = Field(default=None, description="Message timestamp")
     audio_base64: Optional[str] = Field(default=None, description="TTS audio in base64")
+
+
+class ReviewContext(BaseModel):
+    """A video-time range, never client-provided analysis evidence."""
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: float = Field(..., ge=0, allow_inf_nan=False, strict=True)
+    end_time: float = Field(..., ge=0, allow_inf_nan=False, strict=True)
+    window_id: Optional[int] = Field(default=None, ge=0, strict=True)
+
+    @field_validator("start_time", "end_time", "window_id", mode="before")
+    @classmethod
+    def validate_finite_number(cls, value):
+        # FastAPI cannot serialize non-finite inputs echoed in validation errors.
+        if isinstance(value, float) and not math.isfinite(value):
+            raise HTTPException(422, "review_context numbers must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be greater than start_time")
+        return self
+
+
+class ChatSendRequest(ChatMessage):
+    # Input-only metadata keeps the existing serialized chat messages unchanged.
+    review_context: Optional[ReviewContext] = Field(default=None, exclude=True)
 
 
 # ============================================================================
@@ -592,7 +621,7 @@ async def get_chat_history(session_id: str, limit: int = 50):
 
 
 @router.post("/chat/{session_id}/send")
-async def send_chat_message(session_id: str, message: ChatMessage):
+async def send_chat_message(session_id: str, message: ChatSendRequest):
     """
     Send a chat message and get GLM response with TTS.
     
@@ -610,7 +639,13 @@ async def send_chat_message(session_id: str, message: ChatMessage):
             conv_service = get_conversation_service(session_id)
             
             # Process user input through conversation service
-            result = await conv_service.handle_user_input(message.content)
+            result = await conv_service.handle_user_input(
+                message.content,
+                review_context=(
+                    message.review_context.model_dump(exclude_none=True)
+                    if message.review_context is not None else None
+                ),
+            )
             
             if result.get("success"):
                 response = ChatMessage(

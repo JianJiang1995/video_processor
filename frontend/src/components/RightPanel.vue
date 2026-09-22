@@ -20,75 +20,91 @@
 
     <!-- Analysis Tab：滚动式手术进程叙事（替代以前的"当前窗口详情"）-->
     <div v-show="activeTab === 'analysis'" class="tab-analysis">
-      <div v-if="chapters.length > 0" class="an-content">
-        <div class="narrative-header">
-          <span class="narrative-title">{{ t('right.surgicalProgress') }}</span>
-          <span class="narrative-meta">
-            {{ t('app.windowCount', { count: totalWindows }) }} · {{ t('right.updatedByWindow') }}
-          </span>
+      <div v-if="chapters.length > 0" ref="analysisLayoutRef" class="an-content">
+        <div
+          class="an-latest-pane"
+          :class="{ 'without-history': historyChapters.length === 0 }"
+          :style="historyChapters.length > 0 ? { flexBasis: latestPaneHeight + 'px' } : undefined"
+        >
+          <div class="narrative-header">
+            <span class="narrative-title">{{ t('right.surgicalProgress') }}</span>
+            <span class="narrative-meta">
+              {{ t('app.windowCount', { count: totalWindows }) }} · {{ t('right.updatedByWindow') }}
+            </span>
+          </div>
+
+          <div
+            v-if="bleedingStatus"
+            class="bleeding-status"
+            :class="bleedingStatus.status"
+          >
+            <div class="bleeding-status-head">
+              <span class="bleeding-status-title">{{ bleedingStatus.title }}</span>
+              <span class="bleeding-status-time">
+                {{ windowLabel(bleedingStatus.windowId + 1) }} · {{ formatTime(bleedingStatus.startTime) }} – {{ formatTime(bleedingStatus.endTime) }}
+              </span>
+            </div>
+            <div class="bleeding-status-text">{{ bleedingStatus.text }}</div>
+          </div>
+
+          <div v-if="topChapters.length > 0" class="latest-chapters">
+            <div
+              v-for="(ch, index) in topChapters"
+              :key="`top-${ch.key}`"
+              class="latest-chapter"
+              :class="{ secondary: index === 1 }"
+              role="button"
+              tabindex="0"
+              @click="seekChapter(ch)"
+              @keydown.enter.prevent="seekChapter(ch)"
+              @keydown.space.prevent="seekChapter(ch)"
+            >
+              <div class="latest-label">{{ index === 0 ? primaryChapterLabel : t('right.previousWindow') }}</div>
+              <div class="latest-head">
+                <span class="chapter-time">
+                  {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
+                </span>
+                <span class="chapter-count">{{ windowLabel(ch.windows[0].window_id + 1) }}</span>
+              </div>
+              <div class="latest-text">{{ ch.mergedSummary }}</div>
+            </div>
+          </div>
         </div>
 
         <div
-          v-if="bleedingStatus"
-          class="bleeding-status"
-          :class="bleedingStatus.status"
-        >
-          <div class="bleeding-status-head">
-            <span class="bleeding-status-title">{{ bleedingStatus.title }}</span>
-            <span class="bleeding-status-time">
-              {{ windowLabel(bleedingStatus.windowId + 1) }} · {{ formatTime(bleedingStatus.startTime) }} – {{ formatTime(bleedingStatus.endTime) }}
-            </span>
-          </div>
-          <div class="bleeding-status-text">{{ bleedingStatus.text }}</div>
-        </div>
+          v-if="historyChapters.length > 0"
+          class="analysis-history-resize-handle"
+          :title="t('right.resizeHistoryTitle')"
+          @pointerdown="startLatestPaneResize"
+          @dblclick="resetLatestPaneHeight"
+        ></div>
 
-        <div v-if="topChapters.length > 0" class="latest-chapters">
+        <div v-if="historyChapters.length > 0" class="an-history-pane">
+          <div class="history-title">
+            {{ t('right.historyWindow') }}
+          </div>
+
+          <!-- 旧窗口倒序显示：最新窗口固定在上方，避免实时结果滚到列表底部 -->
           <div
-            v-for="(ch, index) in topChapters"
-            :key="`top-${ch.key}`"
-            class="latest-chapter"
-            :class="{ secondary: index === 1 }"
+            v-for="ch in historyChapters"
+            :key="ch.key"
+            class="chapter"
+            :class="{ active: ch.containsCurrent }"
             role="button"
             tabindex="0"
             @click="seekChapter(ch)"
             @keydown.enter.prevent="seekChapter(ch)"
             @keydown.space.prevent="seekChapter(ch)"
           >
-            <div class="latest-label">{{ index === 0 ? primaryChapterLabel : t('right.previousWindow') }}</div>
-            <div class="latest-head">
+            <!-- phase 标签已去掉：文字里本来就会提阶段，避免重复 -->
+            <div class="chapter-head">
               <span class="chapter-time">
                 {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
               </span>
-              <span class="chapter-count">{{ windowLabel(ch.windows[0].window_id + 1) }}</span>
+              <span class="chapter-count">{{ ch.windowLabel }}</span>
             </div>
-            <div class="latest-text">{{ ch.mergedSummary }}</div>
+            <div class="chapter-text">{{ ch.mergedSummary }}</div>
           </div>
-        </div>
-
-        <div v-if="historyChapters.length > 0" class="history-title">
-          {{ t('right.historyWindow') }}
-        </div>
-
-        <!-- 旧窗口倒序显示：最新窗口固定在上方，避免实时结果滚到列表底部 -->
-        <div
-          v-for="ch in historyChapters"
-          :key="ch.key"
-          class="chapter"
-          :class="{ active: ch.containsCurrent }"
-          role="button"
-          tabindex="0"
-          @click="seekChapter(ch)"
-          @keydown.enter.prevent="seekChapter(ch)"
-          @keydown.space.prevent="seekChapter(ch)"
-        >
-          <!-- phase 标签已去掉：文字里本来就会提阶段，避免重复 -->
-          <div class="chapter-head">
-            <span class="chapter-time">
-              {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
-            </span>
-            <span class="chapter-count">{{ ch.windowLabel }}</span>
-          </div>
-          <div class="chapter-text">{{ ch.mergedSummary }}</div>
         </div>
       </div>
 
@@ -121,13 +137,15 @@
         :summaries="summaries"
         @seekToWindow="(wid) => $emit('seekToWindow', wid)"
         @message="(msg) => $emit('chatMessage', msg)"
+        @review="$emit('review', $event)"
       />
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { preferDetailsOverPhase } from '../utils/summaryEvidence.js'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ChatPanel from './ChatPanel.vue'
 import { useI18n } from '@/i18n'
 
@@ -143,8 +161,54 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
-  'update:activeTab', 'tts', 'seekToWindow', 'chatMessage'
+  'update:activeTab', 'tts', 'seekToWindow', 'chatMessage', 'review'
 ])
+
+const LATEST_PANE_STORAGE_KEY = 'surg_right_latest_pane_height_v1'
+const analysisLayoutRef = ref(null)
+const defaultLatestPaneHeight = () => Math.min(620, Math.max(320, Math.round(window.innerHeight * 0.48)))
+const latestPaneHeight = ref(Number(localStorage.getItem(LATEST_PANE_STORAGE_KEY)) || defaultLatestPaneHeight())
+const clampLatestPaneHeight = (value) => {
+  const available = analysisLayoutRef.value?.clientHeight || Math.max(560, window.innerHeight - 180)
+  return Math.min(Math.max(220, available - 210), Math.max(220, value))
+}
+
+const startLatestPaneResize = (event) => {
+  event.preventDefault()
+  event.currentTarget.setPointerCapture?.(event.pointerId)
+  const startY = event.clientY
+  const startHeight = latestPaneHeight.value
+  document.body.classList.add('is-resizing-analysis-history')
+
+  const onMove = (e) => {
+    latestPaneHeight.value = clampLatestPaneHeight(startHeight + (e.clientY - startY))
+  }
+  const onUp = () => {
+    latestPaneHeight.value = clampLatestPaneHeight(latestPaneHeight.value)
+    localStorage.setItem(LATEST_PANE_STORAGE_KEY, String(latestPaneHeight.value))
+    document.body.classList.remove('is-resizing-analysis-history')
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp, { once: true })
+}
+
+const resetLatestPaneHeight = () => {
+  latestPaneHeight.value = clampLatestPaneHeight(defaultLatestPaneHeight())
+  localStorage.setItem(LATEST_PANE_STORAGE_KEY, String(latestPaneHeight.value))
+}
+
+const handlePanelViewportResize = () => {
+  latestPaneHeight.value = clampLatestPaneHeight(latestPaneHeight.value)
+}
+
+onMounted(() => window.addEventListener('resize', handlePanelViewportResize))
+onUnmounted(() => {
+  window.removeEventListener('resize', handlePanelViewportResize)
+  document.body.classList.remove('is-resizing-analysis-history')
+})
 
 const formatTime = (seconds) => {
   if (seconds == null) return '0:00'
@@ -240,8 +304,6 @@ function softenInstrumentLanguage(text) {
   out = out.replace(/(当前窗口|本段|术野|画面)出现/g, '$1有')
   out = out.replace(/出现了|出现/g, '')
   out = out.replace(/Hem[-\s]?o[-\s]?lok|Hemolok|hemlock/gi, 'Hem-o-lok')
-  out = out.replace(/已被多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
-  out = out.replace(/多枚(?:金属)?钛夹(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '多枚钛夹已夹闭$1的胆囊管残端')
   out = out.replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?对/g, '钛夹钳对')
   out = out.replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?在/g, '钛夹钳在')
   out = out.replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
@@ -272,8 +334,6 @@ function softenInstrumentLanguage(text) {
   out = out.replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
   out = out.replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
   out = out.replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
-  out = out.replace(/已被多枚金属钛夹(?:夹闭|关闭)的管状结构残端/g, '多枚钛夹已夹闭的胆囊管残端')
-  out = out.replace(/已被多枚金属(?:夹闭|关闭|闭合)(并切断)?的管状结构残端/g, '已夹闭$1的胆囊管残端')
   out = out.replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
   out = out.replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
   out = out.replace(/在([^，。；;]+)[，,]\s*(?:夹闭|关闭|闭合)了?组织/g, '在$1进行夹闭处理')
@@ -283,8 +343,6 @@ function softenInstrumentLanguage(text) {
   out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
   out = out.replace(/(?:剪刀|电剪)进入视野[，,]?\s*/g, '')
   out = out.replace(/(?:冲洗器|吸引器|冲吸器)进入视野[，,]?\s*/g, '')
-  out = out.replace(/已夹闭并切断的管状结构残端。已夹闭的管状结构残端/g, '已夹闭并切断的胆囊管残端')
-  out = out.replace(/已夹闭的管状结构残端。已夹闭并切断的管状结构残端/g, '已夹闭并切断的胆囊管残端')
   out = out.replace(/视野中可见/g, '')
   out = out.replace(new RegExp(`可见${instrumentList.source}[，,]`, 'g'), '')
   out = out.replace(/可见/g, '')
@@ -295,7 +353,7 @@ function softenInstrumentLanguage(text) {
 }
 
 function focusProgressText(text, maxChars = 260, maxSentences = 2) {
-  const normalized = softenInstrumentLanguage(stripPhaseHeader(text))
+  const normalized = preferDetailsOverPhase(softenInstrumentLanguage(stripPhaseHeader(text)))
   if (!normalized) return ''
 
   const risk = []
@@ -648,9 +706,9 @@ const seekChapter = (chapter) => {
 
 .rp-tab {
   flex: 1;
-  padding: 15px 0;
+  padding: 10px 0;
   text-align: center;
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-tertiary);
   cursor: pointer;
@@ -680,13 +738,86 @@ const seekChapter = (chapter) => {
 
 .an-content {
   flex: 1;
-  overflow-y: auto;
-  padding: 24px;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
-.an-content::-webkit-scrollbar { width: 3px; }
-.an-content::-webkit-scrollbar-track { background: transparent; }
-.an-content::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+.an-latest-pane,
+.an-history-pane {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.an-latest-pane {
+  flex: 0 0 auto;
+  padding: 14px 16px 9px;
+}
+
+.an-latest-pane.without-history {
+  flex: 1 1 auto;
+}
+
+.an-history-pane {
+  flex: 1 1 auto;
+  padding: 7px 16px 14px;
+}
+
+.an-latest-pane::-webkit-scrollbar,
+.an-history-pane::-webkit-scrollbar { width: 5px; }
+.an-latest-pane::-webkit-scrollbar-track,
+.an-history-pane::-webkit-scrollbar-track { background: transparent; }
+.an-latest-pane::-webkit-scrollbar-thumb,
+.an-history-pane::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 3px; }
+
+.analysis-history-resize-handle {
+  position: relative;
+  flex: 0 0 14px;
+  height: 14px;
+  cursor: row-resize;
+  touch-action: none;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  transition: background 0.12s ease;
+}
+
+.analysis-history-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 68px;
+  height: 10px;
+  border: 1px solid var(--border-medium);
+  border-radius: 5px;
+  background-color: var(--bg-elevated);
+  background-image: radial-gradient(circle, var(--text-tertiary) 1.3px, transparent 1.5px);
+  background-size: 8px 8px;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+}
+
+.analysis-history-resize-handle:hover {
+  background: rgba(240, 160, 48, 0.08);
+}
+
+.analysis-history-resize-handle:hover::before {
+  border-color: var(--accent-primary);
+  background-color: rgba(240, 160, 48, 0.18);
+  background-image: radial-gradient(circle, var(--accent-primary) 1.3px, transparent 1.5px);
+}
+
+:global(body.is-resizing-analysis-history) {
+  cursor: row-resize !important;
+  user-select: none;
+}
+
+:global(body.is-resizing-analysis-history *) {
+  cursor: row-resize !important;
+}
 
 .an-window-label {
   display: flex;
@@ -696,14 +827,14 @@ const seekChapter = (chapter) => {
 }
 
 .an-window-num {
-  font-size: 30px;
+  font-size: 22px;
   font-weight: 700;
   font-family: var(--font-mono);
   color: var(--accent-primary);
 }
 
 .an-window-tag {
-  font-size: 17px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -718,10 +849,10 @@ const seekChapter = (chapter) => {
 }
 
 .an-time {
-  font-size: 19px;
+  font-size: 14px;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 
 .an-phase {
@@ -731,9 +862,9 @@ const seekChapter = (chapter) => {
   padding: 4px 10px;
   background: var(--bg-tertiary);
   border-radius: 100px;
-  font-size: 19px;
+  font-size: 14px;
   color: var(--accent-primary);
-  margin-bottom: 16px;
+  margin-bottom: 10px;
   border: 1px solid var(--border-subtle);
 }
 
@@ -745,8 +876,8 @@ const seekChapter = (chapter) => {
 }
 
 .an-full-text {
-  font-size: 24px;
-  line-height: 1.9;
+  font-size: 17px;
+  line-height: 1.55;
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
@@ -762,20 +893,20 @@ const seekChapter = (chapter) => {
   border-bottom: 1px solid var(--border-subtle);
 }
 .narrative-title {
-  font-size: 30px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
   letter-spacing: 0.3px;
 }
 .narrative-meta {
-  font-size: 21px;
+  font-size: 14px;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
 }
 
 .bleeding-status {
   margin: 0 0 18px;
-  padding: 18px 20px;
+  padding: 12px 14px;
   border-radius: 8px;
   border: 2px solid transparent;
 }
@@ -801,7 +932,7 @@ const seekChapter = (chapter) => {
 }
 
 .bleeding-status-title {
-  font-size: 30px;
+  font-size: 20px;
   font-weight: 900;
 }
 
@@ -816,14 +947,14 @@ const seekChapter = (chapter) => {
 .bleeding-status-time {
   color: var(--text-tertiary);
   font-family: var(--font-mono);
-  font-size: 21px;
+  font-size: 14px;
   white-space: nowrap;
 }
 
 .bleeding-status-text {
   color: var(--text-primary);
-  font-size: 26px;
-  line-height: 1.65;
+  font-size: 17px;
+  line-height: 1.5;
 }
 
 .latest-chapters {
@@ -835,7 +966,7 @@ const seekChapter = (chapter) => {
 
 .latest-chapter {
   margin: 0 0 22px;
-  padding: 24px 26px 28px;
+  padding: 14px 16px 16px;
   background: rgba(245, 158, 11, 0.12);
   border: 2px solid rgba(245, 158, 11, 0.65);
   border-left: 7px solid var(--accent-primary);
@@ -861,7 +992,7 @@ const seekChapter = (chapter) => {
   border-radius: 4px;
   background: var(--accent-primary);
   color: var(--bg-primary);
-  font-size: 22px;
+  font-size: 14px;
   font-weight: 800;
 }
 
@@ -874,8 +1005,8 @@ const seekChapter = (chapter) => {
 }
 
 .latest-text {
-  font-size: 34px;
-  line-height: 1.65;
+  font-size: 18px;
+  line-height: 1.5;
   font-weight: 650;
   color: var(--text-primary);
   white-space: pre-wrap;
@@ -883,13 +1014,13 @@ const seekChapter = (chapter) => {
 }
 
 .latest-chapter.secondary .latest-text {
-  font-size: 31px;
+  font-size: 16px;
 }
 
 .history-title {
   margin: 8px 0 6px;
   color: var(--text-tertiary);
-  font-size: 22px;
+  font-size: 15px;
   font-weight: 700;
 }
 
@@ -916,17 +1047,17 @@ const seekChapter = (chapter) => {
   flex-wrap: wrap;
 }
 .chapter-phase {
-  font-size: 26px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--text-primary);
 }
 .chapter-time {
-  font-size: 21px;
+  font-size: 14px;
   font-family: var(--font-mono);
   color: var(--text-tertiary);
 }
 .chapter-count {
-  font-size: 19px;
+  font-size: 13px;
   padding: 3px 9px;
   border-radius: 3px;
   background: var(--bg-tertiary);
@@ -934,8 +1065,8 @@ const seekChapter = (chapter) => {
   font-family: var(--font-mono);
 }
 .chapter-text {
-  font-size: 24px;
-  line-height: 1.9;
+  font-size: 15px;
+  line-height: 1.55;
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
@@ -943,22 +1074,22 @@ const seekChapter = (chapter) => {
 
 /* Actions */
 .an-actions {
-  padding: 16px 22px;
+  padding: 8px 14px;
   border-top: 1px solid var(--border-subtle);
   display: flex;
   gap: 6px;
   flex-shrink: 0;
-  min-height: 74px;
+  min-height: 52px;
 }
 
 .an-btn {
   flex: 1;
-  padding: 11px 0;
+  padding: 8px 0;
   border-radius: var(--radius-sm);
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: 19px;
+  font-size: 14px;
   cursor: pointer;
   text-align: center;
   transition: border-color 0.15s, color 0.15s, background-color 0.15s;
@@ -1013,43 +1144,4 @@ const seekChapter = (chapter) => {
   overflow: hidden;
 }
 
-.rp-tab,
-.narrative-meta,
-.chapter-count,
-.chapter-time {
-  font-size: 24px;
-}
-
-.narrative-title {
-  font-size: 34px;
-}
-
-.chapter-text,
-.an-full-text {
-  font-size: 30px;
-  line-height: 1.75;
-}
-
-.an-btn {
-  font-size: 26px;
-}
-
-.chapter {
-  padding: 22px 0 24px;
-}
-
-.chapter.active {
-  margin: 0;
-  padding: 22px 0 24px;
-  border-left-width: 0;
-}
-
-.an-actions {
-  min-height: 92px;
-  padding: 20px 24px;
-}
-
-.an-btn {
-  padding: 16px 0;
-}
 </style>

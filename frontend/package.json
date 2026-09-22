@@ -28,6 +28,7 @@
     "build:standalone:backend-only": "cd .. && bash build_standalone.sh --linux --services=backend"
   },
   "dependencies": {
+    "@lucide/vue": "^1.47.0",
     "axios": "^1.6.0",
     "dompurify": "3.4.12",
     "electron-store": "^8.1.0",

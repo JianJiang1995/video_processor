@@ -496,9 +496,15 @@ class MySQLService:
                     AnalysisResult.session_id == session_id,
                     AnalysisResult.window_id == window_id,
                     AnalysisResult.analysis_type == "window"
-                ).first()
+                ).with_for_update().first()
             
             if existing:
+                # A completed manual review is authoritative for this historical
+                # window. Late automatic stage-1/2 jobs must not overwrite it.
+                if analysis_type == "window" and existing.others_data:
+                    saved = json.loads(existing.others_data)
+                    if saved.get("manual_review"):
+                        return existing.id
                 # 更新现有记录
                 if video_name is not None:
                     existing.video_name = video_name
@@ -554,6 +560,33 @@ class MySQLService:
                 session.flush()
                 return result.id
     
+    def save_window_review(self, session_id, window_id, summary, visual, metadata):
+        with self.get_session() as session:
+            row = session.query(AnalysisResult).filter(
+                AnalysisResult.session_id == session_id,
+                AnalysisResult.window_id == window_id,
+                AnalysisResult.analysis_type == "window",
+            ).with_for_update().first()
+            if row is None:
+                return None
+            others = json.loads(row.others_data) if row.others_data else {}
+            history = list(others.get("review_history") or [])
+            history.append({"summary": row.glm_summary,
+                            "visual": others.get("visual_gpt"),
+                            "previous_review": others.get("manual_review"),
+                            "replaced_at": metadata["completed_at"]})
+            others.update(stage=3, manual_review=metadata, review_history=history,
+                          visual_gpt=visual, summary_en="")
+            experts = dict(others.get("experts") or {})
+            experts["open_vlm"] = {"success": True, "provider": "local",
+                                   "summary": summary, "visual": visual,
+                                   "model": metadata["model"]}
+            others["experts"] = experts
+            row.glm_summary = summary
+            row.others_data = json.dumps(others, ensure_ascii=False)
+            session.flush()
+            return others
+
     def get_analyses(
         self,
         session_id: str,

@@ -4,6 +4,7 @@ from unittest.mock import patch
 import cv2
 
 from backend.services.local_video_source import PacedVideoCapture
+from backend.services.frame_capture_service import frame_retention_seconds
 
 
 class _FakeCapture:
@@ -61,6 +62,29 @@ class _FakeClock:
 
 
 class PacedVideoCaptureTest(unittest.TestCase):
+    def test_finite_simulator_keeps_history_but_live_capture_remains_bounded(self):
+        config = {'live_retention_seconds': 300}
+        self.assertEqual(frame_retention_seconds(config, True, True), 0)
+        self.assertEqual(frame_retention_seconds(config, False, False), 0)
+        self.assertEqual(frame_retention_seconds(config, True, False), 300)
+
+    def test_50fps_analysis_sampling_preserves_source_time_and_eof(self):
+        fake_capture = _FakeCapture(fps=50, total=21)
+        clock = _FakeClock()
+        with (
+            patch("backend.services.local_video_source.cv2.VideoCapture", return_value=fake_capture),
+            patch("backend.services.local_video_source.time.perf_counter", side_effect=clock.perf_counter),
+            patch("backend.services.local_video_source.time.sleep", side_effect=clock.sleep),
+        ):
+            capture = PacedVideoCapture("fake.mp4", loop=False, sample_fps=5)
+            for index in (0, 10, 20):
+                self.assertEqual(capture.read(), (True, index))
+                self.assertAlmostEqual(capture.last_timestamp(), index / 50)
+                self.assertAlmostEqual(clock.now, index / 50)
+            self.assertEqual(capture.read(), (False, None))
+            capture.set(cv2.CAP_PROP_POS_FRAMES, 10)
+            self.assertEqual(capture.read(), (True, 10))
+
     def test_late_consumer_skips_stale_frames_without_shifting_clock(self):
         fake_capture = _FakeCapture()
         clock = _FakeClock()

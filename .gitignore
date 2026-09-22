@@ -3,6 +3,7 @@
 !.env.example
 .venv/
 .pids/
+.runtime/
 logs/
 sessions/
 uploads/

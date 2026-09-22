@@ -186,9 +186,8 @@ def _aggregate_yolo(per_frame: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
     label_counts: Counter = Counter()
     total = 0
     for dets in per_frame:
-        for d in dets:
-            label_counts[d["label"]] += 1
-            total += 1
+        label_counts.update({d["label"] for d in dets})
+        total += len(dets)
     return {
         "tools": [{"label": lbl, "frames_seen": c} for lbl, c in label_counts.most_common()],
         "total_detections": total,

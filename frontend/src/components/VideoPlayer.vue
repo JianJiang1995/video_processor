@@ -21,51 +21,40 @@
           <div class="loop-loading-text">{{ t('video.loadingPlayback') }}</div>
         </div>
         
-        <div
+        <canvas
           v-else-if="useCanvasStream"
-          class="stream-image stream-buffer"
-          :class="{
-            'hidden-by-sam3': showSam3 && sam3Frame,
-            'decklink-stream': isDeckLinkCapture
-          }"
-          @click="togglePlay"
-        >
-          <img
-            v-if="streamBufferA"
-            :src="streamBufferA"
-            class="stream-buffer-frame"
-            :class="{ active: activeStreamBuffer === 'a' }"
-            draggable="false"
-          />
-          <img
-            v-if="streamBufferB"
-            :src="streamBufferB"
-            class="stream-buffer-frame"
-            :class="{ active: activeStreamBuffer === 'b' }"
-            draggable="false"
-          />
-        </div>
-
-        <!-- Native playback for the local capture-card simulator. Analysis still
-             runs through the live simulator pipeline; preview should use the
-             browser decoder instead of a JPEG frame stream. -->
-        <video
-          v-else-if="mode === 'stream' && isSimulatorStream"
-          ref="videoRef"
-          :src="`${backendUrl}/api/video/stream/${session.session_id}`"
-          class="stream-image simulator-video"
+          ref="streamCanvasRef"
+          class="stream-image stream-canvas"
           :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
-          autoplay
-          muted
-          playsinline
-          @timeupdate="onTimeUpdate"
-          @loadedmetadata="onLoadedMetadata"
-          @loadeddata="onNativeDataReady"
-          @canplay="onNativeCanPlay"
-          @play="$emit('play')"
-          @pause="onNativePause"
           @click="togglePlay"
-        ></video>
+        ></canvas>
+
+        <!-- Chromium video playback; this does not launch a native player. -->
+        <div
+          v-else-if="mode === 'stream' && isSimulatorStream"
+          class="simulator-native-viewport"
+          :class="{ 'quad-right': isQuadRightLayout }"
+        >
+          <div class="simulator-native-frame">
+            <video
+              v-if="sourceSelectionReady"
+              ref="videoRef"
+              :src="videoSourceUrl"
+              class="stream-image simulator-video"
+              :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
+              :autoplay="isPlaying && !streamEnded"
+              muted
+              playsinline
+              @timeupdate="onTimeUpdate"
+              @loadedmetadata="onLoadedMetadata"
+              @loadeddata="onNativeDataReady"
+              @canplay="onNativeCanPlay"
+              @play="$emit('play')"
+              @pause="onNativePause"
+              @click="togglePlay"
+            ></video>
+          </div>
+        </div>
 
         <!-- MJPEG Stream (for live streams, hidden when in loop playback mode) -->
         <!-- When paused with a frozen frame, hide this and show frozen frame -->
@@ -84,14 +73,14 @@
         />
         <!-- Frozen frame when paused (captured from stream or from backend) -->
         <img
-          v-if="mode === 'stream' && isLiveStream && !isLoopPlaybackMode && isPaused && frozenFrame"
+          v-if="mode === 'stream' && isLiveStream && !isSimulatorStream && !isLoopPlaybackMode && isPaused && frozenFrame"
           :src="frozenFrame"
           class="stream-image frozen"
           :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
         />
         <!-- Pause overlay when stream is paused but no frozen frame available -->
         <div 
-          v-if="mode === 'stream' && isLiveStream && !isLoopPlaybackMode && isPaused && !frozenFrame"
+          v-if="mode === 'stream' && isLiveStream && !isSimulatorStream && !isLoopPlaybackMode && isPaused && !frozenFrame"
           class="pause-overlay"
         >
           <div class="pause-icon">⏸</div>
@@ -100,9 +89,10 @@
         
         <!-- Video Element (for local files) -->
         <video
-          v-else
+          v-if="sourceSelectionReady && (mode !== 'stream' || !isLiveStream)"
           ref="videoRef"
-          :src="`${backendUrl}/api/video/stream/${session.session_id}`"
+          :src="videoSourceUrl"
+          :muted="reviewMode"
           :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
           @timeupdate="onTimeUpdate"
           @loadedmetadata="onLoadedMetadata"
@@ -189,7 +179,7 @@
       </div>
       
       <!-- Live/Ended Indicator -->
-      <div v-if="session && mode === 'stream'" class="live-indicator" :class="{ 'ended': streamEnded }">
+      <div v-if="session && mode === 'stream' && !reviewMode" class="live-indicator" :class="{ 'ended': streamEnded }">
         <span class="live-dot" :class="{ 'ended': streamEnded }"></span>
         {{ streamEnded ? t('video.ended') : t('video.live') }}
       </div>
@@ -213,7 +203,7 @@
     
     <!-- Loop Playback Indicator - Outside video container to avoid blocking video -->
     <div
-      v-if="loopWindow"
+      v-if="loopWindow && !reviewMode"
       class="loop-indicator-bar"
       @mousedown.stop.prevent="emit('exitLoop')"
       @click.stop.prevent="emit('exitLoop')"
@@ -240,11 +230,13 @@
 import { ref, watch, onUnmounted, computed, nextTick } from 'vue'
 import { isElectron, getBackendUrl, getCachedFrame, cacheFrame, getLocalFrame } from '@/utils/electronBridge'
 import { useI18n } from '@/i18n'
+import { selectPlaybackPreview } from '@/utils/playbackSource'
 
 const { t } = useI18n()
 
 // 后端 URL（Electron 环境下从配置读取，浏览器环境为空使用相对路径）
 const backendUrl = ref('')
+const backendReady = ref(false)
 
 const props = defineProps({
   session: Object,
@@ -267,11 +259,16 @@ const props = defineProps({
     type: Object,
     default: null  // { window_id, start_time, end_time }
   },
+  reviewMode: { type: Boolean, default: false },
   streamEnded: {
     type: Boolean,
     default: false
   },
   resumeNonce: {
+    type: Number,
+    default: 0
+  },
+  seekNonce: {
     type: Number,
     default: 0
   },
@@ -281,10 +278,11 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['timeupdate', 'play', 'pause', 'ended', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning', 'capture-status'])
+const emit = defineEmits(['timeupdate', 'play', 'pause', 'ended', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning', 'capture-status', 'reviewToggle'])
 
 const videoRef = ref(null)
 const streamImgRef = ref(null)
+const streamCanvasRef = ref(null)
 const containerRef = ref(null)
 const fileInput = ref(null)
 const nativeMetadataReady = ref(false)
@@ -299,9 +297,6 @@ const sam3Error = ref(null)  // Track SAM3 errors
 const sam3Loading = ref(false)  // Track SAM3 loading state
 const sam3FrameTime = ref(null)  // Actual timestamp of the SAM3 frame being displayed
 const sam3FetchInProgress = ref(false)  // Prevent concurrent SAM3 requests
-const streamBufferA = ref('')
-const streamBufferB = ref('')
-const activeStreamBuffer = ref('a')
 
 // Loop playback state for stream mode
 const loopPlaybackFrame = ref(null)  // Current frame being displayed during loop playback
@@ -338,6 +333,45 @@ const isDeckLinkCapture = computed(() => {
 const isSimulatorStream = computed(() => {
   return props.session?.video_path?.startsWith('simulator://') || false
 })
+
+const isQuadRightLayout = computed(() => {
+  if (props.session?.input_layout === 'quad_right') return true
+  return String(props.session?.video_path || '').includes('input_layout=quad_right')
+})
+
+const previewReady = ref(false)
+const sourceSelectionReady = ref(false)
+let previewRequestGeneration = 0
+let previewAbort = null
+
+const videoSourceUrl = computed(() => {
+  if (props.session?.replay_video_url) return props.session.replay_video_url
+  if (!props.session?.session_id) return ''
+  return `${backendUrl.value}/api/video/stream/${props.session.session_id}?preview=${previewReady.value ? 1 : 0}`
+})
+
+watch(() => [backendReady.value, backendUrl.value, props.session?.session_id], async () => {
+  const generation = ++previewRequestGeneration
+  previewAbort?.abort()
+  previewReady.value = false
+  sourceSelectionReady.value = false
+  if (!backendReady.value || !props.session?.session_id) return
+  if (props.session?.replay_video_url || (props.mode === 'stream' && !isSimulatorStream.value)) {
+    sourceSelectionReady.value = true
+    return
+  }
+  isLoading.value = true
+  const sessionId = props.session.session_id
+  previewAbort = new AbortController()
+  const ready = await selectPlaybackPreview(async signal => {
+    const response = await fetch(`${backendUrl.value}/api/video/playback-info/${sessionId}`, { signal })
+    if (!response.ok) throw new Error(`Playback metadata: ${response.status}`)
+    return response.json()
+  }, { signal: previewAbort.signal })
+  if (generation !== previewRequestGeneration) return
+  previewReady.value = ready
+  sourceSelectionReady.value = true
+}, { immediate: true })
 
 // Combined: is any type of live source (HTTP/HTTPS/RTSP/capture card)
 const isLiveStream = computed(() => isHttpMjpegStream.value || isRtspStream.value || isCaptureDevice.value)
@@ -443,13 +477,13 @@ const onStreamLoad = () => {
   isLoading.value = false
 }
 
-const restoreNativeSimulatorPlayback = () => {
+const restoreNativeSimulatorPlayback = (restorePosition = false) => {
   if (!isSimulatorStream.value || props.loopWindow || !videoRef.value) return
 
   isLoading.value = false
   const targetTime = Number(props.currentTime || 0)
   if (
-    targetTime > 1 &&
+    restorePosition && targetTime > 0 &&
     Math.abs(videoRef.value.currentTime - targetTime) > 0.5
   ) {
     videoRef.value.currentTime = targetTime
@@ -481,9 +515,7 @@ const onNativeCanPlay = () => {
 
 const resumeNativeSimulatorPlaybackSoon = async () => {
   await nextTick()
-  restoreNativeSimulatorPlayback()
-  window.setTimeout(restoreNativeSimulatorPlayback, 120)
-  window.setTimeout(restoreNativeSimulatorPlayback, 360)
+  restoreNativeSimulatorPlayback(true)
 }
 
 const onStreamError = () => {
@@ -494,6 +526,9 @@ const onStreamError = () => {
 // Capture current frame when pausing stream
 const captureFrame = () => {
   try {
+    if (useCanvasStream.value && streamCanvasRef.value) {
+      return streamCanvasRef.value.toDataURL('image/jpeg', 0.9)
+    }
     if (!streamImgRef.value) return null
     const img = streamImgRef.value
     // Check if image is loaded and has valid dimensions
@@ -515,10 +550,10 @@ const captureFrame = () => {
 }
 
 let streamWs = null
-let pendingFrameDecode = false
-let lastObjectUrls = []
+let streamReconnectTimer = null
 
 const stopCanvasStream = () => {
+  clearTimeout(streamReconnectTimer)
   if (streamWs) {
     streamWs.onopen = null
     streamWs.onmessage = null
@@ -529,12 +564,6 @@ const stopCanvasStream = () => {
     } catch (_) {}
     streamWs = null
   }
-  lastObjectUrls.forEach(url => URL.revokeObjectURL(url))
-  lastObjectUrls = []
-  streamBufferA.value = ''
-  streamBufferB.value = ''
-  activeStreamBuffer.value = 'a'
-  pendingFrameDecode = false
 }
 
 const canvasStreamUrl = () => {
@@ -543,8 +572,9 @@ const canvasStreamUrl = () => {
   const url = new URL(`/api/video/ws-display/${props.session.session_id}`, base)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('fps', '30')
-  url.searchParams.set('quality', '82')
-  url.searchParams.set('max_width', '1920')
+  url.searchParams.set('quality', '78')
+  url.searchParams.set('max_width', '1280')
+  url.searchParams.set('ack', 'true')
   return url.toString()
 }
 
@@ -560,6 +590,7 @@ const startCanvasStream = async () => {
   const url = canvasStreamUrl()
   if (!url) return
   streamWs = new WebSocket(url)
+  const socket = streamWs
   streamWs.binaryType = 'arraybuffer'
   streamWs.onopen = () => {
     console.log('[CanvasStream] connected')
@@ -570,34 +601,32 @@ const startCanvasStream = async () => {
   }
   streamWs.onclose = () => {
     console.log('[CanvasStream] closed')
+    if (streamWs === socket && useCanvasStream.value && props.isPlaying) {
+      streamReconnectTimer = setTimeout(startCanvasStream, 500)
+    }
   }
   streamWs.onmessage = async (event) => {
-    if (pendingFrameDecode) return
-    pendingFrameDecode = true
-    const nextSlot = activeStreamBuffer.value === 'a' ? 'b' : 'a'
-    const url = URL.createObjectURL(new Blob([event.data], { type: 'image/jpeg' }))
-    const img = new Image()
-    img.onload = () => {
-      const previousUrl = nextSlot === 'a' ? streamBufferA.value : streamBufferB.value
-      if (nextSlot === 'a') {
-        streamBufferA.value = url
-      } else {
-        streamBufferB.value = url
+    let bitmap
+    try {
+      // Decode once off the main thread, then present a complete frame. The
+      // server sends the next frame only after this one has been consumed.
+      bitmap = await createImageBitmap(new Blob([event.data], { type: 'image/jpeg' }))
+      if (streamWs !== socket) return
+      const canvas = streamCanvasRef.value
+      if (canvas && !props.isPaused) {
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width
+          canvas.height = bitmap.height
+        }
+        canvas.getContext('2d', { alpha: false }).drawImage(bitmap, 0, 0)
+        isLoading.value = false
       }
-      activeStreamBuffer.value = nextSlot
-      isLoading.value = false
-      if (previousUrl) {
-        setTimeout(() => URL.revokeObjectURL(previousUrl), 250)
-      }
-      lastObjectUrls = lastObjectUrls.filter(item => item !== previousUrl)
-      lastObjectUrls.push(url)
-      pendingFrameDecode = false
+    } catch (error) {
+      console.warn('[CanvasStream] frame decode failed:', error.message)
+    } finally {
+      bitmap?.close()
+      if (streamWs === socket && socket.readyState === WebSocket.OPEN) socket.send('ready')
     }
-    img.onerror = () => {
-      URL.revokeObjectURL(url)
-      pendingFrameDecode = false
-    }
-    img.src = url
   }
 }
 
@@ -639,6 +668,7 @@ const fetchFrameFromBackend = async () => {
 // 初始化后端 URL
 ;(async () => {
   backendUrl.value = await getBackendUrl()
+  backendReady.value = true
   console.log('[VideoPlayer] Backend URL:', backendUrl.value || '(relative path)')
 })()
 
@@ -650,7 +680,7 @@ watch(
 
 // Watch for pause state changes to capture/clear frozen frame
 watch(() => props.isPaused, async (paused) => {
-  if (paused && props.mode === 'stream') {
+  if (paused && props.mode === 'stream' && !isSimulatorStream.value) {
     // First try to capture current frame from canvas
     let frame = captureFrame()
     
@@ -668,22 +698,18 @@ watch(() => props.isPaused, async (paused) => {
   }
 })
 
-// Watch for external time changes (seeking)
-// Use a small threshold (0.1s) to avoid unnecessary seeks during normal playback
-// but still allow precise seeking for loop playback and user interactions
+// Time reports flow from video to UI. Only explicit commands may seek back.
 watch(() => props.currentTime, (newTime) => {
   if (!nativeMetadataReady.value) {
     pendingInitialSeek.value = Math.max(pendingInitialSeek.value, Number(newTime || 0))
-    return
-  }
-  if (isSimulatorStream.value && props.isPlaying && !props.loopWindow) {
-    return
-  }
-  if (videoRef.value && Math.abs(videoRef.value.currentTime - newTime) > 0.1) {
-    console.log(`[VideoPlayer] Seeking from ${videoRef.value.currentTime.toFixed(2)}s to ${newTime.toFixed(2)}s`)
-    videoRef.value.currentTime = newTime
   }
 })
+
+watch(() => props.seekNonce, () => {
+  if (videoRef.value && nativeMetadataReady.value) {
+    videoRef.value.currentTime = Math.max(0, Number(props.currentTime || 0))
+  }
+}, { flush: 'post' })
 
 // Watch for play/pause state
 watch(() => props.isPlaying, async (playing) => {
@@ -698,14 +724,6 @@ watch(() => props.isPlaying, async (playing) => {
   }
   if (videoRef.value) {
     if (playing) {
-      if (
-        isSimulatorStream.value &&
-        !props.loopWindow &&
-        props.currentTime > 1 &&
-        videoRef.value.currentTime < props.currentTime - 1
-      ) {
-        videoRef.value.currentTime = props.currentTime
-      }
       videoRef.value.play().catch(() => {})
     } else {
       videoRef.value.pause()
@@ -731,16 +749,7 @@ watch(
 let lastNativeTimeEmit = 0
 const onTimeUpdate = () => {
   if (videoRef.value && nativeMetadataReady.value) {
-    if (
-      isSimulatorStream.value &&
-      !props.loopWindow &&
-      props.currentTime > 3 &&
-      videoRef.value.currentTime < props.currentTime - 2
-    ) {
-      videoRef.value.currentTime = props.currentTime
-      return
-    }
-    if (isSimulatorStream.value && props.loopWindow) {
+    if ((isSimulatorStream.value || props.reviewMode) && props.loopWindow) {
       const windowStart = props.loopWindow.start_time || 0
       const windowEnd = props.loopWindow.end_time || windowStart
       if (videoRef.value.currentTime < windowStart - 0.08) {
@@ -750,6 +759,7 @@ const onTimeUpdate = () => {
       if (windowEnd > windowStart && videoRef.value.currentTime >= windowEnd - 0.04) {
         videoRef.value.currentTime = windowStart
         loopPlaybackTime.value = windowStart
+        if (props.reviewMode && props.isPlaying) videoRef.value.play().catch(() => {})
         emit('timeupdate', windowStart)
         return
       }
@@ -766,7 +776,7 @@ const onTimeUpdate = () => {
 
 const onLoadedMetadata = () => {
   isLoading.value = false
-  if (!isSimulatorStream.value && videoRef.value) {
+  if (videoRef.value) {
     const targetTime = Math.max(pendingInitialSeek.value, Number(props.currentTime || 0))
     if (targetTime > 0.04 && Math.abs(videoRef.value.currentTime - targetTime) > 0.08) {
       videoRef.value.currentTime = targetTime
@@ -775,6 +785,10 @@ const onLoadedMetadata = () => {
   nativeMetadataReady.value = true
   pendingInitialSeek.value = 0
   restoreNativeSimulatorPlayback()
+  if (videoRef.value) {
+    if (props.isPlaying && !props.streamEnded) videoRef.value.play().catch(() => {})
+    else videoRef.value.pause()
+  }
 }
 
 watch(() => props.session?.session_id, () => {
@@ -790,8 +804,12 @@ const onNativePause = () => {
 }
 
 const togglePlay = () => {
+  if (props.reviewMode) {
+    emit('reviewToggle')
+    return
+  }
   // If in loop mode, clicking video exits loop mode
-  if (props.loopWindow) {
+  if (props.loopWindow && !props.reviewMode) {
     emit('exitLoop')
     return
   }
@@ -1652,6 +1670,8 @@ watch(() => props.currentTime, (newTime) => {
 })
 
 onUnmounted(() => {
+  ++previewRequestGeneration
+  previewAbort?.abort()
   // Clear SAM3 timer
   if (sam3LoadingTimer.value) {
     clearInterval(sam3LoadingTimer.value)
@@ -1801,8 +1821,45 @@ onUnmounted(() => {
 }
 
 .stream-image.simulator-video {
-  object-fit: cover;
+  object-fit: contain;
   object-position: center center;
+}
+
+.simulator-native-viewport {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  container-type: size;
+  background: #000;
+}
+
+.simulator-native-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.simulator-native-frame .simulator-video {
+  width: 100%;
+  height: 100%;
+}
+
+.simulator-native-viewport.quad-right .simulator-native-frame {
+  width: min(100cqw, 133.333cqh);
+  height: min(100cqh, 75cqw);
+}
+
+.simulator-native-viewport.quad-right .simulator-video {
+  position: absolute;
+  top: 0;
+  left: -33.333%;
+  width: 133.333%;
+  height: 100%;
+  max-width: none;
+  object-fit: fill;
 }
 
 .stream-image.stream-buffer {

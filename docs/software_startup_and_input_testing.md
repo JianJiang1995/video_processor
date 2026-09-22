@@ -1,6 +1,6 @@
 # SurgR1 软件启动与视频输入测试手册
 
-更新时间：2026-07-24
+更新时间：2026-09-20
 
 本手册用于服务器本地 Ubuntu 桌面，覆盖完整软件启动、DeckLink 快速检测、独立预览、
 输入制式排查、日志位置和现场常见故障。
@@ -9,7 +9,19 @@
 
 所有命令都在服务器本地 Ubuntu 图形桌面的终端中运行。
 
-### 1. 一条命令启动完整软件
+### 1. 桌面快捷方式启动（推荐）
+
+双击 Ubuntu 桌面的：
+
+```text
+SurgR1 视频理解
+```
+
+它会依次启动 MySQL、本地 Qwen3-VL、VLM 代理、FastAPI 与全部后端专家模型，确认模型
+就绪后再打开 Electron。模型和服务的准确清单见
+`docs/runtime_services_and_models.md`。
+
+### 2. 一条命令启动完整软件
 
 ```bash
 cd /home/user/proj/video_processor/video_stream_app
@@ -19,18 +31,19 @@ cd /home/user/proj/video_processor/video_stream_app
 这个脚本会：
 
 1. 检查本地图形桌面；
-2. 复用已经健康的后端，或自动启动后端；
-3. 等待后端健康检查通过；
-4. 启动 Electron；
-5. Electron 关闭后，只停止由本次脚本启动的后端。
+2. 检查 MySQL，并启动或复用本地 Qwen3-VL 与 VLM 代理；
+3. 自动将 VLM 和四个专家模型分配到当前两张 RTX 4090；
+4. 启动后端并等待 Phase、Triplet、器械 YOLO、夹子 YOLO 全部预加载完成；
+5. 启动 Electron；
+6. Electron 关闭后，只停止由本次脚本启动的服务。
 
 后端启动日志在：
 
 ```text
-/home/user/proj/video_processor/video_stream_app/logs/onsite_backend.log
+/home/user/proj/video_processor/video_stream_app/logs/desktop_launcher/
 ```
 
-### 2. 先测输入，再启动完整软件
+### 3. 先测输入，再启动完整软件
 
 ```bash
 cd /home/user/proj/video_processor/video_stream_app
@@ -39,7 +52,7 @@ cd /home/user/proj/video_processor/video_stream_app
 
 预检没有信号时，完整软件仍会打开并等待后续接线，不会因为先开软件而失败。
 
-### 3. 只看采集卡原始画面，不启动 AI
+### 4. 只看采集卡原始画面，不启动 AI
 
 ```bash
 cd /home/user/proj/video_processor/video_stream_app

@@ -5,12 +5,12 @@
       <!-- Welcome message -->
       <div v-if="messages.length === 0" class="chat-empty">
         <div class="chat-empty-icon">&#x1F4AC;</div>
-        <div class="chat-empty-text">{{ t('chat.emptyText') }}</div>
-        <div class="chat-empty-hint">{{ t('chat.emptyHint') }}</div>
+        <div class="chat-empty-text">{{ reviewContext ? t('review.questions') : t('chat.emptyText') }}</div>
+        <div v-if="!reviewContext" class="chat-empty-hint">{{ t('chat.emptyHint') }}</div>
         <div class="chat-hints">
-          <button class="chat-hint-chip" @click="sendQuickMessage(t('chat.currentPhasePrompt'))">{{ t('chat.currentPhase') }}</button>
+          <button class="chat-hint-chip" @click="sendQuickMessage(t(reviewContext ? 'review.actionsPrompt' : 'chat.currentPhasePrompt'))">{{ t(reviewContext ? 'review.actions' : 'chat.currentPhase') }}</button>
           <button class="chat-hint-chip" @click="sendQuickMessage(t('chat.bleedingSignsPrompt'))">{{ t('chat.bleedingSigns') }}</button>
-          <button class="chat-hint-chip" @click="sendQuickMessage(t('chat.findSimilarPrompt'))">{{ t('chat.findSimilar') }}</button>
+          <button v-if="!reviewContext" class="chat-hint-chip" @click="sendQuickMessage(t('chat.findSimilarPrompt'))">{{ t('chat.findSimilar') }}</button>
         </div>
       </div>
 
@@ -20,7 +20,12 @@
         class="chat-msg"
         :class="msg.role"
       >
-        <div class="chat-msg-content">{{ msg.content }}</div>
+        <div class="chat-msg-content"><ChatMessageText
+          v-if="msg.role === 'assistant'"
+          :text="msg.content"
+          :summaries="summaries"
+          @review="$emit('review', $event)"
+        /><template v-else>{{ msg.content }}</template></div>
 
         <!-- Context reference -->
         <div v-if="msg.context" class="chat-msg-context">
@@ -58,6 +63,7 @@
         class="chat-input"
         v-model="inputText"
         :placeholder="t('chat.placeholder')"
+        :disabled="isLoading"
         @keydown.enter="sendMessage"
       />
       <button
@@ -71,7 +77,7 @@
       <button
         class="chat-send-btn"
         @click="sendMessage"
-        :disabled="!inputText.trim() && !isRecording"
+        :disabled="isLoading || (!inputText.trim() && !isRecording)"
       >
         &#x27A4;
       </button>
@@ -80,18 +86,20 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch } from 'vue'
+import { ref, nextTick, watch, onUnmounted } from 'vue'
 import axios from 'axios'
 import { useI18n } from '@/i18n'
+import ChatMessageText from './ChatMessageText.vue'
 
 const { t } = useI18n()
 
 const props = defineProps({
   sessionId: { type: String, default: '' },
   summaries: { type: Array, default: () => [] },
+  reviewContext: { type: Object, default: null },
 })
 
-const emit = defineEmits(['seekToWindow', 'message'])
+const emit = defineEmits(['seekToWindow', 'message', 'review'])
 
 const messages = ref([])
 const inputText = ref('')
@@ -103,6 +111,7 @@ const inputRef = ref(null)
 // Audio recording
 let mediaRecorder = null
 let audioChunks = []
+let pendingRequest = null
 
 const scrollToBottom = () => {
   nextTick(() => {
@@ -140,7 +149,9 @@ const formatError = (error) => {
 
 const sendMessage = async () => {
   const text = inputText.value.trim()
-  if (!text || !props.sessionId) return
+  if (!text || !props.sessionId || isLoading.value) return
+  const controller = new AbortController()
+  pendingRequest = controller
 
   // Add user message
   messages.value.push({
@@ -161,7 +172,9 @@ const sendMessage = async () => {
       role: 'user',
       content: text,
       timestamp: Date.now() / 1000,
-    })
+      ...(props.reviewContext ? { review_context: props.reviewContext } : {}),
+    }, { signal: controller.signal })
+    if (controller.signal.aborted) return
 
     const assistantContent = response.data?.response?.content
       || response.data?.response_text
@@ -173,7 +186,7 @@ const sendMessage = async () => {
       content: assistantContent,
       time: formatTime(),
       similarWindows: null,
-      context: buildContext() ? t('chat.contextUsed') : null,
+      context: props.reviewContext ? t('review.contextUsed') : (buildContext() ? t('chat.contextUsed') : null),
     }
 
     // If similarity-related, also run semantic search
@@ -183,7 +196,7 @@ const sendMessage = async () => {
           session_id: props.sessionId,
           query: text,
           top_k: 5,
-        })
+        }, { signal: controller.signal })
         if (searchRes.data?.results?.length) {
           reply.similarWindows = searchRes.data.results
         }
@@ -192,6 +205,7 @@ const sendMessage = async () => {
       }
     }
 
+    if (controller.signal.aborted) return
     messages.value.push(reply)
     emit('message', reply)
 
@@ -200,14 +214,18 @@ const sendMessage = async () => {
       playAudio(response.data.response.audio_base64)
     }
   } catch (error) {
+    if (controller.signal.aborted) return
     messages.value.push({
       role: 'assistant',
       content: `${t('chat.errorPrefix')}: ${formatError(error)}`,
       time: formatTime(),
     })
   } finally {
-    isLoading.value = false
-    scrollToBottom()
+    if (pendingRequest === controller) {
+      pendingRequest = null
+      isLoading.value = false
+      scrollToBottom()
+    }
   }
 }
 
@@ -292,6 +310,21 @@ const playAudio = (base64Audio) => {
 }
 
 watch(messages, scrollToBottom, { deep: true })
+watch(() => [props.sessionId, props.reviewContext?.start_time, props.reviewContext?.end_time], () => {
+  pendingRequest?.abort()
+  pendingRequest = null
+  isLoading.value = false
+  messages.value = []
+  inputText.value = ''
+})
+onUnmounted(() => {
+  pendingRequest?.abort()
+  if (mediaRecorder) {
+    mediaRecorder.onstop = null
+    if (mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+    mediaRecorder.stream.getTracks().forEach(track => track.stop())
+  }
+})
 </script>
 
 <style scoped>
@@ -464,6 +497,7 @@ watch(messages, scrollToBottom, { deep: true })
 
 .chat-input {
   flex: 1;
+  min-width: 0;
   padding: 8px 14px;
   border-radius: 100px;
   background: var(--bg-tertiary);

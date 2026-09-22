@@ -734,7 +734,7 @@ const formatTimeOffset = (seconds) => {
 /* Window Display in Time */
 .window-display {
   color: var(--accent-primary);
-  font-size: 0.95rem;
+  font-size: 12px;
   margin-left: 0.25rem;
 }
 
@@ -742,20 +742,21 @@ const formatTimeOffset = (seconds) => {
 .analysis-services {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  margin-right: 0.9rem;
-  padding: 0.55rem 0.8rem;
+  gap: 0.12rem;
+  margin-right: 0.2rem;
+  padding: 2px 3px;
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
+  flex: 0 0 auto;
 }
 
 .service-badge {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.48rem 0.72rem;
+  gap: 0.18rem;
+  padding: 2px 3px;
   border-radius: var(--radius-sm);
-  font-size: 1.08rem;
+  font-size: 11px;
   color: var(--text-tertiary);
   transition: all 0.2s;
   cursor: default;
@@ -800,11 +801,11 @@ const formatTimeOffset = (seconds) => {
 }
 
 .frame-count {
-  font-size: 1rem;
+  font-size: 11px;
   font-weight: 600;
   background: var(--accent-primary, #00d4aa);
   color: #000;
-  padding: 0.12rem 0.42rem;
+  padding: 0.08rem 0.3rem;
   border-radius: 4px;
   min-width: 18px;
   text-align: center;
@@ -812,13 +813,13 @@ const formatTimeOffset = (seconds) => {
 
 .service-label {
   font-weight: 700;
-  font-size: 1.08rem;
-  letter-spacing: 0.02em;
+  font-size: 11px;
+  letter-spacing: 0;
 }
 
 .service-icon {
-  width: 26px;
-  height: 26px;
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
   transition: all 0.2s;
 }
@@ -827,7 +828,12 @@ const formatTimeOffset = (seconds) => {
 .analyze-btn {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.3rem;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  min-height: 28px;
+  padding: 3px 7px;
+  font-size: 12px;
 }
 
 .analyze-btn:disabled {
@@ -839,14 +845,18 @@ const formatTimeOffset = (seconds) => {
 .stop-btn {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.3rem;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  min-height: 28px;
+  font-size: 12px;
 }
 
 .btn-danger {
   background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
   border: none;
   color: white;
-  padding: 0.9rem 1.55rem;
+  padding: 3px 7px;
   border-radius: var(--radius-md, 6px);
   cursor: pointer;
   font-weight: 500;
@@ -880,9 +890,9 @@ const formatTimeOffset = (seconds) => {
 .live-badge {
   background: rgba(255, 0, 0, 0.8);
   color: white;
-  padding: 0.28rem 0.65rem;
+  padding: 3px 5px;
   border-radius: var(--radius-sm);
-  font-size: 1.05rem;
+  font-size: 11px;
   font-weight: 600;
   margin-right: 0.5rem;
 }

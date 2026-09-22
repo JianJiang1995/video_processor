@@ -20,6 +20,32 @@
       </button>
     </div>
 
+    <div class="input-layout-option">
+      <div class="input-layout-label">{{ t('stream.inputLayoutQuestion') }}</div>
+      <div class="input-layout-segment" role="radiogroup" :aria-label="t('stream.inputLayout')">
+        <button
+          type="button"
+          class="layout-choice"
+          :class="{ active: inputLayout === 'full' }"
+          :aria-checked="inputLayout === 'full'"
+          role="radio"
+          @click="setInputLayout('full')"
+        >
+          {{ t('stream.layoutSingle') }}
+        </button>
+        <button
+          type="button"
+          class="layout-choice"
+          :class="{ active: inputLayout === 'quad_right' }"
+          :aria-checked="inputLayout === 'quad_right'"
+          role="radio"
+          @click="setInputLayout('quad_right')"
+        >
+          {{ t('stream.layoutQuadRight') }}
+        </button>
+      </div>
+    </div>
+
     <!-- Network Stream Input -->
     <template v-if="sourceType === 'stream'">
       <div class="input-group">
@@ -207,6 +233,7 @@ const selectedDevice = ref(null)
 const selectedMode = ref('auto')
 const selectedConnection = ref('hdmi')
 const isLoadingDevices = ref(false)
+const inputLayout = ref(localStorage.getItem('surgr1_input_layout') || 'full')
 
 // Common state
 const autoAnalyze = ref(import.meta.env.VITE_AUTO_ANALYZE_DEFAULT !== '0')
@@ -220,6 +247,11 @@ let abortController = null
 
 const selectPreset = (preset) => {
   streamUrl.value = preset.url
+}
+
+const setInputLayout = (layout) => {
+  inputLayout.value = layout === 'quad_right' ? 'quad_right' : 'full'
+  localStorage.setItem('surgr1_input_layout', inputLayout.value)
 }
 
 const selectDevice = (device) => {
@@ -324,7 +356,8 @@ const connect = async () => {
   try {
     const response = await axios.post('/api/video/connect-stream', {
       stream_url: streamUrl.value,
-      auto_analyze: autoAnalyze.value
+      auto_analyze: autoAnalyze.value,
+      input_layout: inputLayout.value
     }, {
       signal: abortController.signal,
       timeout: 30000  // 增加到 30 秒，因为视频流连接可能较慢
@@ -380,7 +413,8 @@ const connectCapture = async () => {
       backend: selectedDevice.value.backend || 'auto',
       mode: selectedMode.value || selectedDevice.value.default_mode || 'auto',
       connection: selectedConnection.value || selectedDevice.value.default_connection || 'auto',
-      auto_analyze: autoAnalyze.value
+      auto_analyze: autoAnalyze.value,
+      input_layout: inputLayout.value
     }, {
       signal: abortController.signal,
       timeout: 25000
@@ -414,24 +448,63 @@ const connectCapture = async () => {
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: 1.8rem 2rem;
-  max-width: 760px;
-  max-height: calc(100vh - 4rem);
+  padding: 1rem 1.25rem;
+  max-width: 820px;
+  max-height: calc(100vh - 2rem);
   overflow-y: auto;
   width: 100%;
   box-shadow: var(--shadow-md);
 }
 
 .stream-input-panel h3 {
-  margin: 0 0 1.5rem 0;
-  font-size: 1.25rem;
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+}
+
+.input-layout-option {
+  margin: 0 0 0.65rem;
+}
+
+.input-layout-label {
+  margin-bottom: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.input-layout-segment {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+}
+
+.layout-choice {
+  min-height: 34px;
+  padding: 0.35rem 0.55rem;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-display);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.layout-choice.active {
+  background: var(--bg-elevated);
+  color: var(--accent-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24);
 }
 
 /* Source Type Tabs */
 .source-tabs {
   display: flex;
   gap: 0.5rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.65rem;
   padding: 0.25rem;
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
@@ -439,7 +512,7 @@ const connectCapture = async () => {
 
 .tab-btn {
   flex: 1;
-  padding: 0.75rem 1rem;
+  padding: 0.48rem 0.75rem;
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
@@ -461,7 +534,7 @@ const connectCapture = async () => {
 
 /* Input Group */
 .input-group {
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.75rem;
 }
 
 .input-group label {
@@ -483,7 +556,7 @@ const connectCapture = async () => {
 
 /* Preset Streams */
 .preset-streams {
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.75rem;
 }
 
 .preset-streams label {
@@ -517,14 +590,14 @@ const connectCapture = async () => {
 
 /* Capture Section */
 .capture-section {
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.7rem;
 }
 
 .capture-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .capture-header label {
@@ -594,14 +667,14 @@ const connectCapture = async () => {
 .device-list {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.35rem;
 }
 
 .device-card {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 1rem;
+  gap: 0.7rem;
+  padding: 0.62rem 0.75rem;
   background: var(--bg-tertiary);
   border: 2px solid transparent;
   border-radius: var(--radius-md);
@@ -619,7 +692,7 @@ const connectCapture = async () => {
 }
 
 .device-icon {
-  font-size: 1.5rem;
+  font-size: 1.1rem;
 }
 
 .device-info {
@@ -630,6 +703,7 @@ const connectCapture = async () => {
   font-weight: 500;
   color: var(--text-primary);
   margin-bottom: 0.25rem;
+  font-size: 0.82rem;
 }
 
 .device-specs {
@@ -653,8 +727,8 @@ const connectCapture = async () => {
 .capture-settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  margin-top: 1rem;
+  gap: 0.65rem;
+  margin-top: 0.6rem;
 }
 
 .capture-settings-grid .input-group {
@@ -663,12 +737,12 @@ const connectCapture = async () => {
 }
 
 .capture-hint {
-  margin-top: 1rem;
-  padding: 1rem;
+  margin-top: 0.6rem;
+  padding: 0.58rem 0.7rem;
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.2);
   border-radius: var(--radius-md);
-  font-size: 0.85rem;
+  font-size: 0.72rem;
   color: var(--text-secondary);
 }
 
@@ -681,7 +755,7 @@ const connectCapture = async () => {
 }
 
 .capture-hint .capture-warning {
-  margin-top: 0.55rem;
+  margin-top: 0.3rem;
   color: var(--warning, #f5b942);
 }
 
@@ -693,14 +767,14 @@ const connectCapture = async () => {
 
 /* Stream Options */
 .stream-options {
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.55rem;
 }
 
 .stream-options label {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.9rem;
+  font-size: 0.76rem;
   color: var(--text-secondary);
   cursor: pointer;
 }
@@ -712,13 +786,13 @@ const connectCapture = async () => {
 /* Actions */
 .actions {
   display: flex;
-  gap: 1rem;
+  gap: 0.65rem;
   justify-content: space-between;
   position: sticky;
-  bottom: -1.8rem;
+  bottom: -1rem;
   z-index: 2;
-  margin: 0 -2rem -1.8rem;
-  padding: 1rem 2rem 1.8rem;
+  margin: 0 -1.25rem -1rem;
+  padding: 0.55rem 1.25rem 1rem;
   background: linear-gradient(180deg, rgba(32, 32, 32, 0), var(--bg-secondary) 28%);
 }
 

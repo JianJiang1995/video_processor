@@ -20,6 +20,7 @@ from typing import List, Optional, Dict, Any, Union, Tuple
 from PIL import Image
 import httpx
 from dataclasses import dataclass
+from .chat_context import select_context_excerpts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -747,6 +748,13 @@ class GLMClient:
             
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
+            context_length_exceeded = False
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 400:
+                detail = e.response.text.lower()
+                context_length_exceeded = any(marker in detail for marker in (
+                    "maximum context length", "context_length_exceeded",
+                    "max_model_len", "too many tokens",
+                ))
             log_glm_call(
                 prompt_preview=message[:100],
                 response={},
@@ -757,7 +765,8 @@ class GLMClient:
             return {
                 "success": False,
                 "text": f"[Error: {str(e)}]",
-                "error": str(e)
+                "error": str(e),
+                "context_length_exceeded": context_length_exceeded,
             }
     
     async def chat_with_context(
@@ -821,18 +830,21 @@ class GLMClient:
             else:
                 system_prompt = base_prompt
         
-        # Build message with context
-        full_message = user_query
-        if surgical_context:
-            full_message = f"{surgical_context}\n\n用户问题: {user_query}"
-        
-        result = await self.chat(
-            message=full_message,
-            system_prompt=system_prompt,
-            disable_thinking=disable_thinking
-        )
-        
-        return result
+        context = surgical_context
+        budget = len(surgical_context)
+        for attempt in range(4):
+            full_message = f"{context}\n\n用户问题: {user_query}" if context else user_query
+            result = await self.chat(
+                message=full_message,
+                system_prompt=system_prompt,
+                disable_thinking=disable_thinking
+            )
+            if not result.get("context_length_exceeded") or not context or attempt == 3:
+                result["context_excerpted"] = context != surgical_context
+                return result
+            budget //= 2
+            context = select_context_excerpts(surgical_context, user_query, budget)
+            logger.info("[GLMClient] Chat context exceeded model limit; retrying with %s chars", len(context))
     
     async def analyze_image(
         self,
