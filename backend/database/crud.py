@@ -182,6 +182,8 @@ def create_window_summary(
         surgical_phase=dominant_phase,
         others_data=others_data
     )
+    from ..services.summary_notifications import notify
+    notify(session_str)
     
     # Real-time updates are latency-sensitive and arrive frequently. Do not let
     # summary compression compete with the live analysis/VLM queue; clinical

@@ -37,6 +37,7 @@ class SummaryStreamCompletionTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch('backend.database.get_session_record',
                                       return_value={'status': 'completed'}))
             stack.enter_context(patch.object(analysis.asyncio, 'sleep', new=AsyncMock()))
+            stack.enter_context(patch('backend.services.summary_notifications.wait_for_update', new=AsyncMock()))
             request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
             response = await analysis.stream_summaries('test', request, db=None)
             messages = [json.loads(part.removeprefix('data: ').strip())

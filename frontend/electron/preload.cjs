@@ -10,6 +10,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
   setBackendUrl: (url) => ipcRenderer.invoke('set-backend-url', url),
   loadReplayBundle: (specPath) => ipcRenderer.invoke('load-replay-bundle', specPath),
+  beginRecording: (options) => ipcRenderer.invoke('screen-recording-begin', options),
+  appendRecording: (id, data) => ipcRenderer.invoke('screen-recording-append', id, data),
+  finishRecording: (id, reason) => ipcRenderer.invoke('screen-recording-finish', id, reason),
+  openRecordingFolder: () => ipcRenderer.invoke('screen-recording-folder'),
+  onRecordingStop: (callback) => {
+    const listener = (_event, reason) => callback(reason)
+    ipcRenderer.on('screen-recording-stop', listener)
+    return () => ipcRenderer.removeListener('screen-recording-stop', listener)
+  },
   
   // ============= 服务管理 (全部服务) =============
   getAllServiceStatuses: () => ipcRenderer.invoke('get-all-service-statuses'),

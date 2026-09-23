@@ -1,10 +1,33 @@
 import json
 import unittest
 
-from backend.services.local_visual_prompt import build_local_visual_prompt, reviewed_scene_summary
+from backend.services.local_visual_prompt import build_local_visual_prompt, reviewed_scene_summary, normalize_local_review
 
 
 class LocalPromptTests(unittest.TestCase):
+    def test_frame_ids_are_not_source_seconds(self):
+        prompt = build_local_visual_prompt({'surgr1': {'success': True, 'observations': [
+            {'timestamp': 754.2, 'action': 'hook dissect adhesion'}]}}, frame_count=4)
+        self.assertNotIn('754.2', prompt)
+        self.assertEqual(json.loads(prompt.splitlines()[-1])['allowed_frame_indices'], [1, 2, 3, 4])
+
+    def test_anatomy_consistency_does_not_promote_unverified_duct(self):
+        raw = {'summary': 'grasper牵拉胆囊管。', 'visual': {
+            'observations': [{'instrument': 'grasper', 'target': 'gallbladder', 'frames': [120, True, 1],
+                              'target_evidence': '囊状'}],
+            'target_structure': {'label': 'cystic_duct', 'confidence': 0, 'evidence': ''}}}
+        result = normalize_local_review(raw, 4)
+        self.assertEqual(result['summary'], '抓钳牵拉局部组织。')
+        self.assertEqual(result['visual']['observations'][0]['frames'], [1])
+        self.assertEqual(result['visual']['observations'][0]['target'], '胆囊')
+        self.assertEqual(raw['visual']['observations'][0]['frames'], [120, True, 1])
+
+    def test_supported_anatomy_survives_without_forced_binary_target(self):
+        raw = {'summary': '抓钳牵拉胆囊。电凝钩分离胆囊管表面组织。', 'visual': {
+            'observations': [{'target': '胆囊管表面组织', 'frames': [1, 3], 'target_evidence': '连接胆囊颈'}],
+            'target_structure': {'label': 'unknown'}}}
+        self.assertEqual(normalize_local_review(raw, 4)['summary'], raw['summary'])
+
     def test_tissues_survive_tool_conflict_without_inventing_an_action(self):
         prompt = build_local_visual_prompt({'yolo': {'tools': [{'label': 'hook'}]}, 'triplet': {
             'triplet': [{'label': '[grasper]-[retract]-[gallbladder]', 'confidence': .9}],

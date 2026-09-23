@@ -2,63 +2,105 @@
 import json
 import math
 import re
+from copy import deepcopy
 
 
-LOCAL_VISUAL_PROMPT = """审阅按时间排序的手术图像，输出当前窗口的视觉事实JSON。
-先比较各帧的器械尖端、接触对象和组织变化，再填写结果。summary是手术进程摘要，不是组织外观清单。
-用1至3句中文优先写清“器械名称 + 实际动作 + 可辨认的组织/区域”，然后写操作进展或重要视野变化。
-有多个独立且有图像依据的操作时都保留，不把夹闭、剪断、装袋或活动性出血省略成笼统的组织描述。
-动作主体不能省略；能确认器械类别才用具体名称，尖端不可辨时保留“器械”并描述看清的移动或接触。
-牵拉需看见夹持后组织移位，分离需看见组织层间被打开；不能把器械在附近移动写成已完成操作。
-确实没有可辨认操作时才简述暴露的区域和视野，不强行补动作，也不写“暂无明确操作变化”。
-阶段由界面单独展示，summary不重复阶段标题；CVS状态仅填visual.cvs，不在摘要反复写。
-即使没有夹子、出血等关键事件，也要描述当前画面，不要返回空摘要，不要复制字段定义。
-看不清的动作或组织不要猜，不依赖手术通常顺序推断已经发生的操作。
-摘要只描述肯定看见的事实，不罗列“未见夹子、未见剪刀、未见出血”等否定检查清单。
-摘要必须与visual一致，不要一边说没有施夹，一边把active设为true。
+LOCAL_VISUAL_PROMPT = """你是手术视频审阅者。结合连续图像和同窗专家候选，描述实际器械、操作和接触的解剖组织，输出JSON。所有描述用中文。
 
-器械名称必须依据图中尖端结构确认，不能根据常见手术器械清单补全。颜色和反光不能证明器械类别。
-夹子必须是独立留在组织上的完整夹体，不能是器械尖端或组织反光。
-只有跨帧看到钳口闭合夹住组织或释放夹体，才是施夹；夹子静止存在不是正在施夹。
-剪刀接近组织不是剪断，切刃闭合且组织离断才是剪断。不因安全步骤缺失而隐瞒实际可见动作。
-target_structure仅用于胆囊管和胆囊动脉这两种关键结构，无法区分时该字段为unknown。
-胆囊本体不是胆囊管；即使target_structure为unknown，仍应在observations.target写出可辨认的其他组织。
-逐项核对组织候选与可见形态及空间关系；能够辨认时使用胆囊、肝脏、网膜、腹膜、粘连组织等准确名称，
-不要将已能辨认的组织退化为“黄色组织”“粉红色组织”。仅颜色不够时可描述脂肪组织或明确的解剖区域，不能硬猜器官。
-必须区分背景器官和器械实际接触对象：看见肝脏不代表正在夹持肝脏；看见胆囊不代表钳口夹着胆囊管。
-不能确认器械接触的具体组织时如实保留局部组织，但可另写图像能确认的暴露区域。
-器械和组织命名需要结合本次图像与专家候选：形态及接触位置支持候选时，使用其规范名称，
-不要因部分遮挡一律写成“器械”“组织”。专家一致也不能替代图像核实，体外场景尤其要拒绝手术操作候选。
-若只能辨认黄色分叶状脂肪而不能确定器官，写“脂肪组织”，不要猜成胆囊管；
-胆囊本体、胆囊表面粘连组织和胆囊管必须区分，不能把“gallbladder”翻译成胆囊管。
-电凝钩接触和分离不等于正在凝血；只有明确的电凝作用证据才写凝血处理。
-仅白色、亮色或反光不能证明标本袋。必须有柔软袋膜、袋口且包裹标本才写装袋。
-腹腔内组织仍可见不是移出体外；体外需皮肤、手术巾、套管外口或手术室等证据。
-绿色荧光成像、颜色改变不是起雾，雾需遮挡和降低组织边界清晰度。
-红色组织或少量血染不是大量活动性出血；持续新鲜血液涌出才上报。
-controlled仅用于看见活动性出血从有到无的过程，正常无出血应为false；
-fog_cleared仅用于同一组图像从有雾到清晰的过程，一直清晰应为false。
-CVS达成需同时看清肝胆三角清理、胆囊下三分之一与胆囊板分离、仅两条结构进入胆囊；
-看不全只能评估中，不因为出现施夹或剪刀就判达成。
+识别顺序：先确认腹腔内或体外，再识别器械尖端，最后沿器械接触位置辨认组织及跨帧动作。
+专家中的gallbladder是胆囊，liver是肝脏，omentum是网膜，adhesion是粘连组织，cystic_duct才是胆囊管。
+胆囊囊壁与胆囊管不是同一组织；脂肪或粘连覆盖在胆囊表面，不应仅凭位置写成胆囊管。
+必须区分背景器官和器械实际接触对象。组织名称依据外形、连接关系和接触位置，不仅依据颜色。
+图像与SurgR1和Triplet共同支持一个名称时，应直接写该名称，不退回“黄色组织”“粉红组织”。
+若只能识别脂肪、腹膜或粘连，写相应组织；连接关系不清时不猜胆囊管或胆囊动脉。
+电凝钩需辨认单杆钩头，抓钳需有可开合的钳口，剪刀需有剪刃。白色绝缘部、反光不是夹子或剪刀。
+动作依据连续帧：抓钳夹住并带动组织是牵拉，电凝钩打开组织层是分离；只触碰时写接触，不凭器械名推断凝血。
+候选与图像冲突时以图像为准，SurgR1也可能在体外场景误报手术动作。
 
-输出顺序：先visual.observations填写至多3项实际看见的器械形态、动作和对象，再填写visual的其余字段，最后写summary。
-observations不是推理过程，只记录可直接定位的视觉事实；器械不明填unknown，不得为了凑具体名称猜类别。
-summary只能整合这些观察，不得新增观察中没有的器械或动作。不要写时间、窗口号、图片序号、或/或者二选一。
-除JSON字段名和指定枚举值外，所有器械名称、组织名称和描述必须使用中文。
-visual各字段的类型如下（自行根据图片填写值，不是答案示例）：
-observations: [{instrument:器械名称或unknown, appearance:可见尖端形态, action:实际运动或接触变化, target:可辨认组织或区域, frames:有依据的图片序号列表从1开始}]
-generic_clip: {visible:bool, placed:bool, count:int, confidence:0到1}
-clip_applier: {visible:bool, active:bool, confidence:0到1}
-scissors: {visible:bool, cutting:bool, target:字符串, confidence:0到1}
-target_structure: {label:cystic_duct或cystic_artery或unknown, confidence:0到1, evidence:图像依据}
-gauze: {visible:bool, manipulated:bool, confidence:0到1}
-bleeding: {active:bool, severity:none或minor或moderate或severe, controlled:bool, confidence:0到1}
-cvs: {status:not_applicable或assessing或partial或achieved, confidence:0到1}
-visibility: {status:clear或foggy或blurred或blocked或out_of_body, fog:bool, fog_cleared:bool, out_of_body:bool, confidence:0到1, evidence:图像依据}
-不要附加解释，只输出JSON。"""
+重要事件：独立留在组织上的夹体才算夹子，钳口闭合或释放夹体才算施夹；剪刃闭合且组织离断才算剪断。
+柔软袋膜和袋口包裹标本才是装袋。大量新鲜血液持续流出才是severe出血，红色组织不是出血。
+外部皮肤、手术巾、设备和房间可证明体外；灰白失焦不能单独证明体外或起雾。绿色荧光不是雾。
+controlled、fog_cleared需同组帧证实从出血/起雾到消失，不能把一直正常判为已解决。
+CVS达成需三要素同时可确认：肝胆三角清理、胆囊下三分之一与胆囊板分离、仅两条结构进入胆囊；否则assessing/partial。
+
+先输出visual.observations，最多3个操作，每项填写：
+instrument（规范器械名或unknown）、appearance（尖端形态）、action（可见动作）、target（接触组织名称）、target_evidence（组织形态或连接关系）、frames（依据帧序号，1起始）。
+不要把背景器官填为操作对象。没有器械操作时可以单独描述暴露区域。
+然后填写其他visual字段：
+generic_clip:{visible:bool,placed:bool,count:int,confidence:0到1}
+clip_applier:{visible:bool,active:bool,confidence:0到1}
+scissors:{visible:bool,cutting:bool,target:字符串,confidence:0到1}
+target_structure:{label:cystic_duct或cystic_artery或unknown,confidence:0到1,evidence:结构连接依据}（该字段unknown不影响命名胆囊本体、肝脏等其他组织）
+gauze:{visible:bool,manipulated:bool,confidence:0到1}
+bleeding:{active:bool,severity:none或minor或moderate或severe,controlled:bool,confidence:0到1}
+cvs:{status:not_applicable或assessing或partial或achieved,confidence:0到1}
+visibility:{status:clear或foggy或blurred或blocked或out_of_body,fog:bool,fog_cleared:bool,out_of_body:bool,confidence:0到1,evidence:图像依据}
+最后输出summary，1-3句“具体器械+观察到的动作+具体接触组织”，多个操作分别保留。summary不能新增observations中不存在的组织或动作。
+不要在摘要解释器官的定义或通常连接关系；target_evidence写本组图像实际可定位的形态，不能用解剖常识代替证据。
+CVS状态仅填visual.cvs，阶段由界面显示；摘要不写时间、帧号、候选模型、否定检查清单，不写“或/或者”的二选一猜测。
+只输出一个含visual和summary的JSON对象。
+除JSON字段名和指定枚举值外，器械名称、组织名称和描述必须使用中文。
+frames只填输入图像的帧编号，不是视频秒数；target_structure无证据时label必须为unknown。"""
 
 
-def build_local_visual_prompt(experts=None, phase=None):
+def normalize_local_review(result, image_count):
+    """Check evidence references and narrative consistency, not clinical truth."""
+    result = deepcopy(result)
+    visual = result.get("visual") or {}
+    terms = {"cystic_duct": "胆囊管", "cystic_artery": "胆囊动脉",
+             "gallbladder": "胆囊", "liver": "肝脏", "omentum": "网膜",
+             "adhesion": "粘连组织", "grasper": "抓钳", "hook": "电凝钩",
+             "scissors": "剪刀", "clipper": "施夹器", "bipolar": "双极电凝钳"}
+
+    def chinese(text):
+        return re.sub(r"(?<![a-z_])(" + "|".join(terms) + r")(?![a-z_])",
+                      lambda m: terms[m[0].lower()], str(text or ""), flags=re.IGNORECASE)
+
+    observations = visual.get("observations")
+    observations = observations if isinstance(observations, list) else []
+    for item in observations:
+        if not isinstance(item, dict):
+            continue
+        indices = item.get("frames")
+        indices = indices if isinstance(indices, list) else []
+        valid = sorted({i for i in indices if type(i) is int and 1 <= i <= image_count})
+        if len(valid) != len(indices):
+            item["invalid_frame_references"] = indices
+        item["frames"] = valid
+        for key in ("instrument", "appearance", "action", "target", "target_evidence"):
+            if key in item:
+                item[key] = chinese(item[key])
+    structure = visual.get("target_structure") or {}
+    structure = structure if isinstance(structure, dict) else {}
+    try:
+        confidence = float(structure.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if not math.isfinite(confidence) or confidence < .7 or not structure.get("evidence"):
+        if structure.get("label") not in {None, "unknown"}:
+            visual["unconfirmed_target_structure"] = dict(structure)
+        structure = {"label": "unknown", "confidence": 0, "evidence": ""}
+    visual["target_structure"] = structure
+    summary = chinese(result.get("summary"))
+    rejected = []
+    for label in ("cystic_duct", "cystic_artery"):
+        name = terms[label]
+        supported = any(
+            name in str(item.get("target") or "") and item.get("frames") and item.get("target_evidence")
+            for item in observations if isinstance(item, dict))
+        if name in summary and not supported:
+            clauses = re.split(r"[，。；]", summary)
+            retained = [part for part in clauses if part.strip() and name not in part]
+            summary = "。".join(retained) + "。" if retained else summary.replace(name, "局部组织")
+            rejected.append(label)
+    if rejected:
+        visual["anatomy_consistency_review"] = {"unsupported_summary_targets": rejected,
+                                                  "original_summary": result.get("summary")}
+    result.update(summary=summary, visual=visual)
+    return result
+
+
+def build_local_visual_prompt(experts=None, phase=None, frame_count=None):
     """Bounded raw candidates, not previously generated narrative or guessed anatomy."""
     experts = experts if isinstance(experts, dict) else {}
 
@@ -110,11 +152,13 @@ def build_local_visual_prompt(experts=None, phase=None):
     surgr1 = experts.get("surgr1") or {}
     if isinstance(surgr1, dict) and surgr1.get("success"):
         context["surgr1_observations"] = [
-            fields(item, ("timestamp", "action")) for item in surgr1.get("observations", [])[:3]
+            fields(item, ("action",)) for item in surgr1.get("observations", [])[:3]
             if isinstance(item, dict)
         ]
     if phase and phase != "Unknown":
         context["display_phase"] = str(phase)[:80]
+    if frame_count is not None:
+        context["allowed_frame_indices"] = list(range(1, frame_count + 1))
     return LOCAL_VISUAL_PROMPT + "\n\n" + (
         "以下是同一窗口专家的待核实候选，不是已经确认的事实。先观察图像，再逐项核对候选。\n"
         "置信度不等于视觉证据；阶段不能证明某动作已经发生。候选与图像冲突时以图像为准。\n"
@@ -124,6 +168,7 @@ def build_local_visual_prompt(experts=None, phase=None):
         "不要照抄旧摘要；候选中的blood_vessel只表示血管，不能自动改成胆囊动脉，"
         "cystic_pedicle也不能自动改成胆囊管。\n"
         "摘要允许只有一条观察，不强求牵拉或分离；无操作时保留组织/视野事实。不要填写否定检查清单。\n"
+        "frames只填allowed_frame_indices中的帧编号，不填秒数。target_evidence描述接触组织的形态或连接关系。\n"
         + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
     )
 

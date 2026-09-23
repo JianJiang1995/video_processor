@@ -15,6 +15,7 @@ from .local_video_source import resolve_video_source, apply_input_layout, split_
 from .local_visual_prompt import (
     build_local_visual_prompt, scene_observations_need_review,
     VISIBILITY_REVIEW_PROMPT, validate_visibility_review, reviewed_scene_summary,
+    normalize_local_review,
 )
 
 
@@ -108,14 +109,15 @@ async def analyze_review(images, timestamps, experts=None, phase=None):
         experts["triplet"] = await asyncio.to_thread(refresh_triplet)
     experts["surgr1"] = await review_surgr1_window(images, timestamps)
     response = await asyncio.wait_for(client._analyze_images_with_timestamps(
-        images=images, timestamps=timestamps, question=build_local_visual_prompt(experts, phase),
+        images=images, timestamps=timestamps, question=build_local_visual_prompt(experts, phase, len(images)),
         system_prompt="仅依据本次图像重新核实，不沿用旧摘要。单帧不能确认动态动作。只输出要求的JSON。",
-        temperature=0.01, max_tokens=1400,
+        temperature=0, max_tokens=1400, include_timestamps=False,
     ), timeout=90)
     if not response.get("success"):
         raise RuntimeError("review_model_unavailable")
     result = {**parse_review(response.get("text")), "model": response.get("model", client.model_name),
               "experts": experts}
+    result = normalize_local_review(result, len(images))
     if scene_observations_need_review(result['visual']):
         result = await review_scene(images, timestamps, result, client=client)
     return result

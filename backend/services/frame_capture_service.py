@@ -83,6 +83,7 @@ class FrameCaptureState:
     frames_captured: int = 0
     frames_saved: int = 0
     last_capture_time: float = 0.0
+    source_clock_origin_wall: Optional[float] = None
     
     # 配置
     capture_fps: int = 25
@@ -276,6 +277,8 @@ def frame_capture_thread_func(
                 current_time = frame_idx / video_fps
             
             state.last_capture_time = current_time
+            if state.source_clock_origin_wall is None:
+                state.source_clock_origin_wall = time.time() - current_time
             state.frames_captured += 1
             
             # 检查是否需要保存帧（根据capture_fps）
@@ -501,6 +504,7 @@ class FrameCaptureService:
             "frames_captured": state.frames_captured,
             "frames_saved": state.frames_saved,
             "last_capture_time": state.last_capture_time,
+            "source_clock_origin_wall": state.source_clock_origin_wall,
             "capture_fps": state.capture_fps,
             "preview_fps": state.preview_fps,
             "storage_path": state.storage_path

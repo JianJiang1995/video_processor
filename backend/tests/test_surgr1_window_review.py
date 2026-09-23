@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 from PIL import Image
@@ -8,6 +9,44 @@ from backend.services import surgr1_window_review as service
 
 
 class SurgR1WindowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transient_busy_wait_is_bounded_and_does_not_skip_review(self):
+        gate = asyncio.Semaphore(0)
+        self.cfg['services']['surgr1']['queue_timeout'] = 20
+        real_wait_for = asyncio.wait_for
+        timeouts = []
+
+        async def record_timeout(awaitable, timeout):
+            timeouts.append(timeout)
+            return await real_wait_for(awaitable, timeout)
+
+        asyncio.get_running_loop().call_later(0.01, gate.release)
+        with patch.object(service, 'load_config', return_value=self.cfg), \
+             patch.object(service, 'get_surgr1_client', return_value=self.client), \
+             patch.object(service, '_gate', gate), \
+             patch.object(service.asyncio, 'wait_for', side_effect=record_timeout):
+            result = await service.review_surgr1_window([Image.new('RGB', (20, 10))], [1])
+        self.assertEqual(timeouts[0], 20)
+        self.assertTrue(result['success'])
+        self.assertGreaterEqual(result['queue_ms'], 1)
+        self.assertFalse(gate.locked())
+
+    async def test_image_preparation_does_not_run_on_event_loop_thread(self):
+        event_loop_thread = threading.get_ident()
+        threads = []
+        write = service._write_review_image
+
+        def check_thread(source, path):
+            threads.append(threading.get_ident())
+            return write(source, path)
+
+        with patch.object(service, 'load_config', return_value=self.cfg), \
+             patch.object(service, 'get_surgr1_client', return_value=self.client), \
+             patch.object(service, '_write_review_image', side_effect=check_thread), \
+             patch.object(service, '_gate', asyncio.Semaphore(1)):
+            await service.review_surgr1_window([Image.new('RGB', (20, 10))] * 2, [0, 4.8])
+        self.assertEqual(len(threads), 2)
+        self.assertNotIn(event_loop_thread, threads)
+
     def setUp(self):
         self.cfg = {'services': {'surgr1': {'enabled': True, 'mode': 'window_refinement'}}}
         self.client = Mock(api_url='http://127.0.0.1:9003')

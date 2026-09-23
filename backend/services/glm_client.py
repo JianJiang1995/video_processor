@@ -999,10 +999,11 @@ class GLMClient:
         question: str,
         system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        include_timestamps: bool = True,
     ) -> Dict[str, Any]:
         """
-        分析带时间戳标注的多张图片
+        分析带时间戳或顺序帧编号的多张图片
         
         Args:
             images: 图片列表
@@ -1012,7 +1013,7 @@ class GLMClient:
             temperature: 采样温度
             max_tokens: 最大token数
         """
-        temperature = temperature or self.temperature
+        temperature = self.temperature if temperature is None else temperature
         max_tokens = max_tokens or self.max_tokens
         
         try:
@@ -1023,7 +1024,8 @@ class GLMClient:
                 # 添加时间戳标签
                 content.append({
                     "type": "text",
-                    "text": f"【图片{idx + 1}/{len(images)}】时间：{ts:.1f}秒"
+                    "text": (f"【图片{idx + 1}/{len(images)}】时间：{ts:.1f}秒" if include_timestamps
+                             else f"【帧编号={idx + 1}，共{len(images)}帧，按时间顺序】")
                 })
                 # 添加图片
                 image_url = self._image_to_base64_url(img)

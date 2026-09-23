@@ -79,7 +79,28 @@ class PhaseService:
 
     def classify_batch(self, images: List[Union[np.ndarray, Image.Image]]) -> List[Dict]:
         """Majority-vote-friendly: classify multiple frames, return list."""
-        return [self.classify(im) for im in images]
+        import torch
+
+        if not images:
+            return []
+        tensors = []
+        for image in images:
+            if isinstance(image, np.ndarray):
+                if image.ndim == 3 and image.shape[2] == 3:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                image = Image.fromarray(image)
+            tensors.append(self.transform(image.convert("RGB")))
+        results = []
+        # Bound peak memory while sharing transfers and forward passes.
+        with torch.inference_mode():
+            for start in range(0, len(tensors), 16):
+                batch = torch.stack(tensors[start:start + 16]).to(self.device)
+                probabilities = torch.softmax(self.model(batch), dim=1).cpu().tolist()
+                for probs in probabilities:
+                    index = max(range(len(probs)), key=probs.__getitem__)
+                    results.append({"label": self.classes[index], "confidence": round(probs[index], 3),
+                                    "probs": {name: round(value, 3) for name, value in zip(self.classes, probs)}})
+        return results
 
     def smooth_window(self, results: List[Dict]) -> Dict:
         """Simple majority vote across a window's classifications.

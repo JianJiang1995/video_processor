@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set
 
@@ -458,13 +459,16 @@ def _detect_hemlok_clip_action(frames_bgr: List[np.ndarray]) -> Dict[str, Any]:
             if not (100 <= cx <= 850 and 30 <= cy <= 330):
                 continue
 
-            comp_pixels = small[labels == comp_id]
+            # A connected component is wholly inside its bounding box. Avoid
+            # rescanning the full image for every small reflective region.
+            component_mask = labels[y : y + bh, x : x + bw] == comp_id
+            comp_pixels = small[y : y + bh, x : x + bw][component_mask]
             mean_bgr = comp_pixels.mean(axis=0)
             # Reject darker purple vessels and dim tissue edges.
             if mean_bgr[2] < 190 or mean_bgr[1] < 145 or mean_bgr[0] < 95:
                 continue
 
-            roi = (labels[y : y + bh, x : x + bw] == comp_id).astype(np.uint8) * 255
+            roi = component_mask.astype(np.uint8) * 255
             _, hierarchy = cv2.findContours(roi, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
             holes = 0
             if hierarchy is not None:
@@ -623,6 +627,15 @@ def run_experts_on_window(
         out["text"] = "【专家模型判断】(窗口无采样帧)"
         return out
 
+    timings = {}
+    checkpoint = time.monotonic()
+
+    def mark(name):
+        nonlocal checkpoint
+        now = time.monotonic()
+        timings[name] = round((now - checkpoint) * 1000, 2)
+        checkpoint = now
+
     # Load/use torch-native experts before YOLO. Ultralytics can set
     # CUDA_VISIBLE_DEVICES to the selected YOLO GPU during initialization; if
     # YOLO lazy-loads first, later cuda:2/cuda:7 expert devices become invalid
@@ -640,6 +653,7 @@ def run_experts_on_window(
         except Exception as e:
             logger.warning(f"[ExpertFusion] Phase skipped: {e}")
 
+    mark("phase_ms")
     # Triplet (one clip per window, uniform-sampled 10 frames)
     if use_triplet:
         try:
@@ -651,6 +665,7 @@ def run_experts_on_window(
         except Exception as e:
             logger.warning(f"[ExpertFusion] Triplet skipped: {e}")
 
+    mark("triplet_ms")
     # YOLO
     if use_yolo:
         try:
@@ -664,6 +679,7 @@ def run_experts_on_window(
         except Exception as e:
             logger.warning(f"[ExpertFusion] YOLO skipped: {e}")
 
+    mark("yolo_ms")
     # Dedicated deployed clip detector. This is intentionally separate from
     # the tool YOLO model: it detects clip bodies, not clipper instruments.
     try:
@@ -678,6 +694,7 @@ def run_experts_on_window(
     except Exception as e:
         logger.warning(f"[ExpertFusion] Clip detector skipped: {e}")
 
+    mark("clip_detector_ms")
     try:
         blue_bipolar_forceps = _detect_blue_bipolar_forceps(frames_bgr)
         out["blue_bipolar_forceps"] = blue_bipolar_forceps
@@ -702,6 +719,8 @@ def run_experts_on_window(
     except Exception as e:
         logger.warning(f"[ExpertFusion] Hem-o-lok cue skipped: {e}")
 
+    mark("cpu_cues_ms")
+    out["timing"] = timings
     out["text"] = _format_text(
         out["yolo"], out["clip_detector"], out["phase"], out["triplet"], out["short_action"],
         out["hemlok_clip"], out["blue_bipolar_forceps"]

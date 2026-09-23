@@ -11,6 +11,7 @@ from backend.routers.analysis import (
     _compact_clinical_summary_records,
     _normalize_retraction_summary,
     _expert_snapshot_summary,
+    _triplet_operation_phrases,
     _expand_vague_operation_language,
     _focused_clip_action_confirmed,
     _resolve_clip_applier_scissors_conflict,
@@ -30,6 +31,32 @@ import numpy as np
 
 
 class AnalysisSequenceRulesTest(unittest.TestCase):
+    def test_draft_does_not_assert_competing_tissues_as_three_operations(self):
+        raw = {'triplet': [{'label': '[grasper]-[retract]-[gallbladder]', 'confidence': .65},
+                           {'label': '[grasper]-[retract]-[liver]', 'confidence': .63},
+                           {'label': '[hook]-[dissect]-[adhesion]', 'confidence': .85}]}
+        text = '。'.join(_triplet_operation_phrases(raw, draft=True))
+        self.assertIn('抓钳牵拉局部组织', text)
+        self.assertIn('电凝钩分离粘连组织', text)
+        self.assertNotIn('牵拉肝脏', text)
+        self.assertNotIn('牵拉胆囊', text)
+        self.assertEqual(len(raw['triplet']), 3)
+
+    def test_local_phase_wording_does_not_rename_the_observed_tissue(self):
+        text, _, _ = _apply_surgical_sequence_rules('抓钳牵拉组织。电凝钩分离胆囊。',
+                                                   'CalotTriangleDissection', {}, preserve_anatomy=True)
+        self.assertIn('抓钳牵拉组织', text)
+        self.assertIn('电凝钩分离胆囊', text)
+        self.assertNotIn('胆囊颈', text)
+        self.assertNotIn('分离肝胆三角', text)
+
+    def test_phase_and_tool_do_not_invent_contact_tissue_or_packaging(self):
+        for phase in ('calot_triangle_dissection', 'gallbladder_packaging', 'gallbladder_retraction'):
+            text = _expert_snapshot_summary({'phase': {'label': phase}, 'triplet': {},
+                'yolo': {'tools': [{'label': 'grasper', 'frames_seen': 10}, {'label': 'hook', 'frames_seen': 10}]}}, 0, 5, 12)
+            for invented in ('牵拉胆囊颈', '将胆囊装入', '分离纤维脂肪', '经切口取出'):
+                self.assertNotIn(invented, text)
+
     def test_adjacent_windows_never_share_boundary_frame(self):
         frames = [{'timestamp': t} for t in (5, 4.8, 0, 10, 9.8, None)]
         first = _frames_within_window(frames, 0, 5)

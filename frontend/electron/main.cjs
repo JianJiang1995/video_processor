@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, protocol } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, screen, protocol, shell } = require('electron')
 const Store = require('electron-store')
 const path = require('path')
 const { randomUUID } = require('crypto')
@@ -7,6 +7,7 @@ const fsSync = require('fs')
 const FrameCache = require('./frameCache.cjs')
 const { ServiceManager } = require('./serviceManager.cjs')
 const { serveReplayMedia } = require('./replayMedia.cjs')
+const { RecordingFile, recordingCapacity } = require('./screenRecording.cjs')
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'surgr1-media',
@@ -103,6 +104,59 @@ const cacheDir = path.join(app.getPath('userData'), 'cache')
 const frameCache = new FrameCache(cacheDir)
 
 let mainWindow = null
+const recordingDirectory = app.isPackaged
+  ? path.join(app.getPath('videos'), 'SurgR1', 'recordings')
+  : path.join(__dirname, '..', '..', 'recordings', 'ui')
+const screenRecording = new RecordingFile(recordingDirectory)
+let lastRecordingPath = null
+
+function requestRecordingStop(reason) {
+  if (!screenRecording.active) return
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('screen-recording-stop', reason)
+  }
+  const id = screenRecording.active.id
+  setTimeout(() => {
+    if (screenRecording.active?.id === id && !screenRecording.active.closing) {
+      screenRecording.finish(id, `${reason}_renderer_unresponsive`).catch(console.error)
+    }
+  }, 5000).unref()
+}
+
+function verifyRecordingSender(event) {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error('recording_invalid_sender')
+  }
+}
+
+ipcMain.handle('screen-recording-begin', async (event, options) => {
+  verifyRecordingSender(event)
+  const job = await screenRecording.begin(options)
+  return { ...job, sourceId: mainWindow.getMediaSourceId() }
+})
+ipcMain.handle('screen-recording-append', (event, id, data) => {
+  verifyRecordingSender(event)
+  return screenRecording.append(id, data)
+})
+ipcMain.handle('screen-recording-finish', async (event, id, reason) => {
+  verifyRecordingSender(event)
+  const result = await screenRecording.finish(id, String(reason).slice(0, 80))
+  lastRecordingPath = result.path
+  return result
+})
+ipcMain.handle('screen-recording-folder', async event => {
+  verifyRecordingSender(event)
+  if (lastRecordingPath) shell.showItemInFolder(lastRecordingPath)
+  else { await fs.mkdir(recordingDirectory, { recursive: true }); await shell.openPath(recordingDirectory) }
+})
+const recordingGuard = setInterval(async () => {
+  if (!screenRecording.active || screenRecording.active.closing) return
+  try {
+    const capacity = await recordingCapacity(recordingDirectory)
+    if (capacity.diskBytes < 512 * 1024 ** 2) requestRecordingStop('disk_full')
+  } catch { requestRecordingStop('disk_error') }
+}, 10000)
+recordingGuard.unref()
 const replayMediaAssets = new Map()
 
 function registerReplayMediaProtocol() {
@@ -191,6 +245,27 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+  })
+  mainWindow.on('minimize', () => requestRecordingStop('window_minimized'))
+  mainWindow.webContents.on('render-process-gone', () => {
+    if (screenRecording.active) screenRecording.finish(screenRecording.active.id, 'renderer_crash').catch(console.error)
+  })
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
+    if (!inPlace && isMainFrame) requestRecordingStop('navigation')
+  })
+  let closingRecording = false
+  mainWindow.on('close', event => {
+    console.info('[ScreenRecording] Window close requested; active=', Boolean(screenRecording.active))
+    if (!screenRecording.active) return
+    event.preventDefault()
+    if (closingRecording) return
+    closingRecording = true
+    requestRecordingStop('window_closed')
+    const wait = setInterval(() => {
+      if (screenRecording.active) return
+      clearInterval(wait)
+      mainWindow?.destroy()
+    }, 100)
   })
 }
 
@@ -624,7 +699,26 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
+let recordingExitPending = false
+app.on('before-quit', event => {
+  // Renderer-initiated window.close() can reach app shutdown after the
+  // webContents is gone. Preserve already streamed chunks in that path too.
+  if (screenRecording.active || screenRecording.opening) {
+    event.preventDefault()
+    if (recordingExitPending) return
+    recordingExitPending = true
+    requestRecordingStop('window_closed')
+    const wait = setInterval(() => {
+      if (screenRecording.active && !screenRecording.active.closing &&
+          (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed())) {
+        screenRecording.finish(screenRecording.active.id, 'window_closed_renderer_unavailable').catch(console.error)
+      }
+      if (screenRecording.active || screenRecording.opening) return
+      clearInterval(wait)
+      app.quit()
+    }, 100)
+    return
+  }
   console.log('Video Analyzer is closing...')
   serviceManager.stopAll()
 })

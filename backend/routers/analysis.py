@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import Optional, List, Dict, Any, Tuple
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import json
@@ -46,7 +46,7 @@ from ..services.clip_review import (
     CLIP_REVIEW_PROMPT, validate_clip_review, scissors_morphology_confirmed,
     reviewed_instruments, review_rejects_active_application,
 )
-from ..services.local_visual_prompt import build_local_visual_prompt, VISIBILITY_REVIEW_PROMPT, validate_visibility_review, scene_observations_need_review
+from ..services.local_visual_prompt import build_local_visual_prompt, VISIBILITY_REVIEW_PROMPT, validate_visibility_review, scene_observations_need_review, normalize_local_review
 from ..services.local_video_source import PacedVideoCapture, resolve_video_source, wrap_capture_for_layout
 from ..services.video_export_service import get_video_export_service, export_tasks
 from ..config import settings, ANALYSIS_SYSTEM_PROMPT
@@ -372,7 +372,7 @@ def _target_hint_from_triplet(triplet: Dict[str, Any]) -> Dict[str, Any]:
     return best
 
 
-def _triplet_operation_phrases(triplet: Dict[str, Any], max_items: int = 4, phase: str = "") -> List[str]:
+def _triplet_operation_phrases(triplet: Dict[str, Any], max_items: int = 4, phase: str = "", draft: bool = False) -> List[str]:
     phrases: List[str] = []
     seen = set()
     target_hint = _target_hint_from_triplet(triplet)
@@ -382,7 +382,25 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], max_items: int = 4, phas
         "gallbladder", "gallbladder_bed", "cystic_plate", "calot_triangle",
         "liver", "omentum", "peritoneum", "adhesion", "gut", "abdominal_wall_cavity",
     }
-    for item in (triplet or {}).get("triplet") or []:
+    candidates = list((triplet or {}).get("triplet") or [])
+    ambiguous = set()
+    if draft:
+        groups = {}
+        for item in candidates:
+            inst, verb, target = _parse_triplet_label(item.get("label"))
+            if target and not target.startswith("null") and verb and not verb.startswith("null"):
+                groups.setdefault((inst, verb), []).append(item)
+        candidates = []
+        for key, items in groups.items():
+            items = sorted(items, key=lambda row: _safe_float(row.get("confidence"), 0), reverse=True)
+            best = items[0]
+            best_target = _parse_triplet_label(best.get("label"))[2]
+            competitors = [row for row in items[1:] if _parse_triplet_label(row.get("label"))[2] != best_target]
+            if competitors and _safe_float(best.get("confidence"), 0) - _safe_float(competitors[0].get("confidence"), 0) < .15:
+                ambiguous.add(key)
+            candidates.append(best)
+        candidates.sort(key=lambda row: _safe_float(row.get("confidence"), 0), reverse=True)
+    for item in candidates:
         conf = _safe_float(item.get("confidence"), 0.0)
         if conf < 0.12:
             continue
@@ -410,6 +428,8 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], max_items: int = 4, phas
             target_cn = TRIPLET_TARGET_CN.get(target, "")
         if not target_cn:
             continue
+        if (inst, verb) in ambiguous:
+            target_cn = "局部组织"
         if inst_cn and inst_cn != target_cn:
             phrase = f"{inst_cn}{verb_cn}{target_cn}"
         else:
@@ -1981,10 +2001,11 @@ def _apply_surgical_sequence_rules(
     dominant_phase: str,
     prior_state: Dict[str, Any],
     visual: Optional[Dict[str, Any]] = None,
+    preserve_anatomy: bool = False,
 ) -> tuple:
     """Apply irreversible LC workflow and SVO wording rules before display/storage."""
     phase = _canonical_phase(dominant_phase or "Unknown")
-    out = _normalize_svo_wording(summary_text, phase)
+    out = _polish_summary_wording(summary_text) if preserve_anatomy else _normalize_svo_wording(summary_text, phase)
     applied: List[str] = []
     visual = visual or {}
     visibility_flags = _visibility_flags_from_visual(visual)
@@ -2048,7 +2069,7 @@ def _apply_surgical_sequence_rules(
             ):
                 out = re.sub(rf"[，,；;。]?\s*{pattern}", "", out)
             out = _replace_current_phase_text(out, phase)
-            if re.fullmatch(r"当前处于[^，,。；;]+[，,。]?", out.strip()):
+            if not preserve_anatomy and re.fullmatch(r"当前处于[^，,。；;]+[，,。]?", out.strip()):
                 out = f"{out.rstrip('，。')}，{_phase_visual_context(phase, phase)}。"
         applied.append("late_phase_requires_clipping_and_dissection")
 
@@ -2057,7 +2078,7 @@ def _apply_surgical_sequence_rules(
         out = _replace_current_phase_text(out, phase)
         applied.append("phase_no_return_to_preparation")
 
-    if phase == "Preparation":
+    if phase == "Preparation" and not preserve_anatomy:
         preparation_text = re.sub(
             r"(双极电凝钳?|电凝钩|剪刀|抓钳|钳子)(?:正在)?分离(?:胆囊管|胆囊动脉)",
             r"\1分离局部粘连组织",
@@ -2203,7 +2224,7 @@ def _apply_surgical_sequence_rules(
                 out = _downgrade_cut_claim(out, target_cn, "clip")
                 applied.append(f"cut_requires_prior_clip_{target_label}")
 
-    if phase == "GallbladderDissection":
+    if phase == "GallbladderDissection" and not preserve_anatomy:
         post_clipping_text = re.sub(
             r"(双极电凝钳?|电凝钩|剪刀|抓钳|钳子)(?:正在)?分离(?:胆囊管|胆囊动脉)",
             r"\1分离胆囊与胆囊床粘连组织",
@@ -2242,7 +2263,7 @@ def _apply_surgical_sequence_rules(
             out = "当前处于胆囊分离，画面以胆囊床术野观察为主。"
 
     frame_observations = isinstance(visual.get("observations"), list)
-    if frame_observations:
+    if frame_observations or preserve_anatomy:
         # A phase is not evidence of an action. Preserve the image-grounded
         # narrative instead of inventing packaging/cleaning/retrieval prose.
         pass
@@ -2484,7 +2505,7 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
     phase = _canonical_phase(phase_raw)
     phase_cn = PHASE_LABEL_CN.get(phase_raw) or PHASE_LABEL_CN.get(phase) or "当前阶段"
     target_hint = _target_hint_from_triplet((expert_pack.get("triplet") or {}))
-    target_label = target_hint.get("label") or "cystic_duct"
+    target_label = target_hint.get("label") or "unknown"
     target_cn = _target_cn(target_label)
 
     tools = (expert_pack.get("yolo") or {}).get("tools", [])[:5]
@@ -2525,7 +2546,7 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
 
     clipper_frames = int(tool_frame_counts.get("钛夹钳") or tool_frame_counts.get("施夹器") or 0)
     scissors_frames = int(tool_frame_counts.get("剪刀") or 0)
-    action_parts = _triplet_operation_phrases(expert_pack.get("triplet") or {}, max_items=4, phase=phase)
+    action_parts = _triplet_operation_phrases(expert_pack.get("triplet") or {}, max_items=4, phase=phase, draft=True)
     bipolar_frames = int(tool_frame_counts.get("双极电凝钳") or tool_frame_counts.get("双极电凝") or 0)
     if bipolar_frames < 3 and not bipolar_evidence.get("resolved"):
         action_parts = [part for part in action_parts if not part.startswith("双极电凝")]
@@ -2552,80 +2573,16 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
             part for part in action_parts
             if not re.search(r"(分离胆囊|分离胆囊板|分离肝脏|分离腹膜|分离肝胆三角)", part)
         ]
-    if phase == "GallbladderPackaging":
-        action_parts = [
-            part for part in action_parts
-            if re.search(r"装袋|取出|标本袋|胆囊袋|凝血|出血|纱布|棉片", part)
-        ]
-        if not any(re.search(r"装袋|取出|标本袋|胆囊袋", part) for part in action_parts):
-            action_parts.append("将胆囊装入标本袋并准备取出")
-    has_clip_action = any(
-        term in " ".join(action_parts)
-        for term in ("夹闭", "闭合", "施夹", "夹持", "夹子", "Hem-o-lok", "钛夹")
-    )
-    # Presence and phase alone cannot establish jaw closure or cutting. Keep
-    # observed Triplet actions; the visual review may add a confirmed action.
-    has_cut_action = any("切断" in part for part in action_parts)
-    if "电凝钩" in tool_set and not has_clip_action and not has_cut_action:
-        if phase == "Preparation":
-            action_parts.append("电凝钩进入或调整术野")
-        elif phase == "CalotTriangleDissection":
-            action_parts.append("电凝钩沿肝胆三角解剖层次分离纤维脂肪组织，以逐步扩大关键结构暴露")
-        elif phase == "GallbladderDissection":
-            action_parts.append("电凝钩沿胆囊壁与肝床间隙分离粘连组织，逐步扩大剥离范围")
-        else:
-            action_parts.append("电凝钩分离局部组织")
-    if "冲洗器" in tool_set and not has_clip_action:
-        action_parts.append("正在冲洗或清理术野")
-    if ("双极电凝钳" in tool_set
-        and bipolar_evidence.get("resolved")
-        and bipolar_evidence.get("bipolar_action_confidence", 0) >= .5
-        and not has_clip_action and not has_cut_action and not any(
-        "双极电凝钳" in part for part in action_parts
-    )):
-        if "出血" in action_text:
-            action_parts.append("双极电凝钳处理出血点")
-        elif phase == "CalotTriangleDissection":
-            bipolar_action = "双极电凝钳反复开合夹持并分离肝胆三角内纤维脂肪组织"
-            if "抓钳" in tool_set:
-                bipolar_action += "，抓钳配合牵拉以扩大关键结构暴露"
-            else:
-                bipolar_action += "，以扩大关键结构暴露"
-            action_parts.append(bipolar_action)
-        elif phase == "GallbladderDissection":
-            action_parts.append("双极电凝钳夹持并分离胆囊床粘连组织，逐步扩大胆囊与肝床间隙")
-        else:
-            action_parts.append("双极电凝钳夹持并分离局部组织")
-    elif "双极电凝" in tool_set and "出血" in action_text:
-        action_parts.append("双极电凝处理出血点")
-    if "标本袋" in tool_set and phase == "GallbladderPackaging":
-        action_parts.append("进入标本装袋或取出相关步骤")
-    if not action_parts and "抓钳" in tool_set:
-        if phase == "CalotTriangleDissection":
-            action_parts.append("抓钳牵拉胆囊颈和胆囊体以暴露肝胆三角")
-        elif phase == "GallbladderDissection":
-            action_parts.append("抓钳牵拉胆囊体以暴露胆囊床")
-        else:
-            action_parts.append("抓钳牵拉胆囊颈和胆囊体以暴露操作区域")
-
-    if phase == "GallbladderRetraction":
-        action_parts = ["牵拉装有胆囊的标本袋经切口取出"]
-
+    # A phase and a visible tool do not establish an action or its contact
+    # tissue. Keep Triplet actions; the asynchronous image review adds detail.
+    if not action_parts and tool_names:
+        action_parts.append("术野内可见" + "、".join(dict.fromkeys(tool_names)))
     visibility_cue = expert_pack.get("local_visibility") or {}
-    if visibility_cue.get("out_of_body"):
-        # Color/geometry cues only nominate a scope-exit candidate. Fog and a
-        # white specimen bag can look identical to a trocar lumen, so the live
-        # summary waits for the structured VLM before asserting out-of-body.
-        if phase == "GallbladderRetraction":
-            return "当前处于标本袋牵拉取出，牵拉装有胆囊的标本袋经切口取出。"
-
     parts = [] if phase_cn == "当前阶段" else [f"当前处于{phase_cn}"]
     if action_parts:
         prefix = "，" if parts else ""
         parts.append(prefix + "；".join(dict.fromkeys(action_parts)))
-    elif phase_cn and phase_cn != "当前阶段":
-        parts.append("，" + _phase_visual_context(phase_raw, phase))
-    else:
+    elif not parts:
         parts.append("画面以术野观察和状态确认为主")
     if action_text:
         parts.append(f"。{action_text}")
@@ -2636,7 +2593,7 @@ def _expert_snapshot_summary(expert_pack: Dict[str, Any], start_time: float, end
         parts.append("。镜头起雾，手术视野受遮挡")
     summary = _strip_clipping_noise(_sanitize_target_language("".join(parts).rstrip("。") + "。", target_label))
     summary = _resolve_bipolar_hook_conflict(summary, expert_pack)
-    return _expand_vague_operation_language(summary, phase)
+    return summary
 
 
 def _frame_analysis_has_visual_signal(frame_analyses: List[Dict[str, Any]]) -> bool:
@@ -5541,6 +5498,8 @@ async def glm_summarization_task(
                 # ========== 加载窗口帧图片用于GLM多模态验证 ==========
                 window_images = None
                 expert_images = None
+                images_started = time.monotonic()
+                window_ready_wall = time.time()
                 if storage_path:
                     try:
                         # 获取该时间范围内的帧文件列表
@@ -5618,6 +5577,13 @@ async def glm_summarization_task(
                     "consistency": consistency,
                     "images_loaded": len(window_images) if window_images else 0
                 }
+                capture_clock = get_frame_capture_service().get_capture_stats(session_id) or {}
+                origin = capture_clock.get("source_clock_origin_wall")
+                window_metadata[window_id]["timing"] = {
+                    "source_window_end_wall": origin + end_time if origin is not None else None,
+                    "window_ready_wall": window_ready_wall,
+                    "image_load_ms": round((time.monotonic() - images_started) * 1000, 2),
+                }
             
             # ========== 2. 逐个处理窗口（每完成一个立即保存到 DB，前端可实时看到） ==========
             if windows_to_process:
@@ -5684,11 +5650,11 @@ async def glm_summarization_task(
                     )
 
                     def _pil_list_to_bgr(pil_list):
+                        from ..services.expert_image_preparation import prepare_expert_frame
                         out = []
                         for im in pil_list or []:
                             try:
-                                arr = _np.array(im.convert("RGB"))
-                                out.append(arr[:, :, ::-1].copy())  # RGB→BGR
+                                out.append(prepare_expert_frame(im))
                             except Exception:
                                 pass
                         return out
@@ -5964,7 +5930,7 @@ async def glm_summarization_task(
                         # The external-provider prompt remains unchanged. Local
                         # models otherwise tend to copy its all-false example.
                         if provider in {"glm", "local"}:
-                            question = build_local_visual_prompt(expert_pack, phase_context)
+                            question = build_local_visual_prompt(expert_pack, phase_context, len(sampled))
                             # Leave room for observations and the full fact schema;
                             # truncated JSON must not become default-negative facts.
                             max_tokens = max(max_tokens, 1400)
@@ -7287,6 +7253,8 @@ async def glm_summarization_task(
                                 return {"success": False, "error": "incomplete_local_visual_result",
                                         "model": result.get("model"), "provider": source_provider,
                                         "external_call_count": int(result.get("_external_call_count") or 0)}
+                            if source_provider in {"glm", "local"}:
+                                parsed = normalize_local_review(parsed, len(sampled))
                             visual = _ensure_visual_defaults((parsed or {}).get("visual") if parsed else None)
                             if source_provider not in {"glm", "local"} and phase_context not in {
                                 "CalotTriangleDissection",
@@ -7401,6 +7369,7 @@ async def glm_summarization_task(
                                     system_prompt="你是腹腔镜手术视觉审阅专家。必须只输出一个JSON对象，不要markdown。",
                                     temperature=temperature,
                                     max_tokens=max_tokens,
+                                    **({"include_timestamps": False} if provider in {"glm", "local"} else {}),
                                 ),
                                 timeout=timeout_s,
                             )
@@ -7662,12 +7631,13 @@ async def glm_summarization_task(
                                     else f"{visibility_summary.rstrip('。')}。"
                                 )
                             patch_target_hint = _target_hint_from_triplet(expert_pack_base.get("triplet") or {})
-                            patch_target_label = patch_target_hint.get("label") or "cystic_duct"
+                            patch_target_label = patch_target_hint.get("label") or "unknown"
                             visual_target = ((open_vlm_hint.get("visual") or {}).get("target_structure") or {})
                             visual_target_label = _target_label_from_raw(visual_target.get("label"))
                             current_summary = _sanitize_target_language(
                                 current_summary,
-                                visual_target_label or patch_target_label,
+                                (visual_target_label or "unknown") if open_vlm_hint.get("provider") in {"glm", "local"}
+                                else (visual_target_label or patch_target_label),
                             )
                             current_summary = _strip_clipping_noise(current_summary)
                             sequence_state = {}
@@ -7689,6 +7659,7 @@ async def glm_summarization_task(
                                     current_phase,
                                     sequence_state,
                                     visual=hint_visual,
+                                    preserve_anatomy=open_vlm_hint.get("provider") in {"glm", "local"},
                                 )
                             except Exception as rule_e:
                                 logger.warning(f"[SequenceRules] OpenVLM rule pass failed for window {window_id}: {rule_e}")
@@ -7708,6 +7679,11 @@ async def glm_summarization_task(
                                 current_summary = _suppress_unsupported_tool_actions(
                                     current_summary, hint_visual, expert_pack_base,
                                 )
+                                checked = normalize_local_review({"summary": current_summary, "visual": hint_visual},
+                                                                 int(open_vlm_hint.get("sampled_frames") or len(pil_images)))
+                                current_summary = checked["summary"]
+                                hint_visual = checked["visual"]
+                                open_vlm_hint["visual"] = hint_visual
 
                             experts = dict((others_data or {}).get("experts") or {})
                             experts.update({
@@ -7788,6 +7764,8 @@ async def glm_summarization_task(
                         expert_pack: Dict[str, Any] = {}
                         stage1_text_vlm_count = 0
                         should_emit_stage1 = window_id not in stage1_processed_windows
+                        expert_started = time.monotonic()
+                        bgr_frames = []
                         try:
                             pil_images = window_data.get("expert_images") or window_data.get("images") or []
                             bgr_frames = await asyncio.to_thread(_pil_list_to_bgr, _uniform_sample(pil_images, 12))
@@ -7817,18 +7795,6 @@ async def glm_summarization_task(
                                         expert_pack.get("phase", {}).get("label", "Unknown") or "Unknown"
                                     )
                                     expert_pack["open_vlm"] = {"pending": True}
-                                    refinement_task = asyncio.create_task(
-                                        _patch_open_vlm_window(
-                                            window_id=window_id,
-                                            meta=meta,
-                                            pil_images=pil_images,
-                                            expert_text=expert_text,
-                                            expert_pack_base=dict(expert_pack),
-                                            stage1_summary_text=stage1_summary_text,
-                                            stage1_phase=stage1_phase,
-                                        )
-                                    )
-                                    _track_open_vlm_task(db_session_id, refinement_task)
                                 else:
                                     stage1_summary_text = _expert_snapshot_summary(
                                         expert_pack=expert_pack,
@@ -7841,6 +7807,9 @@ async def glm_summarization_task(
                                     )
                         except Exception as s1e:
                             logger.warning(f"[GLM Task] Stage 1 failed for window {window_id}: {s1e}")
+                        meta.setdefault("timing", {})["expert_ms"] = round((time.monotonic() - expert_started) * 1000, 2)
+                        meta["timing"]["expert_components_ms"] = expert_pack.get("timing", {})
+                        meta["timing"]["expert_input_sizes"] = [[f.shape[1], f.shape[0]] for f in bgr_frames]
 
                         sequence_state = {}
                         stage1_sequence_rules: List[str] = []
@@ -7873,12 +7842,14 @@ async def glm_summarization_task(
                                     stage1_phase,
                                     sequence_state,
                                     visual=(expert_pack.get("open_vlm") or {}).get("visual") if isinstance(expert_pack.get("open_vlm"), dict) else None,
+                                    preserve_anatomy=get_summarization_provider() in {"glm", "local"},
                                 )
                             except Exception as rule_e:
                                 logger.warning(f"[SequenceRules] Stage 1 rule pass failed for window {window_id}: {rule_e}")
 
                         # 立即保存 Stage 1（前端 SSE 很快就看到）
                         if stage1_summary_text:
+                            meta["timing"]["stage1_ready_to_save_wall"] = time.time()
                             create_window_summary(
                                 db=db,
                                 session_id=db_session_id,
@@ -7891,6 +7862,7 @@ async def glm_summarization_task(
                                 key_actions=[],
                                 others_data={
                                     "stage": 1,
+                                    "timing": dict(meta["timing"]),
                                     "stage1_summary": stage1_summary_text,
                                     "realtime": bool(is_live),
                                     "experts": {
@@ -7937,6 +7909,15 @@ async def glm_summarization_task(
                                 },
                             )
                             stage1_processed_windows.add(window_id)
+                            if (is_live or window_refinement) and should_emit_stage1:
+                                refinement_task = asyncio.create_task(
+                                    _patch_open_vlm_window(
+                                        window_id=window_id, meta=dict(meta), pil_images=pil_images,
+                                        expert_text=expert_text, expert_pack_base=dict(expert_pack),
+                                        stage1_summary_text=stage1_summary_text, stage1_phase=stage1_phase,
+                                    )
+                                )
+                                _track_open_vlm_task(db_session_id, refinement_task)
                             if (is_live and not live_stage2_enabled) or window_refinement:
                                 # The structured local VLM patch is the only
                                 # refinement in local deployment. Mark this
@@ -8932,7 +8913,7 @@ async def process_video_task(
 
 
 @router.get("/summaries/{session_id}")
-async def get_session_summaries(
+def get_session_summaries(
     session_id: str,
     db: Session = Depends(get_db)
 ):
@@ -8961,11 +8942,13 @@ async def get_session_summaries(
                 payload["stage1_summary"] = others.get("stage1_summary")
             payload["others"] = others
         out.append(payload)
-    return out
+    # Full audit payloads contain large nested expert outputs. Serialize once
+    # in this sync route's worker, not FastAPI's event-loop jsonable_encoder.
+    return JSONResponse(out)
 
 
 @router.get("/summary-telemetry/{session_id}")
-async def get_summary_telemetry(
+def get_summary_telemetry(
     session_id: str,
     db: Session = Depends(get_db),
 ):
@@ -12286,7 +12269,7 @@ async def stream_summaries(
     if not session:
         raise HTTPException(404, "Session not found")
 
-    async def event_generator():
+    async def generate_updates(changes):
         # Pipeline v4: 同一个 window 可能先来 stage=1，后被 OpenVision
         # patch，再被 stage=2 覆盖。内容变化也要推给前端，而不只是 stage 增长。
         last_signature_by_window: Dict[int, str] = {}
@@ -12318,7 +12301,7 @@ async def stream_summaries(
                 producers_running = bool(producer and not producer.done()) or any(
                     task and not task.done() for task in active_open_vlm_tasks.get(sid, set())
                 )
-                summaries = get_summaries_by_session(db, session["session_id"])
+                summaries = await asyncio.to_thread(get_summaries_by_session, None, session["session_id"])
 
                 # 按 window_id 升序推送，保证前端收到顺序稳定
                 ordered = sorted(
@@ -12351,7 +12334,10 @@ async def stream_summaries(
                             "summary": s_summary,
                             "phase": s_phase,
                             "stage": stage,
+                            "emitted_at_wall": time.time(),
                         }
+                        if s_others.get("timing"):
+                            payload["timing"] = s_others["timing"]
                         # 附带 experts / 推理链（前端渲染深度面板）
                         if isinstance(s_others, dict):
                             if s_others.get("manual_review"):
@@ -12384,14 +12370,19 @@ async def stream_summaries(
             except Exception as e:
                 logger.warning(f"[SSE] Error in event_generator: {e}")
 
-            # 2s 节拍：10s 窗口下 2s 检查一次足够及时；减半 DB 扫描频率，
-            # 让事件循环在 Gemini/embedding 高耗时任务之间更从容。
-            await asyncio.sleep(2)
+            await wait_for_update(changes)
         
         # Send final completed message if we hit max iterations
         if iteration >= max_iterations:
             yield f"data: {json.dumps({'status': 'completed', 'message': 'timeout'})}\n\n"
     
+    from ..services.summary_notifications import subscribe, wait_for_update
+
+    async def event_generator():
+        async with subscribe(session_id) as changes:
+            async for event in generate_updates(changes):
+                yield event
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream"

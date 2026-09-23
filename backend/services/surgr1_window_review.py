@@ -12,6 +12,12 @@ QUESTION = "Given the laparoscopic cholecystectomy image <image>, describe the c
 _gate = asyncio.Semaphore(1)
 
 
+def _write_review_image(source, path):
+    image = source.convert("RGB")
+    image.thumbnail((840, 840))
+    image.save(path, format="JPEG", quality=90)
+
+
 def answer_only(raw):
     text = str(raw or "").strip()
     answer = re.search(r"<answer>(.*?)</answer>", text, re.DOTALL | re.IGNORECASE)
@@ -30,21 +36,23 @@ async def review_surgr1_window(images, timestamps):
     client = get_surgr1_client()
     if urlparse(client.api_url).hostname not in {"127.0.0.1", "localhost", "::1"}:
         return {"success": False, "status": "local_only", "call_count": 0}
+    queued = time.monotonic()
     try:
-        await asyncio.wait_for(_gate.acquire(), timeout=3)
+        # Refinements may wait behind another window without delaying drafts.
+        # Keep the wait bounded so an unavailable model cannot grow the queue forever.
+        await asyncio.wait_for(_gate.acquire(), timeout=max(1, min(30, float(cfg.get("queue_timeout", 20)))))
     except asyncio.TimeoutError:
         return {"success": False, "status": "busy", "call_count": 0}
     started = time.monotonic()
+    queue_ms = round((started - queued) * 1000)
     count = min(len(images), max(1, min(3, int(cfg.get("max_images", 2)))))
     indices = [round(i * (len(images) - 1) / (count - 1)) for i in range(count)] if count > 1 else [len(images) // 2]
     try:
         with tempfile.TemporaryDirectory(prefix="surgr1-window-") as directory:
             paths = []
             for index in indices:
-                image = images[index].convert("RGB")
-                image.thumbnail((840, 840))
                 path = str(Path(directory) / f"frame-{index}.jpg")
-                await asyncio.to_thread(image.save, path, format="JPEG", quality=90)
+                await asyncio.to_thread(_write_review_image, images[index], path)
                 paths.append(path)
             result = await asyncio.wait_for(client.analyze_batch(
                 image_paths=paths, questions=[QUESTION], temperature=0,
@@ -62,6 +70,7 @@ async def review_surgr1_window(images, timestamps):
         return {"success": bool(observations), "status": "completed" if observations else "no_valid_answer",
                 "model": "SurgR1", "call_count": 1, "frame_count": count,
                 "latency_ms": round((time.monotonic() - started) * 1000),
+                "queue_ms": queue_ms,
                 "observations": observations, "raw_results": raw_results}
     except Exception as error:
         return {"success": False, "status": "failed", "error": str(error) or type(error).__name__,

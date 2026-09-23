@@ -47,6 +47,8 @@
           </div>
 
           <div class="header-actions">
+            <ScreenRecordingControl :sessionId="currentSession?.session_id"
+              :analyzing="isProcessing" :replay="replayMode" />
             <button
               v-if="summaryReady"
               class="btn summary-ready-btn"
@@ -430,6 +432,7 @@ import WindowOverview from './components/WindowOverview.vue'
 import ClinicalReportView from './components/ClinicalReportView.vue'
 import RightPanel from './components/RightPanel.vue'
 import VideoReviewModal from './components/VideoReviewModal.vue'
+import ScreenRecordingControl from './components/ScreenRecordingControl.vue'
 import { resolveReviewRange } from './utils/chatTimestamps.js'
 import { useI18n } from './i18n.js'
 import { captureLocalVideoThumbnail } from './utils/localVideoThumbnail.js'

@@ -114,12 +114,28 @@ async def startup_event():
                 t = get_triplet_service()
                 y = get_yolo_service()
                 c = get_clip_detector_service()
+                import numpy as np
+                # Match inference tensor shapes before accepting a live stream.
+                # Square-only detector warmup leaves rectangular kernels cold.
+                for height in (960, 720):
+                    blank = np.zeros((height, 1280, 3), dtype=np.uint8)
+                    if p:
+                        p.classify_batch([blank] * 12)
+                    if t:
+                        t.recognize_clip([blank] * 12)
+                    for _ in range(12):
+                        if y:
+                            y.detect(blank)
+                        if c:
+                            c.detect(blank)
+                if y:
+                    y.reset_tracker()
                 return bool(y), bool(c), bool(p), bool(t)
             y, c, p, t = await loop.run_in_executor(None, _sync_load)
             logger.info(f"[Startup] Experts preloaded — yolo={y} clip_detector={c} phase={p} triplet={t}")
         except Exception as e:
             logger.warning(f"[Startup] Expert preload failed (will lazy-load): {e}")
-    _asyncio.create_task(_preload_experts())
+    await _preload_experts()
 
 
 @app.on_event("shutdown")

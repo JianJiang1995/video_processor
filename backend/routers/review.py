@@ -52,6 +52,8 @@ async def reanalyze_window(session_id: str, window_id: int = Path(ge=0)):
         )
         if not updated:
             raise HTTPException(404, "review_window_missing")
+        from ..services.summary_notifications import notify
+        notify(session_id)
         return {"session_id": session_id, "window_id": window_id,
                 "start_time": start, "end_time": end, "summary": result["summary"],
                 "stage": 3, "summary_en": "", "others": updated,

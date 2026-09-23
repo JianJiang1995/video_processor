@@ -76,6 +76,14 @@ def terminate_group(process: subprocess.Popen | None) -> None:
 
 def make_recording_spec(source: Path, target: Path) -> dict:
     spec = json.loads(source.read_text(encoding="utf-8"))
+    # The recording copy lives elsewhere; assets remain relative to the original.
+    for key in ("video_path", "summaries_path", "events_path", "report_path"):
+        if spec.get(key):
+            spec[key] = str((source.parent / spec[key]).resolve())
+    if spec.get("session", {}).get("video_path"):
+        spec["session"]["video_path"] = str(
+            (source.parent / spec["session"]["video_path"]).resolve()
+        )
     spec["auto_play"] = False
     spec["auto_start_delay_ms"] = 0
     target.parent.mkdir(parents=True, exist_ok=True)
