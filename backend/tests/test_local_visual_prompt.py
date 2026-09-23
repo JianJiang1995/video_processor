@@ -5,6 +5,27 @@ from backend.services.local_visual_prompt import build_local_visual_prompt, revi
 
 
 class LocalPromptTests(unittest.TestCase):
+    def test_tissues_survive_tool_conflict_without_inventing_an_action(self):
+        prompt = build_local_visual_prompt({'yolo': {'tools': [{'label': 'hook'}]}, 'triplet': {
+            'triplet': [{'label': '[grasper]-[retract]-[gallbladder]', 'confidence': .9}],
+            'target': [{'label': 'gallbladder', 'confidence': .94, 'class_id': 0},
+                       {'label': 'liver', 'confidence': .4}, {'label': 'null_target', 'confidence': .99},
+                       {'label': 'cystic_duct', 'confidence': .01}],
+        }})
+        context = json.loads(prompt.splitlines()[-1])
+        self.assertEqual(context['operation_candidates'], [])
+        self.assertEqual([c['label'] for c in context['tissue_candidates']], ['gallbladder', 'liver'])
+        self.assertIn('背景器官和器械实际接触对象', prompt)
+
+    def test_surgr1_only_passes_completed_observations_not_reasoning(self):
+        expert = {'surgr1': {'success': True, 'raw_results': 'PRIVATE REASONING',
+                  'observations': [{'timestamp': 7.2, 'action': 'grasper retracts gallbladder'}]}}
+        prompt = build_local_visual_prompt(expert)
+        self.assertNotIn('PRIVATE REASONING', prompt)
+        self.assertIn('grasper retracts gallbladder', prompt)
+        expert['surgr1']['success'] = False
+        self.assertNotIn('surgr1_observations', build_local_visual_prompt(expert))
+
     def test_scene_display_uses_accepted_type_not_raw_model_guesses(self):
         visual = {'visibility_secondary_review': {'classification': 'external_body',
                   'confidence': .9, 'external_evidence_type': 'room_furniture',

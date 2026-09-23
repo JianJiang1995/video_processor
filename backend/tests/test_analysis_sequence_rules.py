@@ -3,6 +3,7 @@ import unittest
 from backend.routers.analysis import (
     _apply_surgical_sequence_rules,
     _bounded_window_end,
+    _frames_within_window,
     _bipolar_forceps_evidence,
     _build_deterministic_clinical_report,
     _build_surgical_sequence_state,
@@ -29,6 +30,14 @@ import numpy as np
 
 
 class AnalysisSequenceRulesTest(unittest.TestCase):
+    def test_adjacent_windows_never_share_boundary_frame(self):
+        frames = [{'timestamp': t} for t in (5, 4.8, 0, 10, 9.8, None)]
+        first = _frames_within_window(frames, 0, 5)
+        second = _frames_within_window(frames, 5, 10)
+        self.assertEqual([f['timestamp'] for f in first], [0, 4.8])
+        self.assertEqual([f['timestamp'] for f in second], [5, 9.8])
+        self.assertFalse({id(f) for f in first} & {id(f) for f in second})
+
     def test_blue_clip_color_cannot_override_consistent_hook_detections(self):
         experts = {'phase': {'label': 'calot_triangle_dissection'},
                    'yolo': {'tools': [{'label': 'hook', 'frames_seen': 12}]},
@@ -462,7 +471,9 @@ class AnalysisSequenceRulesTest(unittest.TestCase):
         }
         self.assertTrue(_bipolar_forceps_evidence(experts)["resolved"])
         summary = _expert_snapshot_summary(experts, 330.0, 335.0, 12)
-        self.assertIn("双极电凝钳反复开合夹持并分离肝胆三角内纤维脂肪组织", summary)
+        # The supplied action names liver, not dissection of invented fatty tissue.
+        self.assertIn("双极电凝钳牵拉肝脏", summary)
+        self.assertNotIn("分离肝胆三角内纤维脂肪组织", summary)
         self.assertNotIn("电凝钩", summary)
 
     def test_blue_jaw_cue_rejects_white_hook_shape(self):

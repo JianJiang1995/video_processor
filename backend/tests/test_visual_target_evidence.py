@@ -18,6 +18,19 @@ from backend.routers.analysis import (
 
 
 class VisualTargetEvidenceTests(unittest.TestCase):
+    def test_generic_expert_tissue_is_never_upgraded_to_cystic_identity(self):
+        from backend.routers.analysis import _target_hint_from_triplet, _triplet_operation_phrases
+        from backend.services.expert_fusion import _triplet_target_hint, _triplet_operation_phrases as expert_phrases
+        triplet = {'target': [{'label': 'blood_vessel', 'confidence': .99}], 'triplet': [
+            {'label': '[clipper]-[clip]-[blood_vessel]', 'confidence': .95},
+            {'label': '[grasper]-[retract]-[liver]', 'confidence': .9},
+        ]}
+        self.assertEqual(_target_hint_from_triplet(triplet)['label'], 'unknown')
+        self.assertEqual(_triplet_target_hint(triplet)['label'], 'unknown')
+        for phrases in (_triplet_operation_phrases(triplet), expert_phrases(triplet)):
+            self.assertIn('抓钳牵拉肝脏', ' '.join(phrases))
+            self.assertNotIn('胆囊动脉', ' '.join(phrases))
+
     def test_blur_occlusion_and_external_haze_are_not_intra_abdominal_fog(self):
         for status in ('blurred', 'blocked'):
             self.assertFalse(_visibility_flags_from_visual({'visibility': {

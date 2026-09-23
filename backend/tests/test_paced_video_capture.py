@@ -1,10 +1,12 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cv2
 
 from backend.services.local_video_source import PacedVideoCapture
 from backend.services.frame_capture_service import frame_retention_seconds
+from backend.services import frame_capture_service as capture_service
+from backend.services.local_video_source import ResolvedVideoSource
 
 
 class _FakeCapture:
@@ -62,6 +64,23 @@ class _FakeClock:
 
 
 class PacedVideoCaptureTest(unittest.TestCase):
+    def test_local_file_eof_does_not_restart_capture(self):
+        cap = Mock()
+        cap.get.return_value = 25
+        cap.read.side_effect = [(False, None), RuntimeError('Read beyond EOF')]
+        states = {}
+        with patch.object(capture_service, 'resolve_video_source', return_value=ResolvedVideoSource(
+                original='/tmp/file.mp4', source='/tmp/file.mp4', is_simulator=False)), \
+                patch.object(capture_service, 'open_video_source', return_value=cap), \
+                patch.object(capture_service, '_capture_states', states), \
+                patch.object(capture_service, 'get_frame_storage_service'), \
+                patch('backend.services.frame_storage_service._frame_index_cache'):
+            capture_service.frame_capture_thread_func('eof', '/tmp/file.mp4', '/unused', False, 0)
+        cap.read.assert_called_once()
+        cap.set.assert_not_called()
+        cap.release.assert_called_once()
+        self.assertFalse(states['eof'].is_running)
+
     def test_finite_simulator_keeps_history_but_live_capture_remains_bounded(self):
         config = {'live_retention_seconds': 300}
         self.assertEqual(frame_retention_seconds(config, True, True), 0)

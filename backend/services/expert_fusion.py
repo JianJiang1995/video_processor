@@ -76,8 +76,12 @@ TRIPLET_VERB_CN = {
 TRIPLET_TARGET_CN = {
     "cystic_duct": "胆囊管",
     "cystic_artery": "胆囊动脉",
-    "blood_vessel": "胆囊动脉",
-    "cystic_pedicle": "胆囊管",
+    "blood_vessel": "血管",
+    "cystic_pedicle": "胆囊蒂",
+    "omentum": "网膜",
+    "gut": "肠管",
+    "abdominal_wall_cavity": "腹壁",
+    "specimen_bag": "标本袋",
     "gallbladder": "胆囊",
     "gallbladder_bed": "胆囊床",
     "cystic_plate": "胆囊板",
@@ -116,19 +120,17 @@ def _triplet_target_hint(triplet: Dict[str, Any]) -> Dict[str, Any]:
         bonus = 0.08 if verb in {"clip", "cut", "coagulate"} else 0.0
         if target == "cystic_duct":
             scores["cystic_duct"] = max(scores["cystic_duct"], conf + bonus)
-        elif target in {"cystic_artery", "blood_vessel"}:
+        elif target == "cystic_artery":
             scores["cystic_artery"] = max(scores["cystic_artery"], conf + bonus)
-        elif target == "cystic_pedicle":
-            scores["cystic_duct"] = max(scores["cystic_duct"], conf * 0.55)
     for item in (triplet or {}).get("target") or []:
         label = str(item.get("label") or "").lower()
         conf = _safe_float(item.get("confidence"), 0.0)
         if label == "cystic_duct":
             scores["cystic_duct"] = max(scores["cystic_duct"], conf * 0.75)
-        elif label in {"cystic_artery", "blood_vessel"}:
+        elif label == "cystic_artery":
             scores["cystic_artery"] = max(scores["cystic_artery"], conf * 0.75)
-        elif label == "cystic_pedicle":
-            scores["cystic_duct"] = max(scores["cystic_duct"], conf * 0.40)
+    if not max(scores.values()):
+        return {"label": "unknown", "confidence": 0.0}
     label = "cystic_artery" if scores["cystic_artery"] > scores["cystic_duct"] else "cystic_duct"
     return {"label": label, "confidence": round(scores[label], 3)}
 
@@ -142,6 +144,7 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], phase_label: str = "", m
     safe_progress_targets = {
         "cystic_duct", "cystic_artery", "blood_vessel", "cystic_pedicle",
         "gallbladder", "gallbladder_bed", "cystic_plate", "calot_triangle",
+        "liver", "omentum", "peritoneum", "adhesion", "gut", "abdominal_wall_cavity",
     }
     for item in (triplet or {}).get("triplet") or []:
         conf = _safe_float(item.get("confidence"), 0.0)
@@ -154,7 +157,7 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], phase_label: str = "", m
         inst_cn = TRIPLET_INSTRUMENT_CN.get(inst, "")
         if verb == "coagulate":
             if target in {"cystic_artery", "blood_vessel"} and conf >= 0.18:
-                target_cn = "胆囊动脉"
+                target_cn = TRIPLET_TARGET_CN[target]
             else:
                 continue
         elif verb in {"clip", "cut"}:
@@ -165,10 +168,6 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], phase_label: str = "", m
             if target not in safe_progress_targets or conf < 0.18:
                 continue
             target_cn = TRIPLET_TARGET_CN.get(target, "")
-            if verb == "retract" and target in core_targets:
-                target_cn = "胆囊颈和胆囊体"
-            elif verb == "grasp" and target in core_targets:
-                target_cn = "胆囊颈附近组织"
         if not target_cn:
             continue
         phrase = f"{inst_cn}{verb_cn}{target_cn}" if inst_cn else f"{verb_cn}{target_cn}"
@@ -560,8 +559,9 @@ def _format_text(
         )
     if triplet and triplet.get("triplet"):
         target_hint = _triplet_target_hint(triplet)
-        target_cn = "胆囊动脉" if target_hint["label"] == "cystic_artery" else "胆囊管"
-        lines.append(f"[Triplet Target Hint] 夹闭剪切目标倾向: {target_cn} (conf {target_hint.get('confidence', 0):.2f})")
+        target_cn = TRIPLET_TARGET_CN.get(target_hint["label"])
+        if target_cn:
+            lines.append(f"[Triplet Target Hint] 待核实目标: {target_cn} (conf {target_hint.get('confidence', 0):.2f})")
         op_phrases = _triplet_operation_phrases(triplet, phase_label=str(phase.get("label") or ""))
         yolo_labels = {
             str(tool.get("label") or "").strip().lower()

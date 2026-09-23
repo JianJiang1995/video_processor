@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cv2
@@ -16,6 +18,26 @@ class BoundSimulatorTests(unittest.TestCase):
         app.dependency_overrides[video.get_db] = lambda: None
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
+
+    def test_paced_load_preserves_finite_source_in_both_stores(self):
+        cap = Mock()
+        cap.get.side_effect = lambda key: {cv2.CAP_PROP_FPS: 25,
+            cv2.CAP_PROP_FRAME_COUNT: 750, cv2.CAP_PROP_FRAME_WIDTH: 1440,
+            cv2.CAP_PROP_FRAME_HEIGHT: 1080}[key]
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'clip.mp4'
+            source.touch()
+            with patch.object(video.cv2, 'VideoCapture', return_value=cap), \
+                    patch.object(video, 'create_video_session', return_value={'session_id': 'paced'}) as create, \
+                    patch.object(video, 'get_mysql_service') as mysql, \
+                    patch.object(video, 'get_frame_storage_service'):
+                result = self.client.post('/api/video/load', params={'video_path': str(source), 'paced': True})
+        self.assertEqual(result.status_code, 200, result.text)
+        stored = create.call_args.kwargs['video_path']
+        self.assertTrue(stored.startswith('simulator://file/'))
+        self.assertEqual(mysql.return_value.create_video_session.call_args.kwargs['video_path'], stored)
+        self.assertEqual(mysql.return_value.create_video_session.call_args.kwargs['video_type'], 'stream')
+        self.assertEqual(result.json()['duration'], 30)
 
     def test_custom_file_and_layout_persist_identically_in_both_stores(self):
         source = ResolvedVideoSource(original='/tmp/one.mp4', source='/tmp/one.mp4',

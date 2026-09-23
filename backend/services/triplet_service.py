@@ -21,6 +21,23 @@ logger = logging.getLogger(__name__)
 # LAM-Lite class definition lives in the surg_agent project; we import it
 # instead of duplicating 150+ lines. This sys.path insertion is contained.
 _SURG_AGENT_ROOT = Path(_os.environ.get("SURG_AGENT_ROOT", "/home/user/proj/surg_agent"))
+LABEL_SCHEMA = "cholect50-official-v1"
+OFFICIAL_MAPPINGS = Path(__file__).resolve().parents[1] / "data/cholect50_official_labels.json"
+
+
+def load_label_maps(path, label_schema=LABEL_SCHEMA):
+    with open(path, encoding="utf-8") as handle:
+        mapping = json.load(handle)
+    with OFFICIAL_MAPPINGS.open(encoding="utf-8") as handle:
+        official = json.load(handle)
+    if label_schema != LABEL_SCHEMA:
+        raise ValueError(f"Unsupported LAM-Lite label schema: {label_schema}")
+    for head, count in (("instruments", 6), ("verbs", 10), ("targets", 15), ("triplets", 100)):
+        labels = mapping.get(head, {})
+        if set(labels) != {str(i) for i in range(count)} or labels != official[head]:
+            raise ValueError(f"LAM-Lite {head} do not match the checkpoint's official CholecT50 class order")
+    return {head: {int(k): v for k, v in mapping[head].items()}
+            for head in ("instruments", "verbs", "targets", "triplets")}
 
 
 class TripletService:
@@ -29,7 +46,7 @@ class TripletService:
     NUM_FRAMES = 10
     HIDDEN_DIM = 512
 
-    def __init__(self, model_path: str, mappings_path: str, device: str = "cuda:0"):
+    def __init__(self, model_path: str, mappings_path: str, device: str = "cuda:0", label_schema=LABEL_SCHEMA):
         import torch
         from torchvision import transforms as T
 
@@ -44,7 +61,7 @@ class TripletService:
         ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
         self.device = torch.device(device)
         self.model = LAMLite(hidden_dim=self.HIDDEN_DIM, num_frames=self.NUM_FRAMES)
-        self.model.load_state_dict(ckpt["state_dict"], strict=False)
+        self.model.load_state_dict(ckpt["state_dict"], strict=True)
         self.model.eval().to(self.device)
 
         self.transform = T.Compose([
@@ -53,13 +70,12 @@ class TripletService:
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
 
-        # Decode index → human-readable
-        with open(mappings_path) as f:
-            mapping = json.load(f)
-        self.instruments: Dict[int, str] = {int(k): v for k, v in mapping["instruments"].items()}
-        self.verbs: Dict[int, str] = {int(k): v for k, v in mapping["verbs"].items()}
-        self.targets: Dict[int, str] = {int(k): v for k, v in mapping["targets"].items()}
-        self.triplets: Dict[int, str] = {int(k): v for k, v in mapping["triplets"].items()}
+        mapping = load_label_maps(mappings_path, label_schema)
+        self.instruments = mapping["instruments"]
+        self.verbs = mapping["verbs"]
+        self.targets = mapping["targets"]
+        self.triplets = mapping["triplets"]
+        self.label_schema = label_schema
 
         # Sliding window of past frames for clip buffering (real-time streams)
         self._buffer: Deque = deque(maxlen=self.NUM_FRAMES)
@@ -105,15 +121,19 @@ class TripletService:
         # Apply sigmoid (multi-label) and take top-1 per head for headline,
         # top-3 for secondary detail.
         def topk(logits, k, mapping):
+            if logits.shape[-1] != len(mapping):
+                raise ValueError("Triplet output head and label map dimensions differ")
             probs = torch.sigmoid(logits[0]).cpu().numpy()
             order = np.argsort(-probs)
             picks = []
             for idx in order[:k]:
-                picks.append({"label": mapping.get(int(idx), f"class_{idx}"),
+                picks.append({"class_id": int(idx), "label": mapping[int(idx)],
                               "confidence": round(float(probs[idx]), 3)})
             return picks
 
         return {
+            "label_schema": self.label_schema,
+            "model": "LAM-Lite-CholecTriplet2021",
             "instrument": topk(out["i"], 3, self.instruments),
             "verb": topk(out["v"], 3, self.verbs),
             "target": topk(out["t"], 3, self.targets),
@@ -157,6 +177,8 @@ def get_triplet_service() -> Optional[TripletService]:
             return None
         model_path = tcfg.get("model_path", "")
         mappings_path = tcfg.get("mappings_path", "")
+        if mappings_path and not Path(mappings_path).is_absolute():
+            mappings_path = str(config_path.parent / mappings_path)
         if not model_path or not Path(model_path).exists():
             _triplet_failed_reason = f"checkpoint not found: {model_path}"
             logger.error(f"[Triplet] Checkpoint not found: {model_path}")
@@ -170,7 +192,7 @@ def get_triplet_service() -> Optional[TripletService]:
                 _SURG_AGENT_ROOT = parent.parent
                 break
         device = _os.environ.get("TRIPLET_DEVICE") or tcfg.get("device", "cuda:0")
-        _triplet_service = TripletService(model_path, mappings_path, device)
+        _triplet_service = TripletService(model_path, mappings_path, device, tcfg.get("label_schema", LABEL_SCHEMA))
         return _triplet_service
     except Exception as e:
         _triplet_failed_reason = str(e)

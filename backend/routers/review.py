@@ -44,6 +44,7 @@ async def reanalyze_window(session_id: str, window_id: int = Path(ge=0)):
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "model": result["model"], "frame_count": len(images),
             "timestamps": timestamps,
+            "experts": result.get("experts", {}),
         }
         updated = await asyncio.to_thread(
             store.save_window_review, session_id, window_id,

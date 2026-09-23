@@ -25,7 +25,13 @@
             "host": "0.0.0.0"
         },
         "surgr1": {
-            "enabled": false,
+            "enabled": true,
+            "mode": "window_refinement",
+            "gpu": 0,
+            "gpu_memory_utilization": 0.80,
+            "max_images": 2,
+            "max_tokens": 512,
+            "timeout": 30.0,
             "required": false,
             "port": 9003,
             "host": "localhost",
@@ -36,7 +42,7 @@
             "max_batch_size": 20,
             "batch_timeout": 3.0,
             "target_latency": 5.0,
-            "comment": "Legacy SurgR1 API 已停用；实时链路使用本地 phase/triplet/YOLO/VLM。保留配置仅用于兼容旧接口"
+            "comment": "本地 SurgR1 异步窗口复核器械、动作和组织，再由本地VLM看图整合；不启动旧的重复视频解码链路"
         },
         "glm": {
             "enabled": true,
@@ -218,7 +224,8 @@
         "triplet": {
             "enabled": true,
             "model_path": "/home/user/proj/surg_agent/triplet_expert/LAM/weights/LAM/CholecTriplet2021/LAM_Lite/model_best.pth.tar",
-            "mappings_path": "/home/user/proj/surg_agent/triplet_expert/datasets/cholect50_triplet/class_mappings.json",
+            "mappings_path": "backend/data/cholect50_official_labels.json",
+            "label_schema": "cholect50-official-v1",
             "device": "cuda:0",
             "comment": "Triplet Expert (LAM-Lite, ~1GB) 共用 GPU0"
         },

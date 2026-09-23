@@ -9,6 +9,8 @@ from PIL import Image
 
 from .frame_storage_service import get_frame_storage_service
 from .glm_client import get_glm_client
+from .surgr1_window_review import review_surgr1_window
+from .triplet_service import get_triplet_service, LABEL_SCHEMA
 from .local_video_source import resolve_video_source, apply_input_layout, split_input_layout
 from .local_visual_prompt import (
     build_local_visual_prompt, scene_observations_need_review,
@@ -98,6 +100,13 @@ async def analyze_review(images, timestamps, experts=None, phase=None):
     address = urlparse(client.api_url)
     if address.scheme not in {"http", "https"} or address.hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise PermissionError("review_local_only")
+    experts = dict(experts or {})
+    if experts.get("triplet") and experts["triplet"].get("label_schema") != LABEL_SCHEMA:
+        def refresh_triplet():
+            expert = get_triplet_service()
+            return expert.recognize_clip(images) if expert else {}
+        experts["triplet"] = await asyncio.to_thread(refresh_triplet)
+    experts["surgr1"] = await review_surgr1_window(images, timestamps)
     response = await asyncio.wait_for(client._analyze_images_with_timestamps(
         images=images, timestamps=timestamps, question=build_local_visual_prompt(experts, phase),
         system_prompt="仅依据本次图像重新核实，不沿用旧摘要。单帧不能确认动态动作。只输出要求的JSON。",
@@ -105,9 +114,10 @@ async def analyze_review(images, timestamps, experts=None, phase=None):
     ), timeout=90)
     if not response.get("success"):
         raise RuntimeError("review_model_unavailable")
-    result = {**parse_review(response.get("text")), "model": response.get("model", client.model_name)}
+    result = {**parse_review(response.get("text")), "model": response.get("model", client.model_name),
+              "experts": experts}
     if scene_observations_need_review(result['visual']):
-        return await review_scene(images, timestamps, result, client=client)
+        result = await review_scene(images, timestamps, result, client=client)
     return result
 
 

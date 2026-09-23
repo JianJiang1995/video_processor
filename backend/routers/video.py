@@ -760,7 +760,7 @@ async def load_video_from_path(
 ):
     """Load a video from existing path.
 
-    paced=True stores the session source as filesim://<path> so analysis and
+    paced=True stores the session source as simulator://file<path> so analysis and
     frame capture treat it like a finite realtime capture-card source
     (realtime pacing, stop at EOF). Multiple paced sessions can run in
     parallel on different files for batch validation.
@@ -782,7 +782,7 @@ async def load_video_from_path(
     duration = total_frames / fps if fps > 0 else 0
     cap.release()
     
-    stored_path = f"filesim://{path}" if paced else str(path)
+    stored_path = file_simulator_uri(str(path.resolve())) if paced else str(path)
 
     # Create database session (in-memory)
     session = create_video_session(
@@ -809,8 +809,8 @@ async def load_video_from_path(
         mysql_service.create_video_session(
             session_id=session_id,
             video_name=video_name,
-            video_path=str(path),
-            video_type="local",
+            video_path=stored_path,
+            video_type="stream" if paced else "local",
             duration=duration,
             fps=fps,
             width=width,

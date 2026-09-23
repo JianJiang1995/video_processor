@@ -8,6 +8,7 @@ PYTHON_BIN="$ROOT_DIR/../.venv/bin/python"
 BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:8001}"
 VLM_URL="${VLM_URL:-http://127.0.0.1:8010/v1}"
 VLM_PROXY_URL="${VLM_PROXY_URL:-http://127.0.0.1:8012/v1}"
+SURGR1_URL="http://127.0.0.1:9003"
 LOG_DIR="$ROOT_DIR/logs/desktop_launcher"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
 LOCK_FILE="$RUNTIME_DIR/surgical_app.lock"
@@ -78,6 +79,7 @@ show_status() {
     fi
     service_line "Qwen3-VL (vLLM)" "$VLM_URL/models"
     service_line "VLM local proxy" "$VLM_PROXY_URL/models"
+    service_line "SurgR1 tissue/action" "$SURGR1_URL/health"
     service_line "FastAPI backend" "$BACKEND_URL/api/health"
     echo ""
     echo "Optional integrations (not installed on this machine):"
@@ -126,7 +128,7 @@ stop_pid_group() {
 
 stop_managed_services() {
     local name file pid
-    for name in backend vlm_proxy vlm; do
+    for name in backend surgr1 vlm_proxy vlm; do
         file="$(pid_file "$name")"
         if [ -s "$file" ]; then
             pid="$(cat "$file")"
@@ -232,7 +234,7 @@ best_free_gpu() {
     nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null \
         | awk -F',' '{gsub(/ /, "", $1); gsub(/ /, "", $2); print $1, $2}' \
         | sort -k2,2nr \
-        | awk 'NR == 1 {print $1}'
+        | awk -v excluded="${1:-}" '$1 != excluded {print $1; exit}'
 }
 
 if [ "$SERVICES_ONLY" != "1" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
@@ -270,11 +272,18 @@ if [ ! -x "$PYTHON_BIN" ]; then
     exit 4
 fi
 
+SURGR1_ENABLED="$($PYTHON_BIN -c 'import json,sys; c=json.load(open(sys.argv[1]))["services"]["surgr1"]; print(int(c.get("enabled",False)))' "$ROOT_DIR/config.json")"
+SURGR1_GPU="${SURGR1_GPU:-$($PYTHON_BIN -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["surgr1"].get("gpu",0))' "$ROOT_DIR/config.json")}"
+
 if http_ready "$VLM_URL/models"; then
     echo "[READY] Reusing Qwen3-VL at $VLM_URL"
 else
     require_free_port 8010 "VLM"
-    VLM_GPU="${VLM_GPU:-$(best_free_gpu)}"
+    if [ "$SURGR1_ENABLED" = "1" ]; then
+        VLM_GPU="${VLM_GPU:-$(best_free_gpu "$SURGR1_GPU")}"
+    else
+        VLM_GPU="${VLM_GPU:-$(best_free_gpu)}"
+    fi
     if [ -z "$VLM_GPU" ]; then
         echo "ERROR: no NVIDIA GPU was detected." >&2
         exit 4
@@ -300,6 +309,22 @@ else
     VLM_PROXY_PID=$!
     register_process vlm_proxy "$VLM_PROXY_PID"
     wait_for_http "VLM local proxy" "$VLM_PROXY_URL/models" 30 "$VLM_PROXY_PID" "$VLM_PROXY_LOG"
+fi
+
+if [ "$SURGR1_ENABLED" = "1" ]; then
+    if http_ready "$SURGR1_URL/health"; then
+        echo "[READY] Reusing local SurgR1 at $SURGR1_URL"
+    else
+        require_free_port 9003 "SurgR1"
+        SURGR1_LOG="$LOG_DIR/surgr1.log"
+        echo "Starting SurgR1 on GPU $SURGR1_GPU; log: $SURGR1_LOG"
+        setsid env SURGR1_GPU="$SURGR1_GPU" \
+            LD_LIBRARY_PATH="$ROOT_DIR/../.venv/lib/python3.10/site-packages/nvidia/cu13/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$PYTHON_BIN" "$ROOT_DIR/scripts/serve_surgr1_local.py" >"$SURGR1_LOG" 2>&1 9>&- &
+        SURGR1_PID=$!
+        register_process surgr1 "$SURGR1_PID"
+        wait_for_http "SurgR1" "$SURGR1_URL/health" 300 "$SURGR1_PID" "$SURGR1_LOG"
+    fi
 fi
 
 if http_ready "$BACKEND_URL/api/health"; then

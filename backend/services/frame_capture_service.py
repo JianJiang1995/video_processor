@@ -264,10 +264,8 @@ def frame_capture_thread_func(
                     time.sleep(0.05)
                     continue
                 else:
-                    # 本地文件结束，循环播放
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    frame_idx = 0
-                    continue
+                    logger.info(f"[FrameCaptureService] Local file ended for session {session_id}")
+                    break
             
             # 计算当前时间戳
             if is_finite_simulator and hasattr(cap, "last_timestamp"):

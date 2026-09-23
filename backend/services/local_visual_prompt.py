@@ -21,7 +21,16 @@ LOCAL_VISUAL_PROMPT = """审阅按时间排序的手术图像，输出当前窗�
 夹子必须是独立留在组织上的完整夹体，不能是器械尖端或组织反光。
 只有跨帧看到钳口闭合夹住组织或释放夹体，才是施夹；夹子静止存在不是正在施夹。
 剪刀接近组织不是剪断，切刃闭合且组织离断才是剪断。不因安全步骤缺失而隐瞒实际可见动作。
-能确认具体解剖组织才命名胆囊管或胆囊动脉，否则target为unknown。
+target_structure仅用于胆囊管和胆囊动脉这两种关键结构，无法区分时该字段为unknown。
+胆囊本体不是胆囊管；即使target_structure为unknown，仍应在observations.target写出可辨认的其他组织。
+逐项核对组织候选与可见形态及空间关系；能够辨认时使用胆囊、肝脏、网膜、腹膜、粘连组织等准确名称，
+不要将已能辨认的组织退化为“黄色组织”“粉红色组织”。仅颜色不够时可描述脂肪组织或明确的解剖区域，不能硬猜器官。
+必须区分背景器官和器械实际接触对象：看见肝脏不代表正在夹持肝脏；看见胆囊不代表钳口夹着胆囊管。
+不能确认器械接触的具体组织时如实保留局部组织，但可另写图像能确认的暴露区域。
+器械和组织命名需要结合本次图像与专家候选：形态及接触位置支持候选时，使用其规范名称，
+不要因部分遮挡一律写成“器械”“组织”。专家一致也不能替代图像核实，体外场景尤其要拒绝手术操作候选。
+若只能辨认黄色分叶状脂肪而不能确定器官，写“脂肪组织”，不要猜成胆囊管；
+胆囊本体、胆囊表面粘连组织和胆囊管必须区分，不能把“gallbladder”翻译成胆囊管。
 电凝钩接触和分离不等于正在凝血；只有明确的电凝作用证据才写凝血处理。
 仅白色、亮色或反光不能证明标本袋。必须有柔软袋膜、袋口且包裹标本才写装袋。
 腹腔内组织仍可见不是移出体外；体外需皮肤、手术巾、套管外口或手术室等证据。
@@ -87,13 +96,31 @@ def build_local_visual_prompt(experts=None, phase=None):
                              for item in (yolo.get("tools") or [])[:8] if isinstance(item, dict)]
                             if isinstance(yolo, dict) else [],
         "operation_candidates": candidates[:4],
+        "tissue_candidates": [],
     }
+    for item in triplet.get("target", []) if isinstance(triplet, dict) else []:
+        candidate = fields(item, ("label", "confidence", "class_id"))
+        confidence = candidate.get("confidence")
+        if (candidate.get("label") not in {None, "", "null_target"}
+                and isinstance(confidence, (int, float)) and .12 <= confidence <= 1):
+            context["tissue_candidates"].append(candidate)
+    context["tissue_candidates"] = sorted(
+        context["tissue_candidates"], key=lambda item: item["confidence"], reverse=True,
+    )[:3]
+    surgr1 = experts.get("surgr1") or {}
+    if isinstance(surgr1, dict) and surgr1.get("success"):
+        context["surgr1_observations"] = [
+            fields(item, ("timestamp", "action")) for item in surgr1.get("observations", [])[:3]
+            if isinstance(item, dict)
+        ]
     if phase and phase != "Unknown":
         context["display_phase"] = str(phase)[:80]
     return LOCAL_VISUAL_PROMPT + "\n\n" + (
         "以下是同一窗口专家的待核实候选，不是已经确认的事实。先观察图像，再逐项核对候选。\n"
         "置信度不等于视觉证据；阶段不能证明某动作已经发生。候选与图像冲突时以图像为准。\n"
         "只有单独的器械或组织候选，不能拼成一个动作；空候选也不表示没有器械。\n"
+        "tissue_candidates来自独立组织分类头，不因器械冲突而丢弃；它们仍是待核实的组织候选，不是接触部位的定位结果。\n"
+        "SurgR1给出的是逐帧候选描述，不是已确认事实；动态操作仍需本组连续图像验证，不照抄其器械或组织误判。\n"
         "不要照抄旧摘要；候选中的blood_vessel只表示血管，不能自动改成胆囊动脉，"
         "cystic_pedicle也不能自动改成胆囊管。\n"
         "摘要允许只有一条观察，不强求牵拉或分离；无操作时保留组织/视野事实。不要填写否定检查清单。\n"
@@ -150,13 +177,13 @@ def scene_observations_need_review(visual):
     if visibility.get('fog') or visibility.get('status') in {'foggy', 'blurred', 'blocked'}:
         return True
     observations = visual.get("observations") or []
-    if visual.get('observations') == [] and not visibility.get('evidence'):
+    if visual.get('observations') == []:
         return True
     evidence = [str(visibility.get("evidence") or "")]
     for item in observations if isinstance(observations, list) else []:
         if isinstance(item, dict):
             evidence.extend(str(item.get(key) or "") for key in ("instrument", "appearance", "action", "target"))
-    scene_terms = r"皮肤|体毛|手术巾|无菌巾|手术室|器械台|套管阀|腹壁外|标本袋|取物袋|袋膜|袋口|specimen.bag|retrieval.bag|skin|drape|operating.room"
+    scene_terms = r"皮肤|体毛|手术巾|无菌巾|手术室|器械台|套管阀|腹壁外|设备屏幕|触摸屏|连接管线|医疗设备|标本袋|取物袋|袋膜|袋口|specimen.bag|retrieval.bag|skin|drape|operating.room"
     for text in evidence:
         for clause in re.split(r"[。；;，,]", text):
             if re.search(r"未见|没有|未观察到|不含|\b(?:no|without|absent)\b", clause, re.IGNORECASE):

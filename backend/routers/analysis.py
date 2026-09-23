@@ -157,7 +157,8 @@ surgr1_status_cache = {
 def _legacy_surgr1_enabled() -> bool:
     """Whether the deprecated localhost SurgR1 API should receive frame batches."""
     try:
-        return bool((load_config().get("services", {}).get("surgr1", {}) or {}).get("enabled", False))
+        cfg = load_config().get("services", {}).get("surgr1", {}) or {}
+        return bool(cfg.get("enabled", False) and cfg.get("mode") != "window_refinement")
     except Exception:
         return False
 
@@ -237,8 +238,11 @@ TRIPLET_VERB_CN = {
 TRIPLET_TARGET_CN = {
     "cystic_duct": "胆囊管",
     "cystic_artery": "胆囊动脉",
-    "blood_vessel": "胆囊动脉",
-    "cystic_pedicle": "胆囊管",
+    "blood_vessel": "血管",
+    "cystic_pedicle": "胆囊蒂",
+    "omentum": "网膜",
+    "gut": "肠管",
+    "abdominal_wall_cavity": "腹壁",
     "gallbladder": "胆囊",
     "gallbladder_bed": "胆囊床",
     "cystic_plate": "胆囊板",
@@ -282,15 +286,11 @@ def _target_label_from_raw(raw_label: Any) -> str:
     label = str(raw_label or "").strip().lower()
     if label in FORCED_TARGET_LABELS:
         return label
-    if label == "blood_vessel":
-        return "cystic_artery"
-    if label == "cystic_pedicle":
-        return "cystic_duct"
     return ""
 
 
 def _target_cn(label: Any) -> str:
-    return "胆囊动脉" if str(label or "").strip().lower() == "cystic_artery" else "胆囊管"
+    return {"cystic_artery": "胆囊动脉", "cystic_duct": "胆囊管"}.get(str(label or "").strip().lower(), "目标组织")
 
 
 def _normalize_visual_target(target: Any) -> Dict[str, Any]:
@@ -318,13 +318,7 @@ def _remove_negative_visual_checklist(text: Any) -> str:
 
 
 def _target_hint_from_triplet(triplet: Dict[str, Any]) -> Dict[str, Any]:
-    """Choose a concrete cystic target from Triplet output.
-
-    The UI should not surface an ambiguous cystic duct/artery phrase. Triplet
-    target probabilities are used as the deterministic prior, then the visual
-    GPT pass can overwrite confidence and evidence while keeping a concrete
-    label.
-    """
+    """Retain explicit cystic candidates, never infer their identity from generic tissue."""
     candidates: List[Dict[str, Any]] = []
 
     for item in (triplet or {}).get("triplet") or []:
@@ -367,10 +361,10 @@ def _target_hint_from_triplet(triplet: Dict[str, Any]) -> Dict[str, Any]:
 
     if not candidates:
         return {
-            "label": "cystic_duct",
-            "confidence": 0.05,
+            "label": "unknown",
+            "confidence": 0.0,
             "score": 0.0,
-            "source": "default:cystic_duct",
+            "source": "no_specific_target_evidence",
         }
     best = max(candidates, key=lambda x: (x["score"], x["confidence"]))
     best["confidence"] = round(float(best.get("confidence") or 0.0), 3)
@@ -386,6 +380,7 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], max_items: int = 4, phas
     safe_progress_targets = {
         "cystic_duct", "cystic_artery", "blood_vessel", "cystic_pedicle",
         "gallbladder", "gallbladder_bed", "cystic_plate", "calot_triangle",
+        "liver", "omentum", "peritoneum", "adhesion", "gut", "abdominal_wall_cavity",
     }
     for item in (triplet or {}).get("triplet") or []:
         conf = _safe_float(item.get("confidence"), 0.0)
@@ -400,7 +395,7 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], max_items: int = 4, phas
             continue
         if verb == "coagulate":
             if target in {"cystic_artery", "blood_vessel"} and conf >= 0.18:
-                target_cn = "胆囊动脉"
+                target_cn = TRIPLET_TARGET_CN[target]
             else:
                 continue
         elif verb in {"clip", "cut"}:
@@ -413,10 +408,6 @@ def _triplet_operation_phrases(triplet: Dict[str, Any], max_items: int = 4, phas
             if target not in safe_progress_targets or conf < 0.18:
                 continue
             target_cn = TRIPLET_TARGET_CN.get(target, "")
-            if verb == "retract" and target in core_targets:
-                target_cn = "胆囊颈和胆囊体"
-            elif verb == "grasp" and target in core_targets:
-                target_cn = "胆囊颈附近组织"
         if not target_cn:
             continue
         if inst_cn and inst_cn != target_cn:
@@ -608,7 +599,7 @@ def _expand_vague_operation_language(text: Any, phase: Any = "") -> str:
     return _compact_local_summary_text(out)
 
 
-def _sanitize_target_language(text: Any, target_label: Any = "cystic_duct") -> str:
+def _sanitize_target_language(text: Any, target_label: Any = "unknown") -> str:
     target = _target_cn(target_label)
     out = str(text or "")
     if not out:
@@ -1646,6 +1637,15 @@ def _bounded_window_end(start_time: float, window_duration: float, media_duratio
     if duration > float(start_time):
         return min(nominal_end, duration)
     return nominal_end
+
+
+def _frames_within_window(frames, start_time, end_time):
+    # Storage range queries include the end point; analysis windows must not.
+    return sorted(
+        (frame for frame in frames
+         if start_time <= _safe_float(frame.get("timestamp"), float("nan")) < end_time),
+        key=lambda frame: float(frame["timestamp"]),
+    )
 
 
 def _summary_row_window_id(summary: Any) -> Optional[int]:
@@ -5074,6 +5074,9 @@ async def glm_summarization_task(
         video_session = mysql_service.get_video_session(session_id)
         storage_path = video_session.get("storage_path") if video_session else None
         frame_storage = get_frame_storage_service()
+        from ..services.vlm_factory import load_config as load_vlm_config
+        r1_config = load_vlm_config().get("services", {}).get("surgr1", {})
+        window_refinement = bool(r1_config.get("enabled") and r1_config.get("mode") == "window_refinement")
         
         while wait_count < max_wait:
             # Check cancellation
@@ -5086,7 +5089,7 @@ async def glm_summarization_task(
             if all_frames and len(all_frames) > 0:
                 break
 
-            if is_live and storage_path:
+            if (is_live or window_refinement) and storage_path:
                 capture_stats = get_frame_capture_service().get_capture_stats(session_id) or {}
                 if (capture_stats.get("last_capture_time") or 0) > 0:
                     logger.info("[GLM Task] Live saved frames available; starting Stage 1 before R1")
@@ -5097,7 +5100,7 @@ async def glm_summarization_task(
             wait_count += 1
             db.expire_all()  # Refresh database cache
         
-        if (not all_frames or len(all_frames) == 0) and not is_live:
+        if (not all_frames or len(all_frames) == 0) and not (is_live or window_refinement):
             logger.warning(f"No SurgR1 results available for session {session_id} after waiting")
             # Create a placeholder summary to inform user
             create_window_summary(
@@ -5234,6 +5237,8 @@ async def glm_summarization_task(
             from ..services.vlm_factory import load_config as load_vlm_config
             vlm_config = load_vlm_config()
             min_frames_ratio = vlm_config.get("window_analysis", {}).get("min_frames_ratio", 0.3)
+            r1_config = vlm_config.get("services", {}).get("surgr1", {})
+            window_refinement = bool(r1_config.get("enabled") and r1_config.get("mode") == "window_refinement")
             live_stage2_enabled = bool(
                 (vlm_config.get("window_analysis") or {}).get(
                     "live_stage2_enabled",
@@ -5255,14 +5260,14 @@ async def glm_summarization_task(
             # two-stage contract: experts+Gemini first, R1+Gemini refinement
             # later. We still require saved frames in the target window so
             # expert_fusion has real images to inspect.
-            if is_live and storage_path:
+            if (is_live or window_refinement) and storage_path:
                 try:
                     capture_stats = get_frame_capture_service().get_capture_stats(session_id) or {}
                     live_elapsed = float(capture_stats.get("last_capture_time") or 0)
                     try:
                         video_session_for_clock = get_video_session(db, session_id) or {}
                         playback_position = float(video_session_for_clock.get("current_position") or 0)
-                        if playback_position > 0:
+                        if is_live and playback_position > 0:
                             live_elapsed = min(live_elapsed, playback_position + 1.0)
                         playback_limited_elapsed = live_elapsed
                     except Exception as e:
@@ -5284,6 +5289,7 @@ async def glm_summarization_task(
                                 end_time=end_time,
                                 subfolder="frames"
                             )
+                            saved = _frames_within_window(saved, start_time, end_time)
                             if len(saved) >= 2:
                                 stage1_ready_windows.append(wid)
                 except Exception as e:
@@ -5401,7 +5407,7 @@ async def glm_summarization_task(
                 logger.info(f"[GLM Task] Waiting for R1: {waiting_windows}")
             
             if not new_windows:
-                capture_stats = get_frame_capture_service().get_capture_stats(session_id) if is_live else None
+                capture_stats = get_frame_capture_service().get_capture_stats(session_id) if (is_live or window_refinement) else None
                 capture_stopped = bool(capture_stats and not capture_stats.get("is_running"))
                 if capture_stopped:
                     remaining_windows = {
@@ -5425,6 +5431,7 @@ async def glm_summarization_task(
                                 end_time=end_time,
                                 subfolder="frames",
                             )
+                            stored = _frames_within_window(stored, start_time, end_time)
                             if stored:
                                 remaining_windows.add(wid)
                     remaining_windows = sorted(remaining_windows)
@@ -5543,6 +5550,7 @@ async def glm_summarization_task(
                             end_time=end_time,
                             subfolder="frames"
                         )
+                        frame_files = _frames_within_window(frame_files, start_time, end_time)
                         
                         if frame_files:
                             def _sample_frame_infos(files, max_count):
@@ -5567,6 +5575,7 @@ async def glm_summarization_task(
                                     if frame_path.exists():
                                         try:
                                             img = Image.open(frame_path)
+                                            img.info["source_timestamp"] = frame_info.get("timestamp")
                                             loaded.append(img)
                                         except Exception as e:
                                             logger.warning(f"[GLM Task] Failed to load frame {frame_path}: {e}")
@@ -7530,6 +7539,15 @@ async def glm_summarization_task(
                         stage1_phase: str,
                     ):
                         try:
+                            from ..services.surgr1_window_review import review_surgr1_window
+                            if analysis_cancellation_flags.get(session_id, False):
+                                return
+                            # R1 consumes this window's existing images; it never
+                            # opens a decoder or advances the analysis cursor.
+                            times = [image.info.get("source_timestamp") for image in pil_images]
+                            expert_pack_base["surgr1"] = await review_surgr1_window(pil_images, times)
+                            if analysis_cancellation_flags.get(session_id, False):
+                                return
                             open_vlm_hint = await _open_vlm_realtime_hint(
                                 vlm_client=vlm_client,
                                 images=pil_images,
@@ -7539,6 +7557,8 @@ async def glm_summarization_task(
                                 window_id=window_id,
                                 expert_pack=expert_pack_base,
                             )
+                            if analysis_cancellation_flags.get(session_id, False):
+                                return
                             if not open_vlm_hint or open_vlm_hint.get("success") is False:
                                 return
 
@@ -7706,7 +7726,8 @@ async def glm_summarization_task(
                                 "available": expert_pack_base.get("available", experts.get("available", [])),
                             })
                             others_data = dict(others_data or {})
-                            others_data["stage"] = current_stage
+                            others_data["stage"] = max(current_stage, 2)
+                            experts["surgr1"] = expert_pack_base.get("surgr1", {})
                             others_data.setdefault("stage1_summary", stage1_summary_text)
                             others_data["experts"] = experts
                             if open_vlm_hint.get("visual"):
@@ -7722,6 +7743,12 @@ async def glm_summarization_task(
                                 "provider": open_vlm_hint.get("provider"),
                                 "model": open_vlm_hint.get("model"),
                                 "covers": ["Hem-o-lok", "titanium_clip", "clip_applier", "scissors_cutting", "target_structure", "gauze", "bleeding", "CVS", "fog", "visibility", "out_of_body"],
+                            }
+                            r1 = expert_pack_base.get("surgr1") or {}
+                            model_calls["surgr1"] = {
+                                "count": r1.get("call_count", 0), "provider": "local",
+                                "model": "SurgR1", "status": r1.get("status"),
+                                "latency_ms": r1.get("latency_ms"), "frames": r1.get("frame_count", 0),
                             }
                             others_data["model_calls"] = model_calls
                             others_data["sequence_rules"] = _sequence_state_meta(sequence_state, patch_sequence_rules)
@@ -7777,7 +7804,7 @@ async def glm_summarization_task(
                             expert_text = expert_pack.get("text", "【专家模型判断】(未启用)")
 
                             if should_emit_stage1:
-                                if is_live:
+                                if is_live or window_refinement:
                                     # Real-time means local expert output must
                                     # reach the UI without waiting on Gemini/R1.
                                     stage1_summary_text = _expert_snapshot_summary(
@@ -7910,14 +7937,14 @@ async def glm_summarization_task(
                                 },
                             )
                             stage1_processed_windows.add(window_id)
-                            if is_live and not live_stage2_enabled:
+                            if (is_live and not live_stage2_enabled) or window_refinement:
                                 # The structured local VLM patch is the only
                                 # refinement in local deployment. Mark this
                                 # complete window final now so a later R1 loop
                                 # cannot race with and overwrite that patch.
                                 processed_windows.add(window_id)
 
-                            if is_live and should_emit_stage1:
+                            if (is_live or window_refinement) and should_emit_stage1:
                                 logger.info(f"[GLM Task] Window {window_id} Stage 1 saved; deferring Stage 2")
                                 continue
 
@@ -12686,7 +12713,7 @@ async def integrate_analysis_results(
 async def surgr1_status():
     """Check SurgR1 service status"""
     now = time.time()
-    if not _legacy_surgr1_enabled():
+    if not load_config().get("services", {}).get("surgr1", {}).get("enabled"):
         return {
             "available": True,
             "api_url": None,
@@ -12703,7 +12730,8 @@ async def surgr1_status():
         # busy but still alive.
         async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
             response = await client.get(f"{surgr1_client.api_url}/health")
-        is_healthy = response.status_code == 200
+        health = response.json() if response.status_code == 200 else {}
+        is_healthy = response.status_code == 200 and health.get("model_loaded") is True
         if is_healthy:
             surgr1_status_cache.update({
                 "available": True,
@@ -12712,6 +12740,8 @@ async def surgr1_status():
             })
         return {
             "available": is_healthy,
+            "model": "SurgR1",
+            "mode": "window_refinement",
             "api_url": surgr1_client.api_url,
             "cached": False,
         }

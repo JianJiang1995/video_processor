@@ -574,12 +574,17 @@ class MySQLService:
             history.append({"summary": row.glm_summary,
                             "phase": row.surgical_phase,
                             "visual": others.get("visual_gpt"),
+                            "triplet": (others.get("experts") or {}).get("triplet"),
+                            "surgr1": (others.get("experts") or {}).get("surgr1"),
                             "open_vlm": (others.get("experts") or {}).get("open_vlm"),
                             "previous_review": others.get("manual_review"),
                             "replaced_at": metadata["completed_at"]})
             others.update(stage=3, manual_review=metadata, review_history=history,
                           visual_gpt=visual, summary_en="")
             experts = dict(others.get("experts") or {})
+            for key in ("triplet", "surgr1"):
+                if key in metadata.get("experts", {}):
+                    experts[key] = metadata["experts"][key]
             experts["open_vlm"] = {"success": True, "provider": "local",
                                    "summary": summary, "visual": visual,
                                    "model": metadata["model"]}

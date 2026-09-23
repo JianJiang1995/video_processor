@@ -168,6 +168,34 @@ class ReviewFrameTests(unittest.TestCase):
 
 
 class LocalOnlyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        patcher = patch.object(service, 'review_surgr1_window', AsyncMock(return_value={'success': False}))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_old_triplet_is_refreshed_and_r1_reaches_visual_prompt(self):
+        old = {'triplet': {'target': [{'label': 'abdominal_wall_cavity', 'confidence': .9}]}}
+        updated = {'label_schema': service.LABEL_SCHEMA,
+                   'target': [{'label': 'gallbladder', 'confidence': .9, 'class_id': 0}]}
+        r1 = {'success': True, 'observations': [{'timestamp': 4.1, 'action': 'grasper retract gallbladder'}]}
+        expert = Mock()
+        expert.recognize_clip.return_value = updated
+        client = Mock(api_url='http://127.0.0.1:8012/v1', model_name='local')
+        client._analyze_images_with_timestamps = AsyncMock(return_value={
+            'success': True, 'text': json.dumps({'summary': '抓钳牵拉胆囊。',
+                'visual': {'observations': [{'target': '胆囊', 'action': '牵拉'}]}})})
+        with patch.object(service, 'get_glm_client', return_value=client), \
+                patch.object(service, 'get_triplet_service', return_value=expert), \
+                patch.object(service, 'review_surgr1_window', AsyncMock(return_value=r1)):
+            result = await service.analyze_review([Image.new('RGB', (4, 4))], [4.1], old)
+        expert.recognize_clip.assert_called_once()
+        prompt = client._analyze_images_with_timestamps.call_args.kwargs['question']
+        self.assertIn('grasper retract gallbladder', prompt)
+        self.assertIn('"class_id":0', prompt)
+        self.assertEqual(result['experts']['triplet'], updated)
+        self.assertEqual(result['experts']['surgr1'], r1)
+        self.assertEqual(old['triplet']['target'][0]['label'], 'abdominal_wall_cavity')
+
     async def test_scene_review_resolves_conflicting_skin_and_inside_claim(self):
         primary = {'summary': '器械接触皮肤切口。腹腔视野恢复。',
                    'visual': {'observations': [{'target': '皮肤切口'}],
