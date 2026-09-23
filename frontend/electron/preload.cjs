@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
   setBackendUrl: (url) => ipcRenderer.invoke('set-backend-url', url),
   loadReplayBundle: (specPath) => ipcRenderer.invoke('load-replay-bundle', specPath),
+  listAnalysisHistory: () => ipcRenderer.invoke('list-analysis-history'),
   beginRecording: (options) => ipcRenderer.invoke('screen-recording-begin', options),
   appendRecording: (id, data) => ipcRenderer.invoke('screen-recording-append', id, data),
   finishRecording: (id, reason) => ipcRenderer.invoke('screen-recording-finish', id, reason),

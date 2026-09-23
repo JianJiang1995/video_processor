@@ -1061,6 +1061,7 @@ const openReplayBundle = async (bundle, startAt = null) => {
   window.history.replaceState(null, '', url)
 
   await nextTick()
+  if (bundle.initialView === 'report') handleNavigation('report')
   if (bundle.spec?.auto_play !== false) {
     const delay = Math.max(100, Number(bundle.spec?.auto_start_delay_ms || 900))
     window.setTimeout(() => {

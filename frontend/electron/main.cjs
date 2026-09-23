@@ -8,6 +8,7 @@ const FrameCache = require('./frameCache.cjs')
 const { ServiceManager } = require('./serviceManager.cjs')
 const { serveReplayMedia } = require('./replayMedia.cjs')
 const { RecordingFile, recordingCapacity } = require('./screenRecording.cjs')
+const { listAnalysisHistory, rememberAnalysis } = require('./analysisHistory.cjs')
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'surgr1-media',
@@ -293,6 +294,16 @@ ipcMain.handle('set-backend-url', (event, url) => {
 
 // ============= IPC: Offline analysis replay =============
 
+ipcMain.handle('list-analysis-history', async event => {
+  verifyRecordingSender(event)
+  try {
+    return await listAnalysisHistory({
+      roots: [app.isPackaged ? recordingDirectory : path.dirname(recordingDirectory)],
+      remembered: store.get('analysisHistory', []),
+    })
+  } catch (error) { return { success: false, error: error.message } }
+})
+
 function resolveReplayAsset(specDir, value) {
   if (!value || typeof value !== 'string') return null
   return path.isAbsolute(value) ? path.normalize(value) : path.resolve(specDir, value)
@@ -335,6 +346,7 @@ function compactReplaySummary(item) {
 
 ipcMain.handle('load-replay-bundle', async (event, requestedSpecPath) => {
   try {
+    verifyRecordingSender(event)
     if (!requestedSpecPath || typeof requestedSpecPath !== 'string') {
       throw new Error('Replay spec path is required')
     }
@@ -387,6 +399,14 @@ ipcMain.handle('load-replay-bundle', async (event, requestedSpecPath) => {
     if (!sessionId) throw new Error('Replay spec must define an existing session_id')
     const replayMediaToken = randomUUID()
     replayMediaAssets.set(replayMediaToken, videoPath)
+
+    try {
+      store.set('analysisHistory', rememberAnalysis(store.get('analysisHistory', []), {
+        specPath, sessionId, title: sessionSpec.video_name || spec.title || path.basename(videoPath),
+        duration: Number(sessionSpec.duration || spec.duration || inferredDuration),
+        windowCount: summaries.length, updatedAt: (await fs.stat(summariesPath)).mtime.toISOString(),
+      }))
+    } catch (error) { console.warn('[History] Could not remember imported analysis:', error.message) }
 
     return {
       success: true,

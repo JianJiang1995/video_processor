@@ -2,48 +2,26 @@
   <div class="mode-selector">
     <div class="mode-header">
       <div class="logo-large">
-        <div class="logo-icon-lg">🏥</div>
-        <h1>Surg-R1<span>手术助手</span></h1>
-        <p class="subtitle">{{ t('mode.subtitle') }}</p>
+        <ClipboardPlus :size="26" class="home-brand-icon" />
+        <h1>Surg-R1 <span>{{ language === 'zh' ? '手术助手' : 'Surgical Assistant' }}</span></h1>
+      </div>
+      <div class="home-language" aria-label="Language">
+        <button :class="{ active: language === 'zh' }" @click="setLanguage('zh')">中文</button>
+        <button :class="{ active: language === 'en' }" @click="setLanguage('en')">English</button>
       </div>
     </div>
 
     <div class="mode-cards">
-      <!-- Local Video Mode -->
-      <div class="mode-card" @click="selectMode('local')">
-        <div class="mode-icon">📁</div>
-        <h2>{{ t('mode.localVideo') }}</h2>
-        <p>{{ t('mode.localVideoEn') }}</p>
-        <ul class="mode-features">
-          <li>{{ t('mode.localFeatureUpload') }}</li>
-          <li>{{ t('mode.localFeatureFormats') }}</li>
-          <li>{{ t('mode.localFeaturePlayback') }}</li>
-        </ul>
-        <div class="mode-action">
-          <span>{{ t('mode.chooseMode') }} →</span>
-        </div>
-      </div>
-
-      <!-- Live Stream Mode -->
-      <div class="mode-card" @click="selectMode('stream')">
-        <div class="mode-icon">📡</div>
-        <h2>{{ t('mode.liveStream') }}</h2>
-        <p>{{ t('mode.liveStreamEn') }}</p>
-        <ul class="mode-features">
-          <li>{{ t('mode.streamFeatureConnect') }}</li>
-          <li>{{ t('mode.streamFeatureProtocols') }}</li>
-          <li>{{ t('mode.streamFeatureRealtime') }}</li>
-        </ul>
-        <div class="mode-action">
-          <span>{{ t('mode.chooseMode') }} →</span>
-        </div>
-      </div>
+      <button class="mode-card" @click="selectMode('local')"><FolderOpen :size="19" />{{ t('mode.localVideo') }}</button>
+      <button class="mode-card" @click="selectMode('stream')"><Radio :size="19" />{{ t('mode.liveStream') }}</button>
+      <ReplayImportButton @begin="cancelAutoOpen" @loaded="$emit('replay', $event)" />
     </div>
 
-    <ReplayImportButton @begin="cancelAutoOpen" @loaded="$emit('replay', $event)" />
+    <AnalysisHistory @begin="cancelAutoOpen" @loaded="$emit('replay', $event)" @sessions="handleArchiveSessions" />
 
     <!-- Recent Sessions -->
-    <div class="recent-sessions" v-if="recentSessions.length > 0">
+    <details class="recent-sessions" v-if="otherSessions.length > 0" :open="!hasHistoryApi">
+      <summary>{{ language === 'zh' ? '其他数据库会话' : 'Other Database Sessions' }} <span>{{ otherSessions.length }}</span></summary>
       <div class="sessions-header">
         <h3>{{ t('mode.recentSessions') }}</h3>
         <button 
@@ -56,7 +34,7 @@
       </div>
       <div class="session-list">
         <div 
-          v-for="session in recentSessions" 
+          v-for="session in otherSessions"
           :key="session.session_id"
           class="session-item"
         >
@@ -73,7 +51,7 @@
           </button>
         </div>
       </div>
-    </div>
+    </details>
     
     <!-- Delete Confirmation Modal -->
     <Teleport to="body">
@@ -97,12 +75,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ClipboardPlus, FolderOpen, Radio } from '@lucide/vue'
 import axios from 'axios'
 import { useI18n } from '@/i18n'
 import ReplayImportButton from './ReplayImportButton.vue'
+import AnalysisHistory from './AnalysisHistory.vue'
 
-const { t } = useI18n()
+const { t, language, setLanguage } = useI18n()
 
 const emit = defineEmits(['select-mode', 'resume-session', 'replay'])
 const autoOpenStream = import.meta.env.VITE_AUTO_OPEN_STREAM === '1'
@@ -110,6 +90,19 @@ let autoOpenTimer = null
 const cancelAutoOpen = () => clearTimeout(autoOpenTimer)
 
 const recentSessions = ref([])
+const archivedSessions = ref([])
+const hasHistoryApi = Boolean(window.electronAPI?.listAnalysisHistory)
+const otherSessions = computed(() => recentSessions.value.filter(session => !archivedSessions.value.includes(session.session_id)))
+const maybeAutoOpen = () => {
+  if (autoOpenStream && !new URLSearchParams(window.location.search).has('replaySpec')) {
+    autoOpenTimer = setTimeout(() => selectMode('stream'), 250)
+  }
+}
+const handleArchiveSessions = ids => {
+  archivedSessions.value = ids
+  cancelAutoOpen()
+  if (!ids.length) maybeAutoOpen()
+}
 
 // Delete modal state
 const showDeleteModal = ref(false)
@@ -187,11 +180,7 @@ const confirmDelete = async () => {
 
 onMounted(() => {
   loadSessions()
-  if (autoOpenStream && !new URLSearchParams(window.location.search).has('replaySpec')) {
-    autoOpenTimer = setTimeout(() => {
-      selectMode('stream')
-    }, 250)
-  }
+  if (!hasHistoryApi) maybeAutoOpen()
 })
 onUnmounted(cancelAutoOpen)
 </script>
@@ -200,143 +189,87 @@ onUnmounted(cancelAutoOpen)
 .mode-selector {
   flex: 1;
   width: 100%;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  padding: 3.2rem 3rem 2.4rem;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 240px),
-    #202020;
+  padding: 28px 32px;
+  background: #202020;
   overflow-y: auto;
 }
 
 .mode-header {
-  text-align: center;
-  margin-bottom: 2.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
   width: 100%;
+  max-width: 1100px;
 }
 
 .logo-large {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
+  gap: 10px;
+  min-width: 0;
 }
 
-.logo-icon-lg {
-  width: 72px;
-  height: 72px;
-  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-  border-radius: var(--radius-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 2.5rem;
-  margin-bottom: 1rem;
-  box-shadow: var(--shadow-glow);
-}
+.home-brand-icon { color: var(--accent-primary); flex-shrink: 0; }
+.home-language { display: flex; gap: 2px; flex-shrink: 0; }
+.home-language button { background: none; border: 0; border-radius: 4px; padding: 6px 8px; cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+.home-language button.active { background: var(--accent-primary); color: #202020; }
 
 .logo-large h1 {
-  font-size: 2.2rem;
+  font-size: 24px;
   font-weight: 700;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .logo-large h1 span {
   color: var(--accent-primary);
 }
 
-.subtitle {
-  color: var(--text-secondary);
-  font-size: 1.1rem;
-  margin-top: 0.5rem;
-}
-
 .mode-cards {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 1.4rem;
-  max-width: 980px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  max-width: 1100px;
   width: 100%;
 }
+.mode-cards :deep(.replay-import) { margin: 0; }
+.mode-cards :deep(.replay-import-button) { min-height: 40px; font-size: 14px; }
 
 .mode-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 1.55rem 1.7rem;
+  border-radius: 6px;
+  padding: 0 16px;
   cursor: pointer;
-  transition: all 0.3s ease;
-  text-align: center;
-  min-height: 330px;
-  display: flex;
-  flex-direction: column;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
 }
 
 .mode-card:hover {
   border-color: var(--accent-primary);
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-glow);
-}
-
-.mode-icon {
-  font-size: 3rem;
-  margin-bottom: 0.8rem;
-}
-
-.mode-card h2 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin: 0 0 0.25rem 0;
-}
-
-.mode-card > p {
-  color: var(--text-tertiary);
-  font-size: 0.9rem;
-  margin: 0 0 1.5rem 0;
-}
-
-.mode-features {
-  list-style: none;
-  padding: 0;
-  margin: 0 0 1.25rem 0;
-  text-align: left;
-  flex: 1;
-}
-
-.mode-features li {
-  padding: 0.5rem 0;
-  padding-left: 1.5rem;
-  position: relative;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-}
-
-.mode-features li::before {
-  content: '✓';
-  position: absolute;
-  left: 0;
-  color: var(--accent-primary);
-}
-
-.mode-action {
-  color: var(--accent-primary);
-  font-weight: 500;
-  font-size: 0.95rem;
-}
-
-.mode-card:hover .mode-action {
-  text-decoration: underline;
 }
 
 .recent-sessions {
   margin-top: 2rem;
   width: 100%;
-  max-width: 980px;
+  max-width: 1100px;
 }
+.recent-sessions > summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; margin-bottom: 16px; }
+.recent-sessions > summary span { margin-left: 8px; color: var(--text-tertiary); }
 
 .sessions-header {
   display: flex;
@@ -348,7 +281,7 @@ onUnmounted(cancelAutoOpen)
 .sessions-header h3 {
   font-size: 0.9rem;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   color: var(--text-tertiary);
   margin: 0;
 }
@@ -558,8 +491,9 @@ onUnmounted(cancelAutoOpen)
 }
 
 @media (max-width: 640px) {
-  .mode-cards {
-    grid-template-columns: 1fr;
-  }
+  .mode-selector { padding: 20px 14px; }
+  .mode-header { align-items: flex-start; }
+  .logo-large h1 { font-size: 20px; }
+  .logo-large h1 span { display: block; font-size: 14px; margin-top: 5px; }
 }
 </style>
