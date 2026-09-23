@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+import httpx
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -63,6 +64,12 @@ class ReviewEndpointTests(unittest.TestCase):
         self.assertEqual(self.send().status_code, 404)
         self.infer.assert_not_awaited()
 
+    def test_review_receives_persisted_experts_and_phase_not_old_narrative(self):
+        experts = {"yolo": {"tools": [{"label": "grasper", "frames_seen": 6}]}}
+        self.row.update(others={"experts": experts}, surgical_phase="Preparation")
+        self.assertEqual(self.send().status_code, 200)
+        self.assertEqual(self.infer.call_args.kwargs, {"experts": experts, "phase": "Preparation"})
+
     def test_missing_and_invalid_windows_never_infer(self):
         self.assertEqual(self.send("99").status_code, 404)
         self.assertEqual(self.send("-1").status_code, 422)
@@ -113,6 +120,15 @@ class ReviewStorageTests(unittest.TestCase):
         self.db.save_analysis("demo", window_id=0, analysis_type="window", glm_summary="stage2")
         self.assertEqual(self.db.get_all_window_summaries("demo")[0]["glm_summary"], "stage2")
 
+    def test_phase_revision_is_persisted_with_previous_phase_in_history(self):
+        self.db.save_analysis('demo', window_id=0, analysis_type='window',
+                              surgical_phase='CalotTriangleDissection', glm_summary='old')
+        result = self.db.save_window_review('demo', 0, 'image facts', {},
+                                            {'completed_at': 'now', 'model': 'local'},
+                                            phase='GallbladderDissection')
+        self.assertEqual(result['review_history'][0]['phase'], 'CalotTriangleDissection')
+        self.assertEqual(self.db.get_all_window_summaries('demo')[0]['surgical_phase'], 'GallbladderDissection')
+
 
 class ReviewFrameTests(unittest.TestCase):
     def test_saved_frames_stay_in_range_are_bounded_and_not_cropped_twice(self):
@@ -152,6 +168,30 @@ class ReviewFrameTests(unittest.TestCase):
 
 
 class LocalOnlyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scene_review_resolves_conflicting_skin_and_inside_claim(self):
+        primary = {'summary': '器械接触皮肤切口。腹腔视野恢复。',
+                   'visual': {'observations': [{'target': '皮肤切口'}],
+                              'visibility': {'status': 'clear'}}}
+        scene = {'classification': 'external_body', 'confidence': .98,
+                 'external_evidence_type': 'skin_external', 'external_frame_indices': [0, 1],
+                 'evidence': '可见腹壁外侧皮肤和手术巾。'}
+        client = Mock(api_url='http://127.0.0.1:8012/v1', model_name='local')
+        client._analyze_images_with_timestamps = AsyncMock(return_value={'success': True, 'text': json.dumps(primary)})
+        client._image_to_base64_url.return_value = 'data:image/jpeg;base64,AA=='
+        def respond(request):
+            payload = json.loads(request.content)
+            self.assertEqual(payload['messages'][1]['content'][0]['type'], 'text')
+            self.assertEqual(payload['temperature'], 0)
+            return httpx.Response(200, json={'choices': [{'message': {'content': json.dumps(scene)}}]})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as api:
+            client.client = api
+            with patch.object(service, 'get_glm_client', return_value=client):
+                result = await service.analyze_review([Image.new('RGB', (4, 4))] * 2, [0, 1])
+        self.assertTrue(result['visual']['visibility']['out_of_body'])
+        self.assertEqual(result['visual']['cvs']['status'], 'not_applicable')
+        self.assertNotIn('腹腔视野恢复', result['summary'])
+        self.assertEqual(client._analyze_images_with_timestamps.await_count, 1)
+
     async def test_remote_model_is_rejected_before_sending_images(self):
         client = Mock(api_url="https://external.example/v1")
         client._analyze_images_with_timestamps = AsyncMock()

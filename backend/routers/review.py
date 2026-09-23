@@ -36,7 +36,9 @@ async def reanalyze_window(session_id: str, window_id: int = Path(ge=0)):
         if start is None or end is None or not 0 < end - start <= 30:
             raise HTTPException(422, "review_invalid_range")
         images, timestamps = await asyncio.to_thread(load_review_frames, session, start, end)
-        result = await analyze_review(images, timestamps)
+        result = await analyze_review(images, timestamps,
+                                      experts=(row.get("others") or {}).get("experts"),
+                                      phase=row.get("surgical_phase"))
         metadata = {
             "revision": uuid4().hex,
             "completed_at": datetime.now(timezone.utc).isoformat(),

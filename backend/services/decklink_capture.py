@@ -7,7 +7,6 @@ input and prevents slow consumers from building a realtime backlog.
 """
 
 import logging
-import math
 import sys
 import threading
 import time
@@ -147,18 +146,6 @@ def _fps_from_mode(mode: str) -> float:
     if mode.endswith("p24"):
         return 24.0
     return 30.0
-
-
-def _fraction_to_float(value) -> float:
-    numerator = getattr(value, "num", getattr(value, "numerator", 0))
-    denominator = getattr(value, "denom", getattr(value, "denominator", 0))
-    if numerator and denominator:
-        return float(numerator) / float(denominator)
-    try:
-        parsed = float(value)
-        return parsed if math.isfinite(parsed) and parsed > 0 else 0.0
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def build_pipeline_description(device_number: int, mode: str, connection: str) -> str:
@@ -325,7 +312,13 @@ class _DeckLinkSharedState:
     def _update_caps(self, structure):
         width = int(structure.get_value("width"))
         height = int(structure.get_value("height"))
-        fps = _fraction_to_float(structure.get_value("framerate")) if structure.has_field("framerate") else 0.0
+        fps = 0.0
+        if structure.has_field("framerate"):
+            # get_value() cannot marshal GstFraction without optional gst-python
+            # overrides. The typed getter works with the system GI bindings.
+            valid, numerator, denominator = structure.get_fraction("framerate")
+            if valid and numerator > 0 and denominator > 0:
+                fps = float(numerator) / float(denominator)
         interlace_mode = (
             str(structure.get_value("interlace-mode"))
             if structure.has_field("interlace-mode")

@@ -1,12 +1,12 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, protocol, net } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, screen, protocol } = require('electron')
 const Store = require('electron-store')
 const path = require('path')
-const { pathToFileURL } = require('url')
 const { randomUUID } = require('crypto')
 const fs = require('fs').promises
 const fsSync = require('fs')
 const FrameCache = require('./frameCache.cjs')
 const { ServiceManager } = require('./serviceManager.cjs')
+const { serveReplayMedia } = require('./replayMedia.cjs')
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'surgr1-media',
@@ -115,19 +115,7 @@ function registerReplayMediaProtocol() {
         return new Response('Replay media not found', { status: 404 })
       }
 
-      const response = await net.fetch(pathToFileURL(videoPath).toString(), {
-        method: request.method,
-        headers: request.headers,
-        bypassCustomProtocolHandlers: true,
-      })
-      const headers = new Headers(response.headers)
-      headers.set('Access-Control-Allow-Origin', '*')
-      headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      })
+      return await serveReplayMedia(request, videoPath)
     } catch (error) {
       console.error('[Replay] Failed to serve local media:', error)
       return new Response('Replay media unavailable', { status: 500 })
@@ -332,7 +320,7 @@ ipcMain.handle('load-replay-bundle', async (event, requestedSpecPath) => {
         language: spec.language === 'en' ? 'en' : 'zh',
         auto_play: spec.auto_play !== false,
         auto_start_delay_ms: Number(spec.auto_start_delay_ms || 900),
-        final_update_delay: Number(spec.final_update_delay || 1.25),
+        final_update_delay: Number(spec.final_update_delay ?? 1.25),
       },
       session: {
         ...sessionSpec,

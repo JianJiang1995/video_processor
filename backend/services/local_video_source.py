@@ -18,7 +18,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlsplit, urlunsplit
 
 import cv2
 
@@ -54,6 +54,11 @@ class ResolvedVideoSource:
 def normalize_input_layout(layout: Optional[str]) -> str:
     normalized = str(layout or INPUT_LAYOUT_FULL).strip().lower()
     return normalized if normalized in VALID_INPUT_LAYOUTS else INPUT_LAYOUT_FULL
+
+
+def file_simulator_uri(path: str) -> str:
+    """Bind a simulator session to one file, independent of the global preset."""
+    return "simulator://file" + quote(str(Path(path).expanduser().resolve()), safe="/")
 
 
 def split_input_layout(video_source: str) -> tuple[str, str]:
@@ -240,6 +245,18 @@ def resolve_video_source(video_source: str) -> ResolvedVideoSource:
     """Resolve simulator sources to local files; leave all other sources intact."""
     original_source = str(video_source or "")
     clean_source, input_layout = split_input_layout(original_source)
+
+    parsed_source = urlsplit(clean_source)
+    if parsed_source.scheme == "simulator" and parsed_source.netloc == "file":
+        backing_path = unquote(parsed_source.path)
+        resolved = _probe_video(backing_path)
+        if resolved:
+            resolved.original = original_source
+            resolved.input_layout = input_layout
+            return resolved
+        # Missing bound files must not silently switch to a different video.
+        return ResolvedVideoSource(original=original_source, source=backing_path,
+                                   is_simulator=True, input_layout=input_layout)
 
     if clean_source.startswith(FILESIM_PREFIX):
         backing_path = clean_source[len(FILESIM_PREFIX):]

@@ -1,6 +1,7 @@
 <template>
   <div class="stream-input-panel">
     <h3>📡 {{ t('stream.connectSource') }}</h3>
+      <ReplayImportButton @begin="cancelAutoConnect" @loaded="$emit('replay', $event)" />
     
     <!-- Source Type Tabs -->
     <div class="source-tabs">
@@ -119,6 +120,12 @@
           </div>
         </div>
 
+        <div v-if="selectedDevice?.backend === 'simulator'" class="input-group">
+          <label for="simulator-path">{{ language === 'zh' ? '本地视频路径' : 'Local video path' }}</label>
+          <input id="simulator-path" v-model="simulatorPath" class="input" type="text"
+            :placeholder="language === 'zh' ? '留空使用默认模拟视频' : 'Leave empty for the default video'" />
+        </div>
+
         <div
           v-if="selectedDevice?.supported_modes?.length"
           class="capture-settings-grid"
@@ -206,10 +213,11 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { useI18n } from '@/i18n'
+import ReplayImportButton from './ReplayImportButton.vue'
 
 const { language, t } = useI18n()
 
-const emit = defineEmits(['connect', 'back'])
+const emit = defineEmits(['connect', 'back', 'replay'])
 
 // Source type: 'stream' or 'capture'. Local Electron deployments can default to
 // the capture-card workflow with VITE_DEFAULT_SOURCE=capture.
@@ -234,6 +242,7 @@ const selectedMode = ref('auto')
 const selectedConnection = ref('hdmi')
 const isLoadingDevices = ref(false)
 const inputLayout = ref(localStorage.getItem('surgr1_input_layout') || 'full')
+const simulatorPath = ref('')
 
 // Common state
 const autoAnalyze = ref(import.meta.env.VITE_AUTO_ANALYZE_DEFAULT !== '0')
@@ -244,6 +253,13 @@ const AUTO_CONNECT_FLAG = 'surgr1_capture_auto_connect_started'
 
 // AbortController for cancelling requests
 let abortController = null
+let autoConnectTimer = null
+let autoConnectCancelled = false
+const cancelAutoConnect = () => {
+  autoConnectCancelled = true
+  clearTimeout(autoConnectTimer)
+  abortController?.abort()
+}
 
 const selectPreset = (preset) => {
   streamUrl.value = preset.url
@@ -293,6 +309,8 @@ const loadCaptureDevices = async () => {
 
     if (
       autoConnectCapture &&
+      !autoConnectCancelled &&
+      !new URLSearchParams(window.location.search).has('replaySpec') &&
       sourceType.value === 'capture' &&
       selectedDevice.value &&
       !didAutoConnect.value &&
@@ -300,8 +318,8 @@ const loadCaptureDevices = async () => {
     ) {
       didAutoConnect.value = true
       sessionStorage.setItem(AUTO_CONNECT_FLAG, '1')
-      setTimeout(() => {
-        connectCapture()
+      autoConnectTimer = setTimeout(() => {
+        if (!autoConnectCancelled) connectCapture()
       }, 250)
     }
   } catch (err) {
@@ -323,6 +341,7 @@ onMounted(() => {
 
 // Cleanup on unmount
 onUnmounted(() => {
+  cancelAutoConnect()
   if (abortController) {
     abortController.abort()
     abortController = null
@@ -414,6 +433,7 @@ const connectCapture = async () => {
       mode: selectedMode.value || selectedDevice.value.default_mode || 'auto',
       connection: selectedConnection.value || selectedDevice.value.default_connection || 'auto',
       auto_analyze: autoAnalyze.value,
+      simulator_path: simulatorPath.value.trim(),
       input_layout: inputLayout.value
     }, {
       signal: abortController.signal,

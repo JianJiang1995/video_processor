@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -6,6 +7,8 @@ import numpy as np
 from backend.services.local_video_source import (
     INPUT_LAYOUT_FULL,
     INPUT_LAYOUT_QUAD_RIGHT,
+    ResolvedVideoSource,
+    file_simulator_uri,
     apply_input_layout,
     layout_output_dimensions,
     resolve_video_source,
@@ -35,6 +38,29 @@ class _FakeCapture:
 
 
 class InputLayoutTests(unittest.TestCase):
+    def test_bound_simulator_keeps_its_file_and_layout(self):
+        path = '/tmp/operation #1 ? take.mp4'
+        uri = with_input_layout(file_simulator_uri(path), INPUT_LAYOUT_QUAD_RIGHT)
+        with patch('backend.services.local_video_source._probe_video') as probe:
+            probe.return_value = ResolvedVideoSource(original=path, source=path,
+                                                     is_simulator=True, duration=12)
+            with patch('backend.services.local_video_source.get_simulator_source') as preset:
+                result = resolve_video_source(uri)
+                preset.assert_not_called()
+            probe.assert_called_once_with(path)
+        self.assertEqual(result.source, path)
+        self.assertEqual(result.input_layout, INPUT_LAYOUT_QUAD_RIGHT)
+        self.assertTrue(result.is_simulator)
+        self.assertEqual(result.duration, 12)
+
+    def test_missing_bound_video_never_loads_default(self):
+        with patch('backend.services.local_video_source._probe_video', return_value=None):
+            with patch('backend.services.local_video_source.get_simulator_source') as preset:
+                result = resolve_video_source(file_simulator_uri('/tmp/missing.mp4'))
+                preset.assert_not_called()
+        self.assertEqual(result.source, '/tmp/missing.mp4')
+        self.assertIsNone(result.duration)
+
     def test_layout_query_preserves_existing_capture_parameters(self):
         source = "decklink://0?mode=1080p30&connection=hdmi"
         decorated = with_input_layout(source, INPUT_LAYOUT_QUAD_RIGHT)

@@ -57,7 +57,7 @@ def review_rejects_active_application(visual: dict) -> bool:
                 and review.get('applier_active') is False)
 
 
-def validate_clip_review(review: dict, primary: dict | None = None) -> dict:
+def validate_clip_review(review: dict, primary: dict | None = None, experts: dict | None = None) -> dict:
     """Keep observations, but reject conclusions unsupported by their own evidence."""
     result = dict(review)
     label = str(result.get("classification") or "").lower()
@@ -78,6 +78,28 @@ def validate_clip_review(review: dict, primary: dict | None = None) -> dict:
         if not result["action_evidence_supported"]:
             result.update(applier_active=False, clamped_on_tissue=False,
                           target="unknown", target_confidence=0.0)
+        if valid_shape and primary is not None:
+            applier = primary.get('clip_applier') or {}
+            primary_support = bool(applier.get('visible') or applier.get('active'))
+            detector_support = any(
+                isinstance(tool, dict) and tool.get('label') in {'clipper', 'clip_applier'}
+                and int(tool.get('frames_seen') or 0) >= 2
+                for tool in ((experts or {}).get('yolo') or {}).get('tools', [])
+            )
+            frame_indices = result.get('clip_frame_indices') or []
+            frame_indices = frame_indices if isinstance(frame_indices, list) else []
+            evidence_frames = {i for i in frame_indices if type(i) is int
+                               and 0 <= i < int(result.get('images') or 0)}
+            delivery_support = (result.get('loaded_clip_visible') is True
+                                and len(evidence_frames) >= 2)
+            if not (primary_support or detector_support or delivery_support):
+                # Re-prompting the same VLM is not independent confirmation.
+                # Bare jaw closure also describes ordinary grasping forceps.
+                result.update(proposed_classification='clip_applier', classification='unconfirmed',
+                              accepted=False, action_evidence_supported=False,
+                              applier_active=False, clamped_on_tissue=False,
+                              target='unknown', target_confidence=0.0,
+                              evidence_rejection='uncorroborated_applier')
     elif label == "clip":
         if geometry != "independent_clip" or not result.get("independent_from_instrument"):
             result.update(classification="other", count=0, clamped_on_tissue=False,

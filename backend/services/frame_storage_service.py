@@ -580,6 +580,21 @@ class FrameStorageService:
         
         return frames
     
+    def available_range(self, storage_path: str) -> dict:
+        """Bounds of retained history, not the capture clock or source duration."""
+        ranges = []
+        if storage_path:
+            for subfolder in ("frames", "preview"):
+                index = self._cache.get_index(storage_path, subfolder)
+                if index:
+                    ranges.append((index[0][0], index[-1][0], len(index)))
+        return {
+            "available": bool(ranges),
+            "start": min((item[0] for item in ranges), default=0),
+            "end": max((item[1] for item in ranges), default=0),
+            "frame_count": max((item[2] for item in ranges), default=0),
+        }
+
     def list_frames_in_range(
         self,
         storage_path: str,

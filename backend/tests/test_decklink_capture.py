@@ -5,6 +5,7 @@ import numpy as np
 
 from backend.services.decklink_capture import (
     _DeckLinkSharedState,
+    _ensure_gst,
     _fps_from_mode,
     build_decklink_uri,
     build_pipeline_description,
@@ -54,6 +55,49 @@ class DeckLinkCaptureConfigurationTests(unittest.TestCase):
         self.assertFalse(fresh)
         self.assertIsNone(frame)
         self.assertEqual(sequence, 7)
+
+
+class DeckLinkCapsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            _ensure_gst()
+        except (ImportError, ValueError) as exc:
+            raise unittest.SkipTest(f"GStreamer bindings unavailable: {exc}")
+        from gi.repository import Gst
+
+        cls.Gst = Gst
+
+    def test_reads_real_gstreamer_frame_rates(self):
+        for fraction, expected in (("50/1", 50.0), ("60000/1001", 60000 / 1001)):
+            with self.subTest(fraction=fraction):
+                state = _DeckLinkSharedState.__new__(_DeckLinkSharedState)
+                state.condition = threading.Condition()
+                state.fps = 30.0
+                caps = self.Gst.Caps.from_string(
+                    "video/x-raw,width=1920,height=1080,"
+                    f"framerate={fraction},interlace-mode=progressive"
+                )
+
+                state._update_caps(caps.get_structure(0))
+
+                self.assertEqual((state.width, state.height), (1920, 1080))
+                self.assertAlmostEqual(state.fps, expected)
+                self.assertEqual(state.interlace_mode, "progressive")
+
+    def test_unknown_frame_rate_preserves_previous_value(self):
+        for rate_field in ("", ",framerate=0/1"):
+            with self.subTest(rate_field=rate_field):
+                state = _DeckLinkSharedState.__new__(_DeckLinkSharedState)
+                state.condition = threading.Condition()
+                state.fps = 50.0
+                caps = self.Gst.Caps.from_string(
+                    f"video/x-raw,width=1920,height=1080{rate_field}"
+                )
+
+                state._update_caps(caps.get_structure(0))
+
+                self.assertEqual(state.fps, 50.0)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ from ..services.local_video_source import (
     PacedVideoCapture,
     SIMULATOR_URI,
     apply_input_layout_to_image,
+    file_simulator_uri,
     get_simulator_source,
     layout_output_dimensions,
     normalize_input_layout,
@@ -307,6 +308,7 @@ class CaptureDeviceConnectRequest(BaseModel):
     connection: str = "hdmi"  # DeckLink physical input: hdmi, sdi, or auto
     auto_analyze: bool = True
     input_layout: str = INPUT_LAYOUT_FULL
+    simulator_path: str = ""
 
 
 def _list_capture_devices():
@@ -420,8 +422,9 @@ def _list_capture_devices():
     return devices
 
 
-def _open_simulator_capture():
-    source = get_simulator_source(SIMULATED_CAPTURE_URL)
+def _open_simulator_capture(video_path: str = ""):
+    source = (resolve_video_source(file_simulator_uri(video_path)) if video_path
+              else get_simulator_source(SIMULATED_CAPTURE_URL))
     if not source:
         return None, "本地手术室采集卡模拟视频不可用，请检查 SURGR1_SIMULATOR_VIDEO 或 stream_simulator/media"
 
@@ -565,8 +568,15 @@ async def connect_to_capture_device(
 
     try:
         if backend == "simulator":
+            simulator_source = await asyncio.to_thread(
+                resolve_video_source, file_simulator_uri(request.simulator_path)
+            ) if request.simulator_path.strip() else await asyncio.to_thread(
+                get_simulator_source, SIMULATED_CAPTURE_URL
+            )
+            if not simulator_source or not simulator_source.duration:
+                raise HTTPException(400, "模拟视频不存在或无法读取，请检查文件路径")
             cap, error = await asyncio.wait_for(
-                loop.run_in_executor(None, _open_simulator_capture),
+                loop.run_in_executor(None, _open_simulator_capture, simulator_source.source),
                 timeout=10.0,
             )
         else:
@@ -595,7 +605,6 @@ async def connect_to_capture_device(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
     if backend == "simulator":
-        simulator_source = get_simulator_source(SIMULATED_CAPTURE_URL)
         fps = float((simulator_source.fps if simulator_source else None) or fps or 30.0)
         width = int((simulator_source.width if simulator_source else None) or width or 1920)
         height = int((simulator_source.height if simulator_source else None) or height or 1080)
@@ -613,7 +622,7 @@ async def connect_to_capture_device(
     # Create a device URL for internal use
     # Format: device://{device_id} or device://{device_name}
     if backend == "simulator":
-        device_url = SIMULATOR_URI
+        device_url = file_simulator_uri(simulator_source.source)
     elif backend == "decklink":
         device_url = build_decklink_uri(request.device_id, mode=mode, connection=connection)
     else:
@@ -625,7 +634,7 @@ async def connect_to_capture_device(
     
     device_display_name = request.device_name or f"Capture Device {request.device_id}"
     if backend == "simulator":
-        device_display_name = SIMULATED_CAPTURE_NAME
+        device_display_name = f"{SIMULATED_CAPTURE_NAME}: {Path(simulator_source.source).name}"
     elif backend == "decklink":
         device_display_name = f"{device_display_name} ({connection.upper()} / {mode})"
     

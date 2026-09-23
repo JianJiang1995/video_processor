@@ -5,7 +5,8 @@ import re
 
 EXCERPT_NOTICE = (
     "[Context excerpts: some records were omitted to fit the model. "
-    "These excerpts cannot establish whole-video counts or the absence of an event. "
+    "These excerpts cannot establish whole-video counts, a definitive first occurrence, "
+    "or the absence of an event. "
     "Disclose insufficient evidence when relevant.]\n"
 )
 
@@ -27,9 +28,29 @@ def select_context_excerpts(context: str, query: str, max_chars: int) -> str:
         elif len(word) > 1:
             terms.add(word)
 
+    # Questions and stored records may use different languages. These are search
+    # synonyms, not detections or rules that manufacture clinical observations.
+    for aliases in (
+        ("instrument", "instruments", "tool", "tools", "器械", "工具"),
+        ("bleeding", "hemorrhage", "出血"),
+        ("fog", "fogging", "起雾", "雾"),
+        ("scissors", "剪刀"),
+        ("clip", "clips", "clipper", "夹子", "施夹", "夹闭"),
+    ):
+        if terms.intersection(aliases):
+            terms.update(aliases)
+    earliest = bool(re.search(r"\b(first|firstly|earliest)\b|首次|最早|第一次", query, re.I))
+
     def rank(index: int):
         text = records[index].lower()
-        return (sum(term in text for term in terms), index)
+        priority = 0
+        if text.startswith("### selected review focus"):
+            priority = 2
+        elif text.startswith("### session evidence coverage"):
+            priority = 1
+        elif text.startswith(("### recent dialogue", "### recent user questions")):
+            priority = -1
+        return (priority, sum(term in text for term in terms), -index if earliest else index)
 
     chosen = []
     for index in sorted(range(len(records)), key=rank, reverse=True):

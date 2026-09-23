@@ -125,6 +125,23 @@ class ClipChatRequestTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertNotIn("review_context", result["user_message"])
 
+    def test_history_uses_existing_mysql_method_and_preserves_session(self):
+        db = Mock()
+        db.get_chat_history.return_value = [{"id": 1, "role": "user", "content": "Earlier question"}]
+        with patch.object(voice, "get_mysql_service", return_value=db):
+            result = self.client.get("/api/voice/chat/session-a/history?limit=7").json()
+        db.get_chat_history.assert_called_once_with("session-a", 7)
+        self.assertEqual(result["messages"], db.get_chat_history.return_value)
+        self.assertEqual(result["total"], 1)
+        self.assertNotIn("error", result)
+
+    def test_clear_history_uses_existing_mysql_method(self):
+        db = Mock()
+        with patch.object(voice, "get_mysql_service", return_value=db):
+            result = self.client.delete("/api/voice/chat/session-a").json()
+        self.assertTrue(result["success"])
+        db.clear_chat.assert_called_once_with("session-a")
+
 
 class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -142,6 +159,8 @@ class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
             window(6, 100, 120, "OUTSIDE LATE"),
         ]
         self.service._mysql_service = self.db
+        self.db.get_chat_history.return_value = []
+        self.db.save_chat.return_value = 99
         self.model = Mock()
         self.model.chat_with_context = AsyncMock(return_value={"success": True, "text": "Scoped answer"})
         self.service._vlm_client = self.model
@@ -156,7 +175,7 @@ class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(guard.stop)
         return mock
 
-    async def test_scoped_model_payload_contains_only_overlaps_and_scope_instructions(self):
+    async def test_model_payload_contains_full_timeline_and_selected_focus(self):
         fallback = self.forbid_global_summary()
         payloads = []
 
@@ -179,16 +198,18 @@ class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
         context = messages[-1]["content"]
         self.assertEqual(messages[0]["role"], "system")
         for fragment in ("1:10-1:25", "70.25-85.5s", "window_id: 3",
-                         "not the whole video", "not newly viewed frames",
+                         "whole-session evidence", "not newly viewed frames",
                          "Cite the record timestamps", "partially overlap",
-                         "Do not infer", "insufficient evidence"):
+                         "Do not infer", "insufficient evidence", "search ALL",
+                         "First recorded", "not unseen future frames"):
             self.assertIn(fragment, prompt)
         for fragment in ("LEFT OVERLAP", "INSIDE RECORD", "RIGHT OVERLAP",
                          "1:05-1:15", "65-75s", "75-80s", "80-90s",
                          "70.25-85.5s", "Summarize what happened"):
             self.assertIn(fragment, context)
-        for fragment in ("OUTSIDE", "TOUCHES", "WHOLE VIDEO CONTEXT"):
-            self.assertNotIn(fragment, context)
+        for fragment in ("OUTSIDE EARLY", "OUTSIDE LATE", "TOUCHES START ONLY", "TOUCHES END ONLY"):
+            self.assertIn(fragment, context)
+        self.assertNotIn("WHOLE VIDEO CONTEXT", context)
         self.assertLess(context.index("LEFT OVERLAP"), context.index("INSIDE RECORD"))
         self.assertLess(context.index("INSIDE RECORD"), context.index("RIGHT OVERLAP"))
         self.db.get_all_window_summaries.assert_called_once_with("session-a")
@@ -197,15 +218,31 @@ class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.save_chat.call_count, 2)
         self.assertEqual(self.service.mode, "listening")
 
-    async def test_window_id_never_expands_or_overrides_requested_time_range(self):
+    async def test_window_id_does_not_override_focus_or_filter_global_evidence(self):
         await self.service.handle_user_input("Explain the record", {**REVIEW, "window_id": 6})
         options = self.model.chat_with_context.await_args.kwargs
-        self.assertNotIn("OUTSIDE LATE", options["surgical_context"])
-        self.assertIn("INSIDE RECORD", options["surgical_context"])
+        self.assertIn("OUTSIDE LATE", options["surgical_context"])
+        focus = options["surgical_context"].split("### Selected review focus")[1].split("\n\n### ")[0]
+        self.assertIn("INSIDE RECORD", focus)
+        self.assertNotIn("OUTSIDE", focus)
+        self.assertNotIn("TOUCHES", focus)
         self.assertFalse(options["include_background"])
 
-    async def test_empty_range_returns_honest_answer_without_model_or_global_fallback(self):
+    async def test_empty_focus_keeps_other_windows_available_to_model(self):
         fallback = self.forbid_global_summary()
+        result = await self.service.handle_user_input(
+            "When did an instrument first appear?", {"start_time": 130, "end_time": 150},
+        )
+        self.assertTrue(result["success"])
+        context = self.model.chat_with_context.await_args.kwargs["surgical_context"]
+        self.assertIn("No saved analysis overlaps this clip", context)
+        self.assertIn("OUTSIDE EARLY", context)
+        self.assertIn("OUTSIDE LATE", context)
+        fallback.assert_not_called()
+
+    async def test_empty_session_returns_honest_answer_without_model_or_global_fallback(self):
+        fallback = self.forbid_global_summary()
+        self.db.get_all_window_summaries.return_value = []
         result = await self.service.handle_user_input(
             "How many clips were placed?", {"start_time": 130, "end_time": 150},
         )
@@ -250,6 +287,39 @@ class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.service.mode, "listening")
         fallback.assert_not_called()
         self.service._summary_compressor.get_context_for_chat.assert_not_called()
+
+    async def test_follow_up_includes_bounded_server_dialogue_not_client_evidence(self):
+        self.db.get_chat_history.return_value = [
+            {"id": 1, "role": "user", "content": "What is happening in this period?"},
+            {"id": 2, "role": "assistant", "content": "Old clip-limited answer"},
+            {"id": 99, "role": "user", "content": "When did it first appear?"},
+        ]
+        await self.service.handle_user_input("When did it first appear?", REVIEW)
+        options = self.model.chat_with_context.await_args.kwargs
+        self.assertIn("Recent user questions (not video evidence)", options["surgical_context"])
+        self.assertIn("What is happening in this period?", options["surgical_context"])
+        self.assertNotIn("Old clip-limited answer", options["surgical_context"])
+        self.assertNotIn("When did it first appear?", options["surgical_context"])
+        self.assertIn("never as video evidence", options["system_prompt"])
+        self.db.get_chat_history.assert_called_once_with("session-a", limit=7)
+
+    async def test_updated_records_are_loaded_for_each_question_without_other_session_context(self):
+        await self.service.handle_user_input("Explain this period", REVIEW)
+        self.db.get_all_window_summaries.return_value = [window(9, 0, 5, "UPDATED RECORD")]
+        await self.service.handle_user_input("When did an instrument first appear?", REVIEW)
+        context = self.model.chat_with_context.await_args.kwargs["surgical_context"]
+        self.assertIn("UPDATED RECORD", context)
+        self.assertNotIn("INSIDE RECORD", context)
+        for call in self.db.get_all_window_summaries.call_args_list:
+            self.assertEqual(call.args, ("session-a",))
+
+    async def test_full_timeline_is_ordered_by_time_not_window_id(self):
+        self.db.get_all_window_summaries.return_value = [
+            window(0, 100, 105, "LATER"), window(1, 0, 5, "EARLIER"),
+        ]
+        await self.service.handle_user_input("What happened first?", REVIEW)
+        context = self.model.chat_with_context.await_args.kwargs["surgical_context"]
+        self.assertLess(context.index("EARLIER"), context.index("LATER"))
 
     async def test_scope_is_request_local_and_whole_video_model_chat_is_unchanged(self):
         await self.service.handle_user_input("Explain the record", REVIEW)

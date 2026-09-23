@@ -33,6 +33,18 @@ class ChatContextTests(unittest.TestCase):
         result = select_context_excerpts("### Window 1\n" + "evidence " * 500, "query", 500)
         assert result == EXCERPT_NOTICE.rstrip()
 
+    def test_overflow_keeps_selected_clip_and_finds_early_chinese_instrument_record(self):
+        coverage = "### Session evidence coverage\n100 stored records with possible gaps."
+        focus = "### Selected review focus\n0:05-0:10; no instrument operation recorded here."
+        records = [f"### Window {i} ({i}:00)\n" + "器械接触组织。" * 20 for i in range(100)]
+        context = "\n\n".join([coverage, focus, *records])
+        result = select_context_excerpts(context, "what time does the instrument firstly show", 850)
+        assert coverage in result and focus in result
+        assert records[0] in result
+        assert records[99] not in result
+        assert "definitive first occurrence" in result
+        assert len(result) <= 850
+
 
 class ChatRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_context_overflow_retries_without_losing_question_or_system_prompt(self):

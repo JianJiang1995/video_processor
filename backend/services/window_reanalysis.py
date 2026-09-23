@@ -10,7 +10,10 @@ from PIL import Image
 from .frame_storage_service import get_frame_storage_service
 from .glm_client import get_glm_client
 from .local_video_source import resolve_video_source, apply_input_layout, split_input_layout
-from .local_visual_prompt import LOCAL_VISUAL_PROMPT
+from .local_visual_prompt import (
+    build_local_visual_prompt, scene_observations_need_review,
+    VISIBILITY_REVIEW_PROMPT, validate_visibility_review, reviewed_scene_summary,
+)
 
 
 def sample_indices(length, maximum=4):
@@ -48,7 +51,7 @@ def load_review_frames(session, start, end):
     clean_path, _ = split_input_layout(video_path)
     # simulator:// is a mutable device name, not the historical backing file.
     # Missing stored frames must not silently analyze a different simulator run.
-    if not (clean_path.startswith("filesim://") or Path(clean_path).is_file()):
+    if not (clean_path.startswith(("filesim://", "simulator://file/")) or Path(clean_path).is_file()):
         raise FileNotFoundError("review_frames_unavailable")
     source = resolve_video_source(video_path)
     if not Path(source.source).is_file():
@@ -89,17 +92,57 @@ def parse_review(text):
     return {"summary": summary.strip(), "visual": visual}
 
 
-async def analyze_review(images, timestamps):
+async def analyze_review(images, timestamps, experts=None, phase=None):
     client = get_glm_client()
     # This endpoint must never inherit an external-provider fallback.
     address = urlparse(client.api_url)
     if address.scheme not in {"http", "https"} or address.hostname not in {"localhost", "127.0.0.1", "::1"}:
         raise PermissionError("review_local_only")
     response = await asyncio.wait_for(client._analyze_images_with_timestamps(
-        images=images, timestamps=timestamps, question=LOCAL_VISUAL_PROMPT,
+        images=images, timestamps=timestamps, question=build_local_visual_prompt(experts, phase),
         system_prompt="仅依据本次图像重新核实，不沿用旧摘要。单帧不能确认动态动作。只输出要求的JSON。",
-        temperature=0.01, max_tokens=1200,
+        temperature=0.01, max_tokens=1400,
     ), timeout=90)
     if not response.get("success"):
         raise RuntimeError("review_model_unavailable")
-    return {**parse_review(response.get("text")), "model": response.get("model", client.model_name)}
+    result = {**parse_review(response.get("text")), "model": response.get("model", client.model_name)}
+    if scene_observations_need_review(result['visual']):
+        return await review_scene(images, timestamps, result, client=client)
+    return result
+
+
+async def review_scene(images, timestamps, result, client=None):
+    """Recheck a candidate scene against images, retaining all prior facts on uncertainty."""
+    client = client or get_glm_client()
+    address = urlparse(client.api_url)
+    if address.scheme not in {'http', 'https'} or address.hostname not in {'localhost', '127.0.0.1', '::1'}:
+        raise PermissionError('review_local_only')
+    if scene_observations_need_review(result['visual']):
+        # Match the live scene verifier: one instruction followed by images.
+        # The timestamped primary-analysis wrapper changes the task framing.
+        content = [{'type': 'text', 'text': VISIBILITY_REVIEW_PROMPT}]
+        content.extend({'type': 'image_url', 'image_url': {
+            'url': client._image_to_base64_url(image), 'detail': 'low'}} for image in images)
+        response = await asyncio.wait_for(client.client.post(f'{client.api_url}/chat/completions', json={
+            'model': client.model_name,
+            'messages': [{'role': 'system', 'content': '只输出一个紧凑JSON对象。'},
+                         {'role': 'user', 'content': content}],
+            'temperature': 0, 'max_tokens': 300, 'chat_template_kwargs': {'enable_thinking': False},
+        }), timeout=30)
+        response.raise_for_status()
+        raw = str(response.json()['choices'][0]['message']['content'] or '').strip()
+        if raw.startswith('```') and raw.endswith('```'):
+            raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+        scene = validate_visibility_review(json.loads(raw), len(images), result['visual'])
+        result['visual']['visibility_secondary_review'] = {**scene, 'success': True}
+        if float(scene.get('confidence') or 0) >= .75:
+            classification = scene.get('classification')
+            if classification in {'external_body', 'trocar_transition'}:
+                result['visual']['visibility'] = {
+                    'status': 'out_of_body', 'out_of_body': True, 'fog': False,
+                    'fog_cleared': False, 'confidence': scene['confidence'],
+                    'evidence': scene.get('evidence', ''), 'evidence_source': 'visibility_secondary_review',
+                }
+                result['visual']['cvs'] = {'status': 'not_applicable', 'confidence': scene['confidence']}
+                result['summary'] = reviewed_scene_summary(result['visual'])
+    return result

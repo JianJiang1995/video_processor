@@ -5,15 +5,16 @@
       <div 
         class="progress-bar" 
         ref="progressRef"
-        @click="handleProgressClick"
-        @mousedown="startDragging"
         @mousemove="handleDragging"
-        @mouseup="stopDragging"
         @mouseleave="handleMouseLeave"
       >
+        <input class="timeline-slider" type="range" :min="seekStart" :max="Math.max(seekStart, seekEnd)"
+          step="0.01" :value="currentTime" :disabled="seekEnd <= seekStart"
+          :aria-label="t('control.timeline')" :aria-valuetext="formatTime(currentTime)"
+          @pointerdown="closeTooltip" @input="handleTimelineInput" @click.stop />
         <div class="progress-fill" :class="{ live: isLive }" :style="{ width: progressPercent + '%' }"></div>
         
-        <!-- Window segments (clickable) -->
+        <!-- Analysis markers; seeking must not activate window looping. -->
         <div v-if="!isLive" class="window-segments">
           <div
             v-for="i in windowCount"
@@ -26,13 +27,12 @@
             }"
             :style="{ 
               left: (((i - 1) * windowDuration) / duration * 100) + '%',
-              width: (windowDuration / duration * 100) + '%'
+              width: (Math.min(windowDuration, duration - (i - 1) * windowDuration) / duration * 100) + '%'
             }"
-            @click.stop="handleWindowClick($event, i - 1)"
             @mouseenter="handleWindowMouseEnter($event, i - 1)"
             @mouseleave="handleWindowMouseLeave"
           >
-            <span class="window-label" v-if="analyzedWindows.includes(i - 1)">{{ i }}</span>
+            <span class="window-label" v-if="windowCount <= 30 && analyzedWindows.includes(i - 1)">{{ i }}</span>
           </div>
         </div>
         
@@ -57,13 +57,6 @@
           <div class="tooltip-content">
             {{ hoveredWindowSummary.summary }}
           </div>
-          <div class="tooltip-hint" v-if="!isTooltipLocked">{{ t('control.clickPin') }}</div>
-          <div class="tooltip-hint" v-else>{{ t('control.clickClose') }}</div>
-        </div>
-        
-        <!-- Playhead -->
-        <div v-if="!isLive" class="playhead" :style="{ left: progressPercent + '%' }">
-          <div class="playhead-handle"></div>
         </div>
         
         <!-- Hover tooltip -->
@@ -102,7 +95,7 @@
       
       <!-- Time Display -->
       <div class="time-display">
-        <span v-if="isLive" class="live-badge">🔴 {{ t('control.live') }}</span>
+        <span v-if="isLive" class="live-badge" :class="{ reviewing: isReviewing }">{{ t(isReviewing ? 'control.reviewing' : 'control.live') }}</span>
         <span class="time-current">{{ formatTime(currentTime) }}</span>
         <span v-if="!isLive"> / </span>
         <span v-if="!isLive">{{ formatTime(duration) }}</span>
@@ -110,6 +103,9 @@
           · {{ t('control.window') }} {{ currentWindowId + 1 }}
         </span>
       </div>
+      <button v-if="returnLabel" class="return-position-btn" @click="$emit('returnToPosition')">
+        <Radio v-if="isLive" :size="14" /><LocateFixed v-else :size="14" />{{ returnLabel }}
+      </button>
       
       <div class="controls-spacer"></div>
       
@@ -194,7 +190,7 @@
       
       <!-- Analyze Button -->
       <button
-        v-if="!isAnalyzing"
+        v-if="allowAnalysis && !isAnalyzing"
         class="btn btn-primary analyze-btn"
         @click="$emit('analyze')"
         :disabled="(mode === 'local' && !duration) || !surgr1Status.available"
@@ -205,7 +201,7 @@
       
       <!-- Stop Analyze Button -->
       <button 
-        v-else
+        v-else-if="allowAnalysis"
         class="btn btn-danger stop-btn" 
         @click="$emit('stopAnalyze')"
       >
@@ -233,8 +229,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useI18n } from '@/i18n'
+import { Radio, LocateFixed } from '@lucide/vue'
 
 const { t } = useI18n()
 
@@ -248,6 +245,11 @@ const props = defineProps({
     default: 0
   },
   isPlaying: Boolean,
+  isReviewing: Boolean,
+  seekStart: { type: Number, default: 0 },
+  seekEnd: { type: Number, default: 0 },
+  returnLabel: { type: String, default: '' },
+  allowAnalysis: { type: Boolean, default: true },
   volume: {
     type: Number,
     default: 0.8
@@ -314,12 +316,12 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['play', 'pause', 'seek', 'volume', 'analyze', 'stopAnalyze', 'seekToWindow', 'hoverWindow', 'dragSeek', 'toggleSam3'])
+const emit = defineEmits(['play', 'pause', 'seek', 'volume', 'analyze', 'stopAnalyze', 'seekToWindow', 'hoverWindow', 'dragSeek', 'toggleSam3', 'returnToPosition'])
+const handleTimelineInput = event => emit('seek', Number(event.target.value))
 
 const progressRef = ref(null)
 const isMuted = ref(false)
 const previousVolume = ref(0.8)
-const isDragging = ref(false)
 const hoverTime = ref(null)
 const hoverPercent = ref(0)
 
@@ -357,7 +359,10 @@ const hoveredWindowSummary = computed(() => {
 const isTooltipLocked = computed(() => lockedWindowId.value >= 0)
 
 const progressPercent = computed(() => {
-  if (props.isLive) return 100
+  if (props.isLive) {
+    const span = props.seekEnd - props.seekStart
+    return span > 0 ? Math.max(0, Math.min(100, (props.currentTime - props.seekStart) / span * 100)) : 100
+  }
   if (!props.duration) return 0
   // Clamp values to ensure valid percentage
   const safeTime = Math.max(0, Math.min(props.currentTime, props.duration))
@@ -407,52 +412,6 @@ const getTimeFromEvent = (event) => {
   return percent * props.duration
 }
 
-const handleProgressClick = (event) => {
-  if (props.isLive) return
-  const time = getTimeFromEvent(event)
-  if (time !== null) {
-    emit('seek', time)
-  }
-}
-
-const startDragging = (event) => {
-  if (props.isLive) return
-  event.preventDefault()  // Prevent text selection while dragging
-  isDragging.value = true
-  const time = getTimeFromEvent(event)
-  if (time !== null) {
-    emit('dragSeek', time, true)  // true = drag started
-    emit('seek', time)  // Also seek immediately
-  }
-}
-
-// Global mousemove handler for dragging (works even outside progress bar)
-const handleGlobalMouseMove = (event) => {
-  if (props.isLive) return
-  if (!isDragging.value) return
-  const time = getTimeFromEvent(event)
-  if (time !== null) {
-    // Update hover tooltip
-    hoverTime.value = time
-    hoverPercent.value = (time / props.duration) * 100
-    emit('dragSeek', time, false)  // false = dragging
-    emit('seek', time)  // Update video position while dragging
-  }
-}
-
-// Global mouseup handler for dragging (works even outside progress bar)
-const handleGlobalMouseUp = (event) => {
-  if (props.isLive) return
-  if (!isDragging.value) return
-  isDragging.value = false
-  const time = getTimeFromEvent(event)
-  if (time !== null) {
-    emit('seek', time)
-    emit('dragSeek', time, false)  // emit final position
-  }
-  hoverTime.value = null
-}
-
 const handleDragging = (event) => {
   if (props.isLive) return
   const time = getTimeFromEvent(event)
@@ -461,34 +420,14 @@ const handleDragging = (event) => {
     hoverTime.value = time
     hoverPercent.value = (time / props.duration) * 100
     
-    if (isDragging.value) {
-      emit('dragSeek', time, false)  // false = dragging
-      emit('seek', time)  // Update video position while dragging
-    }
+    handleWindowMouseEnter(event, Math.floor(time / props.windowDuration))
   }
-}
-
-const stopDragging = (event) => {
-  // Handled by global mouseup event, but keep for safety
 }
 
 const handleMouseLeave = () => {
-  // Don't stop dragging on mouse leave - continue with global handlers
-  if (!isDragging.value) {
-    hoverTime.value = null
-  }
+  hoverTime.value = null
+  handleWindowMouseLeave()
 }
-
-// Set up global event listeners for drag handling
-onMounted(() => {
-  document.addEventListener('mousemove', handleGlobalMouseMove)
-  document.addEventListener('mouseup', handleGlobalMouseUp)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('mousemove', handleGlobalMouseMove)
-  document.removeEventListener('mouseup', handleGlobalMouseUp)
-})
 
 const seekToWindow = (windowId) => {
   const time = windowId * props.windowDuration
@@ -553,13 +492,12 @@ const closeTooltip = () => {
 }
 
 const skipBack = () => {
-  const newTime = Math.max(0, props.currentTime - props.windowDuration)
+  const newTime = Math.max(props.seekStart, props.currentTime - props.windowDuration)
   emit('seek', newTime)
 }
 
 const skipForward = () => {
-  if (props.isLive) return
-  const newTime = Math.min(props.duration, props.currentTime + props.windowDuration)
+  const newTime = Math.min(props.seekEnd, props.currentTime + props.windowDuration)
   emit('seek', newTime)
 }
 
@@ -610,7 +548,18 @@ const formatTimeOffset = (seconds) => {
   position: relative;
   cursor: pointer;
   user-select: none;
+  height: 16px;
+  overflow: visible;
 }
+.progress-bar:hover { height: 16px; }
+.progress-fill::after { display: none; }
+.controls-row { flex-wrap: wrap; }
+.timeline-slider { position: absolute; inset: 0; width: 100%; height: 16px; margin: 0; z-index: 8; appearance: none; background: transparent; cursor: ew-resize; }
+.timeline-slider::-webkit-slider-thumb { appearance: none; width: 12px; height: 16px; border-radius: 3px; background: #f4c65e; border: 1px solid #222; }
+.timeline-slider:disabled { cursor: default; opacity: .35; }
+.timeline-slider:focus-visible { outline: 2px solid #71cbd3; outline-offset: 2px; }
+.return-position-btn { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 4px 8px; font-size: 12px; color: #82d5cd; border: 1px solid #42716d; background: transparent; border-radius: 4px; cursor: pointer; }
+.live-badge.reviewing { color: #f4c65e; }
 
 .window-segments {
   position: absolute;
@@ -633,7 +582,7 @@ const formatTimeOffset = (seconds) => {
 
 /* Only enable pointer events for analyzed windows that show labels */
 .window-segment.analyzed {
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 .window-segment:hover {

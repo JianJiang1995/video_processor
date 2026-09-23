@@ -1,10 +1,15 @@
 <template>
   <div class="app-container">
+    <div v-if="replayLoading || replayError" class="replay-load-status" role="status">
+      <p>{{ replayError || (language === 'zh' ? '正在打开分析回放…' : 'Opening analysis replay…') }}</p>
+      <button v-if="replayError" class="btn btn-secondary" @click="goHome">{{ t('app.back') }}</button>
+    </div>
     <!-- Mode Selection Screen -->
     <ModeSelector 
-      v-if="currentView === 'select'"
+      v-else-if="currentView === 'select'"
       @select-mode="handleModeSelect"
       @resume-session="handleResumeSession"
+      @replay="openReplayBundle"
     />
 
     <!-- Stream Input Screen -->
@@ -12,6 +17,7 @@
       <StreamInput 
         @connect="handleStreamConnect"
         @back="currentView = 'select'"
+        @replay="openReplayBundle"
       />
     </div>
 
@@ -81,6 +87,8 @@
               @click="handleVideoSectionClick"
             >
               <VideoPlayer
+                v-show="!timeshiftActive"
+                class="primary-video-player"
                 :session="currentSession"
                 :currentTime="currentTime"
                 :isPlaying="isPlaying"
@@ -105,10 +113,22 @@
                 @exitLoop="exitLoopMode"
                 @loopLoadFailed="handleLoopLoadFailed"
               />
+              <VideoPlayer v-if="timeshiftActive && isSimulatorSession"
+                class="timeshift-player" :session="currentSession" mode="stream" :reviewMode="true"
+                :currentTime="timeshiftTime" :isPlaying="timeshiftPlaying" :seekNonce="timeshiftSeekNonce"
+                :windowDuration="windowDuration" @timeupdate="handleTimeshiftTime"
+                @reviewToggle="timeshiftPlaying = !timeshiftPlaying" @ended="timeshiftPlaying = false" />
+              <CachedHistoryPlayer v-else-if="timeshiftActive" :sessionId="currentSession.session_id"
+                :currentTime="timeshiftTime" :playing="timeshiftPlaying" :seekNonce="timeshiftSeekNonce"
+                :start="timelineStart" :end="timelineEnd" @timeupdate="handleTimeshiftTime"
+                @pause="timeshiftPlaying = false" @toggle="timeshiftPlaying = !timeshiftPlaying" />
               <ControlBar
-                :currentTime="currentTime"
+                :currentTime="timeshiftActive ? timeshiftTime : currentTime"
                 :duration="duration"
-                :isPlaying="isPlaying"
+                :isPlaying="timeshiftActive ? timeshiftPlaying : isPlaying"
+                :seekStart="timelineStart" :seekEnd="timelineEnd"
+                :isReviewing="timeshiftActive" :returnLabel="returnPositionLabel"
+                :allowAnalysis="!replayMode"
                 :volume="volume"
                 :mode="mode"
                 :isLive="mode === 'stream'"
@@ -125,8 +145,8 @@
                 :surgr1Processing="surgr1ProcessingStatus"
                 :sam3Time="sam3Time"
                 :windowDuration="windowDuration"
-                @play="handlePlay"
-                @pause="handlePause"
+                @play="handleControlPlay"
+                @pause="handleControlPause"
                 @seek="handleSeek"
                 @volume="handleVolumeChange"
                 @analyze="startAnalysis"
@@ -134,6 +154,7 @@
                 @seekToWindow="handleSeekToWindow"
                 @hoverWindow="handleWindowHover"
                 @dragSeek="handleDragSeek"
+                @returnToPosition="returnToPosition"
               />
             </section>
 
@@ -392,6 +413,7 @@
 </template>
 
 <script setup>
+import { stripCvsStatusClauses } from './utils/windowNarrative.js'
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { apiUrl, isElectron, loadReplayBundle } from './utils/electronBridge.js'
@@ -399,6 +421,7 @@ import analysisQueue from './utils/AnalysisQueue.js'
 import ModeSelector from './components/ModeSelector.vue'
 import StreamInput from './components/StreamInput.vue'
 import VideoPlayer from './components/VideoPlayer.vue'
+import CachedHistoryPlayer from './components/CachedHistoryPlayer.vue'
 import ControlBar from './components/ControlBar.vue'
 import SummaryPanel from './components/SummaryPanel.vue'
 import VoiceChat from './components/VoiceChat.vue'
@@ -410,6 +433,7 @@ import VideoReviewModal from './components/VideoReviewModal.vue'
 import { resolveReviewRange } from './utils/chatTimestamps.js'
 import { useI18n } from './i18n.js'
 import { captureLocalVideoThumbnail } from './utils/localVideoThumbnail.js'
+import { summarizeFogTimeline } from './utils/fogTimeline.js'
 
 const { language, setLanguage, t } = useI18n()
 
@@ -466,6 +490,9 @@ const openReviewWindow = windowId => {
 }
 watch(() => currentSession.value?.session_id, () => { reviewRange.value = null })
 const replayMode = ref(false)
+const replayLoading = ref(new URLSearchParams(window.location.search).has('replaySpec'))
+const replayError = ref('')
+const replayProgressive = ref(false)
 const replayAllSummaries = ref([])
 const replayAllEvents = ref([])
 const replayReport = ref(null)
@@ -492,6 +519,13 @@ const livePlaybackTime = ref(0)
 const loopReturnTime = ref(null)
 const loopWasPlaying = ref(false)
 const playbackResumeNonce = ref(0)
+const timeshiftActive = ref(false)
+const timeshiftTime = ref(0)
+const timeshiftPlaying = ref(false)
+const timeshiftSeekNonce = ref(0)
+const historyRange = ref({ available: false, start: 0, end: 0 })
+const analysisPosition = ref(0)
+const followingAnalysis = ref(false)
 // Flag to prevent clearing loopWindow during loop-triggered seeks
 let isLoopSeek = false
 let detachedPlaybackWallStart = null
@@ -740,7 +774,12 @@ const pumpBottomThumbQueue = () => {
 
 const enqueueBottomThumbnail = (summary, priority = false) => {
   const wid = summary?.window_id
-  if (wid == null || bottomThumbnails[wid] || bottomThumbQueued.has(wid)) return
+  if (wid == null || bottomThumbnails[wid]) return
+  if (bottomThumbQueued.has(wid)) {
+    const index = priority ? bottomThumbQueue.findIndex(item => item.window_id === wid) : -1
+    if (index >= 0) bottomThumbQueue.unshift(...bottomThumbQueue.splice(index, 1))
+    return
+  }
   bottomThumbQueued.add(wid)
   if (priority) bottomThumbQueue.unshift(summary)
   else bottomThumbQueue.push(summary)
@@ -777,7 +816,7 @@ const windowDuration = ref(5)
 // 获取后端配置
 const fetchConfig = async () => {
   try {
-    const res = await axios.get('/api/config')
+    const res = await axios.get('/api/config', { timeout: 5000 })
     windowDuration.value = res.data.window_duration || 5
     console.log('[Config] Window duration:', windowDuration.value)
   } catch (e) {
@@ -810,15 +849,13 @@ const cleanUserSummaryText = (text) => {
     .trim()
 }
 
-const CVS_STATUS_RE = /(CVS评估[:：]?[^。；;]*(?:[。；;]|$)|CVS(?:尚未达成|未达成|达成|已达成|确认|评估中)[^。；;]*(?:[。；;]|$)|安全关键视野[^。；;]*(?:[。；;]|$)|关键安全视野[^。；;]*(?:[。；;]|$)|critical view(?: of safety)?[^.;]*(?:[.;]|$))/gi
 const CVS_RELEVANT_RE = /(CVS|安全关键视野|关键安全视野|critical view|胆囊管|胆囊动脉|胆囊板|两条结构)/
 const CVS_ACHIEVED_RE = /(CVS(?:已经|已)?达成|CVS确认|CVS已确认|安全关键视野(?:已经|已)?确认|三要素(?:均)?(?:满足|达成)|critical view(?: of safety)? (?:achieved|confirmed))/i
 
 const stripCvsStatusText = (text) => {
-  return cleanUserSummaryText(text)
-    .replace(CVS_STATUS_RE, '')
+  return stripCvsStatusClauses(cleanUserSummaryText(text))
     .replace(/[，,]\s*[。；;]/g, '。')
-    .replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
+    .replace(/^[，,。；;\s]+|[，,；;\s]+$/g, '')
     .trim()
 }
 
@@ -901,13 +938,14 @@ const syncReplayTimeline = (time, { forceFinal = false } = {}) => {
     else hi = mid
   }
 
-  const visibleCount = lo
+  const visibleCount = replayProgressive.value ? lo : all.length
   const latest = visibleCount > 0 ? all[visibleCount - 1] : null
   const latestEnd = Number(latest?.end_time ?? latest?.window_end ?? 0)
   const stage1 = cleanUserSummaryText(latest?.stage1_summary || latest?.others?.stage1_summary || '')
   const finalText = cleanUserSummaryText(latest?.summary || '')
   const showExpertStage = Boolean(
     latest
+    && replayProgressive.value
     && !forceFinal
     && stage1
     && finalText
@@ -931,15 +969,17 @@ const syncReplayTimeline = (time, { forceFinal = false } = {}) => {
       return { ...cleaned, replay_stage: 'final' }
     })
     summaries.value = visible
-    visible.forEach((item) => {
-      if (!previousIds.has(Number(item.window_id))) enqueueBottomThumbnail(item)
-    })
+    if (bottomViewMode.value === 'windows') {
+      visible.slice().reverse().forEach((item) => {
+        if (!previousIds.has(Number(item.window_id))) enqueueBottomThumbnail(item)
+      })
+    }
     replaySummarySignature = nextSummarySignature
   }
 
   const visibleEvents = replayAllEvents.value.filter((node) => {
     const availableAt = Number(node?.end_time ?? node?.start_time ?? 0)
-    return availableAt <= replayTime + 0.04 || forceFinal
+    return !replayProgressive.value || availableAt <= replayTime + 0.04 || forceFinal
   })
   const nextEventSignature = visibleEvents.map(node => node?.id || `${node?.start_time}-${node?.title}`).join('|')
   if (nextEventSignature !== replayEventSignature) {
@@ -953,7 +993,7 @@ const syncReplayTimeline = (time, { forceFinal = false } = {}) => {
   }
 
   const endAt = Number(duration.value || currentSession.value?.duration || 0)
-  isProcessing.value = isPlaying.value && (!endAt || replayTime < endAt - 0.04)
+  isProcessing.value = false
 }
 
 const loadOfflineReplayFromQuery = async () => {
@@ -964,14 +1004,28 @@ const loadOfflineReplayFromQuery = async () => {
 
   const bundle = await loadReplayBundle(specPath)
   if (!bundle?.success) throw new Error(bundle?.error || 'Failed to load offline replay')
+  await openReplayBundle(bundle, Number(query.get('replayStartAt') ?? bundle.session?.duration ?? 0))
+  return true
+}
+
+const openReplayBundle = async (bundle, startAt = null) => {
+  replayError.value = ''
+  stopStreamPolling()
+  stopStreamTimer()
+  stopSurgR1StatusPolling()
+  if (analysisEventSource) { analysisEventSource.close(); analysisEventSource = null }
+  stopDetachedPlaybackClock()
+  loopWindow.value = null
+  reviewRange.value = null
 
   abortAllSessionRequests()
   createSessionAbortController()
   replayMode.value = true
+  replayProgressive.value = bundle.spec?.progressive_reveal === true
   replayAllSummaries.value = (bundle.summaries || []).map(cleanSummaryPayload)
   replayAllEvents.value = Array.isArray(bundle.events) ? bundle.events : []
   replayReport.value = bundle.report || null
-  replayFinalUpdateDelay.value = Math.max(0, Number(bundle.spec?.final_update_delay || 1.25))
+  replayFinalUpdateDelay.value = Math.max(0, Number(bundle.spec?.final_update_delay ?? 1.25))
   replaySummarySignature = ''
   replayEventSignature = ''
 
@@ -983,7 +1037,7 @@ const loadOfflineReplayFromQuery = async () => {
   bottomViewMode.value = 'events'
   currentSession.value = bundle.session
   duration.value = Number(bundle.session?.duration || 0)
-  const requestedStartAt = Number(query.get('replayStartAt') || 0)
+  const requestedStartAt = Number(startAt ?? duration.value)
   const initialTime = Number.isFinite(requestedStartAt)
     ? Math.min(duration.value, Math.max(0, requestedStartAt))
     : 0
@@ -998,6 +1052,10 @@ const loadOfflineReplayFromQuery = async () => {
   rightPanelWidth.value = defaultRightPanelWidth()
   bottomStripHeight.value = defaultBottomStripHeight()
   syncReplayTimeline(initialTime, { forceFinal: initialTime >= duration.value - 0.04 })
+  const url = new URL(window.location.href)
+  url.searchParams.set('replaySpec', bundle.paths.spec)
+  url.searchParams.set('replayStartAt', String(initialTime))
+  window.history.replaceState(null, '', url)
 
   await nextTick()
   if (bundle.spec?.auto_play !== false) {
@@ -1060,6 +1118,74 @@ const isDeckLinkSession = computed(() => (
   mode.value === 'stream' &&
   currentSession.value?.video_path?.startsWith('decklink://')
 ))
+
+const timelineStart = computed(() => mode.value === 'stream' && !isSimulatorSession.value
+  ? historyRange.value.start : 0)
+const timelineEnd = computed(() => mode.value !== 'stream' ? duration.value
+  : isSimulatorSession.value ? currentTime.value
+    : historyRange.value.available ? Math.min(currentTime.value, historyRange.value.end) : 0)
+const offlineAnalysisRunning = computed(() => !replayMode.value && mode.value === 'local'
+  && (isProcessing.value || surgr1ProcessingStatus.value.running))
+const latestAnalysisPosition = computed(() => {
+  const latestStart = Math.max(0, ...summaries.value.map(s => Number(s.start_time) || 0))
+  return Math.min(Math.max(0, duration.value - .04), Math.max(latestStart, analysisPosition.value))
+})
+const returnPositionLabel = computed(() => {
+  if (mode.value === 'stream') return timeshiftActive.value ? t('control.returnLive') : ''
+  if (offlineAnalysisRunning.value) return t(followingAnalysis.value ? 'control.followingAnalysis' : 'control.returnAnalysis')
+  return summaries.value.length ? t('control.latestAnalysis') : ''
+})
+watch(latestAnalysisPosition, position => {
+  if (followingAnalysis.value && mode.value === 'local') seekLocalView(position)
+})
+watch(() => currentSession.value?.session_id, () => {
+  timeshiftActive.value = false
+  timeshiftPlaying.value = false
+  followingAnalysis.value = false
+  analysisPosition.value = 0
+})
+watch(() => [currentSession.value?.session_id, mode.value, replayMode.value], (_, __, onCleanup) => {
+  historyRange.value = { available: false, start: 0, end: 0 }
+  if (!currentSession.value || replayMode.value || mode.value !== 'stream' || isSimulatorSession.value) return
+  const sid = currentSession.value.session_id
+  const controller = new AbortController()
+  let busy = false
+  const poll = async () => {
+    if (busy) return
+    busy = true
+    try {
+      const { data } = await axios.get(`/api/analysis/history-range/${sid}`, { signal: controller.signal, timeout: 4000 })
+      if (!controller.signal.aborted) historyRange.value = data
+    } catch { /* Unavailable history must not interrupt live capture. */ }
+    finally { busy = false }
+  }
+  poll()
+  const timer = setInterval(poll, 3000)
+  onCleanup(() => { clearInterval(timer); controller.abort() })
+})
+const handleTimeshiftTime = time => {
+  timeshiftTime.value = Math.min(timelineEnd.value, Math.max(timelineStart.value, time))
+  if (time >= timelineEnd.value) timeshiftPlaying.value = false
+}
+const handleControlPlay = () => {
+  if (timeshiftActive.value) timeshiftPlaying.value = true
+  else { followingAnalysis.value = false; handlePlay() }
+}
+const handleControlPause = () => {
+  if (timeshiftActive.value) timeshiftPlaying.value = false
+  else { followingAnalysis.value = false; handlePause() }
+}
+const returnToPosition = () => {
+  if (mode.value === 'stream') {
+    timeshiftActive.value = false
+    timeshiftPlaying.value = false
+    if (!isPlaying.value && !streamEnded.value) handlePlay()
+    return
+  }
+  isPlaying.value = false
+  followingAnalysis.value = offlineAnalysisRunning.value
+  seekLocalView(latestAnalysisPosition.value)
+}
 
 const isCaptureSignalActive = (status) => (
   status?.status_code === 'streaming' || status?.status_code === 'valid_signal_black_frame'
@@ -1148,11 +1274,12 @@ const analyzedWindows = computed(() => {
 const summaryReady = computed(() => Boolean(
   currentSession.value
   && summaries.value.length > 0
-  && !isProcessing.value
+  && (replayMode.value || !isProcessing.value)
 ))
 
 // Mode selection handlers
 const handleModeSelect = (selectedMode) => {
+  if (replayMode.value || replayLoading.value) return
   mode.value = selectedMode
   if (selectedMode === 'stream') {
     currentView.value = 'stream-input'
@@ -1237,6 +1364,12 @@ const handleStreamConnect = ({ session, autoAnalyze }) => {
 }
 
 const goHome = () => {
+  replayLoading.value = false
+  replayError.value = ''
+  const url = new URL(window.location.href)
+  url.searchParams.delete('replaySpec')
+  url.searchParams.delete('replayStartAt')
+  window.history.replaceState(null, '', url)
   console.log('[goHome] Cleaning up and returning to home...')
   
   // 1. Abort all pending session requests immediately
@@ -1387,6 +1520,7 @@ const handleSam3TimeUpdate = (time) => {
 }
 
 const handlePlay = () => {
+  followingAnalysis.value = false
   if (loopWindow.value) {
     exitLoopMode(true)
     return
@@ -1396,7 +1530,7 @@ const handlePlay = () => {
     syncReplayTimeline(currentTime.value)
     return
   }
-  if (currentSession.value) {
+  if (currentSession.value && mode.value === 'stream') {
     if (mode.value === 'stream') {
       // Resume stream timer
       resumeStreamTimer()
@@ -1418,7 +1552,7 @@ const handlePause = () => {
     syncReplayTimeline(currentTime.value)
     return
   }
-  if (currentSession.value) {
+  if (currentSession.value && mode.value === 'stream') {
     if (mode.value === 'stream') {
       // Pause stream timer
       pauseStreamTimer()
@@ -1444,7 +1578,7 @@ const handleVideoEnded = () => {
   }
 }
 
-const handleSeek = (time) => {
+const seekLocalView = (time) => {
   if (loopWindow.value) stopDetachedPlaybackClock()
   currentTime.value = time
   livePlaybackTime.value = time
@@ -1457,12 +1591,20 @@ const handleSeek = (time) => {
     loopWindow.value = null
   }
   
-  if (currentSession.value && !replayMode.value) {
-    axios.post(`/api/video/control/${currentSession.value.session_id}`, {
-      action: 'seek',
-      position: time
-    })
+}
+
+const handleSeek = (time) => {
+  if (!Number.isFinite(time)) return
+  followingAnalysis.value = false
+  if (mode.value === 'stream') {
+    if (timelineEnd.value <= timelineStart.value) return
+    timeshiftTime.value = Math.min(timelineEnd.value, Math.max(timelineStart.value, time))
+    if (!timeshiftActive.value) timeshiftPlaying.value = isPlaying.value
+    timeshiftActive.value = true
+    timeshiftSeekNonce.value++
+    return
   }
+  seekLocalView(Math.max(0, Math.min(duration.value, time)))
 }
 
 // Exit loop playback mode
@@ -1716,6 +1858,9 @@ const startSurgR1StatusPolling = (sessionId) => {
       })
       surgr1ProcessingStatus.value.running = response.data.is_running
       surgr1ProcessingStatus.value.framesAnalyzed = response.data.frames_analyzed
+      if (currentSession.value?.session_id === sessionId && mode.value === 'local' && !replayMode.value) {
+        analysisPosition.value = Math.max(analysisPosition.value, Number(response.data.latest_timestamp) || 0)
+      }
     } catch (error) {
       if (axios.isCancel(error) || error.name === 'AbortError') {
         console.log('[SurgR1StatusPolling] Request cancelled')
@@ -2060,51 +2205,29 @@ const summaryVisibilityFlags = (summary) => {
   const status = String(visibility.status || '').toLowerCase()
   const confidence = Number(visibility.confidence || 0)
   const trusted = !confidence || confidence >= 0.35
+  const structured = Object.keys(visibility).length > 0
+  const outOfBody = trusted && (Boolean(visibility.out_of_body || visibility.outside_body)
+    || status === 'out_of_body' || (!structured && OUT_OF_BODY_RE.test(text)))
   return {
-    fogActive: trusted && (
+    fogActive: trusted && !outOfBody && (
       Boolean(visibility.fog)
-      || ['foggy', 'blurred', 'blocked', 'smoke', 'smoky', 'hazy'].includes(status)
-      || (FOG_ACTIVE_RE.test(text) && !FOG_RESOLVED_RE.test(text))
+      || ['foggy', 'smoke', 'smoky', 'hazy'].includes(status)
+      || (!structured && FOG_ACTIVE_RE.test(text) && !FOG_RESOLVED_RE.test(text))
     ),
     fogResolved: trusted && (
       Boolean(visibility.fog_cleared || visibility.cleared || visibility.resolved)
       || ['clear_after_fog', 'fog_cleared'].includes(status)
       || FOG_RESOLVED_RE.test(text)
     ),
-    outOfBody: trusted && (
-      Boolean(visibility.out_of_body || visibility.outside_body)
-      || status === 'out_of_body'
-      || OUT_OF_BODY_RE.test(text)
-    ),
+    outOfBody,
+    clearObserved: status === 'clear' && confidence >= .75 && !visibility.fog && !outOfBody,
     confidence: confidence || null,
   }
 }
 
 const fogStatusNode = computed(() => {
-  let fogActive = false
-  let firstActive = null
-  let latestActive = null
-  let latestResolved = null
-  const windowIds = []
-
-  summaries.value
-    .slice()
-    .sort((a, b) => Number(a.window_id ?? 0) - Number(b.window_id ?? 0))
-    .forEach((summary) => {
-      const flags = summaryVisibilityFlags(summary)
-      const wid = Number(summary.window_id)
-      if (flags.fogActive) {
-        if (!fogActive) firstActive = summary
-        fogActive = true
-        latestActive = summary
-        if (Number.isFinite(wid)) windowIds.push(wid)
-      }
-      if (flags.fogResolved) {
-        latestResolved = summary
-        fogActive = false
-        if (Number.isFinite(wid)) windowIds.push(wid)
-      }
-    })
+  const { fogActive, firstActive, latestActive, latestResolved, windowIds } =
+    summarizeFogTimeline(summaries.value, summaryVisibilityFlags)
 
   if (!firstActive && !latestResolved) return null
   const latest = fogActive ? latestActive : latestResolved
@@ -2176,6 +2299,8 @@ const setBottomViewMode = (modeName) => {
   if (bottomViewMode.value === 'events') {
     resetEventNodeScroll()
     scheduleEventNodesRefresh(150)
+  } else if (replayMode.value) {
+    sortedSummaries.value.forEach(summary => enqueueBottomThumbnail(summary))
   }
 }
 
@@ -2300,6 +2425,14 @@ const eventNodeThumbLoading = (node) => {
   const related = relatedSummariesForEventNode(node)
   return related.some(summary => bottomThumbLoading[summary.window_id] || bottomThumbQueued.has(summary.window_id))
 }
+
+watch(() => sortedEventNodes.value.map(node => eventNodeThumbnailSummary(node)?.window_id), (ids) => {
+  if (bottomViewMode.value !== 'events') return
+  [...new Set(ids)].reverse().forEach(wid => {
+    const summary = summaries.value.find(item => item.window_id === wid)
+    if (summary) enqueueBottomThumbnail(summary, true)
+  })
+}, { flush: 'post' })
 
 const handleEventNodeThumbError = (node, event = null) => {
   const summary = eventNodeThumbnailSummary(node)
@@ -3214,14 +3347,16 @@ const handleBeforeUnload = () => {
 }
 
 onMounted(async () => {
-  // 首先获取配置
-  await fetchConfig()
+  // A local replay must also open when analysis services are unavailable.
+  fetchConfig()
 
   try {
     await loadOfflineReplayFromQuery()
   } catch (error) {
     console.error('[Replay] Startup failed:', error)
-    alert(`离线分析回放加载失败: ${error.message}`)
+    replayError.value = `离线分析回放加载失败: ${error.message}`
+  } finally {
+    replayLoading.value = false
   }
   
   checkAnalysisServices()
@@ -3277,6 +3412,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.replay-load-status { margin: auto; max-width: 760px; padding: 24px; overflow-wrap: anywhere; }
 /* Main application layout */
 .app-container {
   display: flex;

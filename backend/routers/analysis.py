@@ -46,7 +46,7 @@ from ..services.clip_review import (
     CLIP_REVIEW_PROMPT, validate_clip_review, scissors_morphology_confirmed,
     reviewed_instruments, review_rejects_active_application,
 )
-from ..services.local_visual_prompt import LOCAL_VISUAL_PROMPT, VISIBILITY_REVIEW_PROMPT, validate_visibility_review
+from ..services.local_visual_prompt import build_local_visual_prompt, VISIBILITY_REVIEW_PROMPT, validate_visibility_review, scene_observations_need_review
 from ..services.local_video_source import PacedVideoCapture, resolve_video_source, wrap_capture_for_layout
 from ..services.video_export_service import get_video_export_service, export_tasks
 from ..config import settings, ANALYSIS_SYSTEM_PROMPT
@@ -1190,7 +1190,7 @@ def _suppress_unsupported_tool_actions(text: str, visual: Dict[str, Any], expert
         return text
     clauses = re.split(r"[，,。；;]+", text)
     kept = [part.strip() for part in clauses if part.strip() and not re.search(
-        r"电凝钩|电凝钳|抓钳|剪刀|施夹器|钛夹钳|冲吸器|吸引器|器械", part)]
+        r"电凝钩|电凝钳|抓钳|剪刀|施夹器|钛夹钳|冲吸器|吸引器|器械|(?:仅见|可见)?其(?:在|正|沿|对)", part)]
     if kept and not all(re.match(r"当前处于|CVS", part) for part in kept):
         return "。".join(kept) + "。"
     return "当前画面为术野观察。"
@@ -1628,7 +1628,11 @@ LATE_WORKFLOW_PHASES = {
 
 def _late_workflow_prerequisites_met(state: Dict[str, Any]) -> bool:
     reached = state.get("reached_phases") or set()
-    return "ClippingCutting" in reached and "GallbladderDissection" in reached
+    return bool(state.get("packaging_seen")) or (
+        "GallbladderDissection" in reached and (
+            "ClippingCutting" in reached or state.get("history_prefix_unknown")
+        )
+    )
 
 
 def _stable_prior_phase(state: Dict[str, Any], fallback: str = "Unknown") -> str:
@@ -1800,6 +1804,7 @@ def _build_surgical_sequence_state(
         "post_packaging_reentry": False,
         "post_retrieval_review": False,
         "formal_started": False,
+        "history_prefix_unknown": False,
     }
     rows = []
     for summary in summaries or []:
@@ -1827,9 +1832,16 @@ def _build_surgical_sequence_state(
         # the required clipping and gallbladder-dissection phases were seen.
         if OUT_OF_BODY_RE.search(text):
             phase = _stable_prior_phase(state)
-        if phase == "GallbladderDissection" and "ClippingCutting" not in state["reached_phases"]:
+        elif focused_bag_inside and not state.get("post_retrieval_review"):
+            # A recording may start mid-procedure. Retain directly reviewed
+            # bag evidence without inventing unseen clipping or CVS milestones.
+            if not (phase == "GallbladderRetraction" and state["packaging_seen"]):
+                phase = "GallbladderPackaging"
+        if phase == "GallbladderDissection" and not state["reached_phases"]:
+            state["history_prefix_unknown"] = True
+        if phase == "GallbladderDissection" and "ClippingCutting" not in state["reached_phases"] and not state["history_prefix_unknown"]:
             phase = _stable_prior_phase(state)
-        if phase in LATE_WORKFLOW_PHASES and not _late_workflow_prerequisites_met(state):
+        if phase in LATE_WORKFLOW_PHASES and not _late_workflow_prerequisites_met(state) and not focused_bag_inside:
             phase = _stable_prior_phase(state)
         order = SEQUENCE_PHASE_ORDER.get(phase, -1)
         if 0 <= order < int(state.get("max_phase_order", -1)):
@@ -1843,8 +1855,8 @@ def _build_surgical_sequence_state(
         if order >= SEQUENCE_PHASE_ORDER["CalotTriangleDissection"]:
             state["formal_started"] = True
         if (
-            _late_workflow_prerequisites_met(state)
-            and (phase == "GallbladderPackaging" or focused_bag_inside)
+            (focused_bag_inside and not OUT_OF_BODY_RE.search(text))
+            or (_late_workflow_prerequisites_met(state) and phase == "GallbladderPackaging")
         ):
             state["packaging_seen"] = True
             state["packaging_windows"] += 1
@@ -1880,6 +1892,7 @@ def _sequence_state_meta(state: Dict[str, Any], applied_rules: Optional[List[str
         "packaging_seen": bool(state.get("packaging_seen")),
         "post_packaging_reentry": bool(state.get("post_packaging_reentry")),
         "post_retrieval_review": bool(state.get("post_retrieval_review")),
+        "history_prefix_unknown": bool(state.get("history_prefix_unknown")),
         "applied_rules": applied_rules or [],
     }
 
@@ -1984,10 +1997,21 @@ def _apply_surgical_sequence_rules(
     )
 
     if visibility_flags["out_of_body"]:
-        prior_phase = _stable_prior_phase(prior_state, phase)
-        if prior_phase != "Unknown" and phase != prior_phase:
+        prior_phase = _stable_prior_phase(prior_state)
+        if phase != prior_phase:
             phase = prior_phase
             applied.append("scope_exit_preserves_surgical_phase")
+
+    if (
+        focused_bag_inside
+        and not visibility_flags["out_of_body"]
+        and not prior_state.get("post_retrieval_review")
+        and not (phase == "GallbladderRetraction" and prior_state.get("packaging_seen"))
+        and phase != "GallbladderPackaging"
+    ):
+        phase = "GallbladderPackaging"
+        out = _replace_current_phase_text(out, phase)
+        applied.append("focused_bag_starts_packaging_phase")
 
     if phase == "CalotTriangleDissection" and _focused_clip_action_confirmed(visual):
         phase = "ClippingCutting"
@@ -2008,13 +2032,13 @@ def _apply_surgical_sequence_rules(
 
     if phase == "GallbladderDissection" and "ClippingCutting" not in (
         prior_state.get("reached_phases") or set()
-    ):
+    ) and not prior_state.get("history_prefix_unknown") and prior_state.get("formal_started"):
         phase = _stable_prior_phase(prior_state, "CalotTriangleDissection")
         if not visibility_flags["out_of_body"]:
             out = _replace_current_phase_text(out, phase)
         applied.append("dissection_requires_clipping_phase")
 
-    if phase in LATE_WORKFLOW_PHASES and not _late_workflow_prerequisites_met(prior_state):
+    if phase in LATE_WORKFLOW_PHASES and not _late_workflow_prerequisites_met(prior_state) and not focused_bag_inside:
         phase = _stable_prior_phase(prior_state, "CalotTriangleDissection")
         if not visibility_flags["out_of_body"]:
             for pattern in (
@@ -2217,7 +2241,12 @@ def _apply_surgical_sequence_rules(
         if re.fullmatch(r"当前处于胆囊分离[，,。]?", out.strip()):
             out = "当前处于胆囊分离，画面以胆囊床术野观察为主。"
 
-    if phase == "GallbladderPackaging":
+    frame_observations = isinstance(visual.get("observations"), list)
+    if frame_observations:
+        # A phase is not evidence of an action. Preserve the image-grounded
+        # narrative instead of inventing packaging/cleaning/retrieval prose.
+        pass
+    elif phase == "GallbladderPackaging":
         normalized_packaging = _normalize_packaging_summary(out, visual)
         if normalized_packaging and normalized_packaging != out:
             out = normalized_packaging
@@ -4082,8 +4111,7 @@ async def get_surgr1_continuous_status(
     
     is_running = surgr1_continuous_flags.get(session_id, False)
     
-    # Get count of analyzed frames
-    frames = get_frames_by_session(db, session["session_id"])
+    progress = get_mysql_service().get_analysis_progress(session["session_id"])
     
     # Get SAM3 streaming status
     sam3_info = sam3_streaming_sessions.get(session_id, {})
@@ -4091,7 +4119,7 @@ async def get_surgr1_continuous_status(
     return {
         "session_id": session_id,
         "is_running": is_running,
-        "frames_analyzed": len(frames) if frames else 0,
+        **progress,
         "sam3_enabled": session_id in sam3_streaming_sessions,
         "sam3_frames_processed": sam3_info.get("frame_count", 0)
     }
@@ -5032,13 +5060,8 @@ async def glm_summarization_task(
                 vlm_client = None
         except Exception as e:
             logger.warning(f"[GLM Task] VLM unavailable; using expert-only Stage 1: {e}")
-        processor_source = resolve_video_source(video_path).source
-        
-        processor = VideoProcessor(
-            video_path=processor_source,
-            window_duration=settings.WINDOW_DURATION,
-            sample_interval=settings.SAMPLE_INTERVAL
-        )
+        # Summarization consumes saved frames below. Opening the source again
+        # is unnecessary and fails for capture-card URIs such as decklink://.
         
         # Wait for SurgR1 results if none exist yet (up to 30 seconds).
         # In live mode we do not gate Stage 1 on R1: frame_capture_service already
@@ -5932,7 +5955,10 @@ async def glm_summarization_task(
                         # The external-provider prompt remains unchanged. Local
                         # models otherwise tend to copy its all-false example.
                         if provider in {"glm", "local"}:
-                            question = LOCAL_VISUAL_PROMPT
+                            question = build_local_visual_prompt(expert_pack, phase_context)
+                            # Leave room for observations and the full fact schema;
+                            # truncated JSON must not become default-negative facts.
+                            max_tokens = max(max_tokens, 1400)
 
                         def _openai_image_url(image: Image.Image) -> str:
                             im = _fit_image_for_vlm(image, max_image_edge)
@@ -6180,6 +6206,11 @@ async def glm_summarization_task(
                                 canonical = aliases.get(key, key)
                                 if canonical in base and isinstance(value, dict):
                                     base[canonical].update(value)
+                            if isinstance(visual.get("observations"), list):
+                                base["observations"] = [
+                                    item for item in visual["observations"][:16]
+                                    if isinstance(item, dict)
+                                ]
                             if is_preparation_context:
                                 base["generic_clip"] = {"visible": False, "placed": False, "count": 0, "confidence": 0.0}
                                 base["hemolok"] = {"visible": False, "placed": False, "count": 0, "confidence": 0.0}
@@ -6716,6 +6747,8 @@ async def glm_summarization_task(
                                     "confidence": _safe_float(parsed.get("confidence"), 0.0),
                                     "count": int(parsed.get("count") or 0),
                                     "independent_from_instrument": bool(parsed.get("independent_from_instrument", False)),
+                                    "loaded_clip_visible": parsed.get("loaded_clip_visible") is True,
+                                    "clip_frame_indices": parsed.get("clip_frame_indices"),
                                     "clamped_on_tissue": bool(parsed.get("clamped_on_tissue", False)),
                                     "applier_active": bool(parsed.get("applier_active", False)),
                                     "scissors_cutting": bool(parsed.get("scissors_cutting", False)),
@@ -6726,7 +6759,7 @@ async def glm_summarization_task(
                                     "model": data.get("model") or model,
                                     "images": len(review_images),
                                     "image_selection": image_selection,
-                                }, primary=visual)
+                                }, primary=visual, experts=expert_pack)
                             except Exception as exc:
                                 return {"success": False, "error": f"{type(exc).__name__}: {exc}"[:500], "model": model}
 
@@ -7174,6 +7207,8 @@ async def glm_summarization_task(
                             if not _should_run_visibility_vlm_review(visual):
                                 return visual
                             review = await _run_visibility_vlm_review()
+                            if provider in {"glm", "local"} and review.get("success"):
+                                review = validate_visibility_review(review, int(review.get("images") or 3), visual)
                             visual["visibility_secondary_review"] = review
                             if not review.get("success"):
                                 logger.warning(
@@ -7233,6 +7268,16 @@ async def glm_summarization_task(
                                     "external_call_count": int(result.get("_external_call_count") or 0),
                                 }
                             parsed = _parse_json_object(text)
+                            if source_provider in {"glm", "local"} and (
+                                not isinstance(parsed, dict)
+                                or not isinstance(parsed.get("summary"), str)
+                                or not parsed["summary"].strip()
+                                or not isinstance(parsed.get("visual"), dict)
+                                or not parsed["visual"]
+                            ):
+                                return {"success": False, "error": "incomplete_local_visual_result",
+                                        "model": result.get("model"), "provider": source_provider,
+                                        "external_call_count": int(result.get("_external_call_count") or 0)}
                             visual = _ensure_visual_defaults((parsed or {}).get("visual") if parsed else None)
                             if source_provider not in {"glm", "local"} and phase_context not in {
                                 "CalotTriangleDissection",
@@ -7494,7 +7539,7 @@ async def glm_summarization_task(
                                 window_id=window_id,
                                 expert_pack=expert_pack_base,
                             )
-                            if not open_vlm_hint:
+                            if not open_vlm_hint or open_vlm_hint.get("success") is False:
                                 return
 
                             current_summary = stage1_summary_text
@@ -9163,7 +9208,7 @@ def _visibility_flags_from_visual(visual: Any) -> Dict[str, Any]:
     confidence = _safe_float(visibility.get("confidence"), 0.0)
     fog_active = bool(
         visibility.get("fog")
-        or status in {"foggy", "blurred", "blocked", "smoke", "smoky", "hazy"}
+        or status in {"foggy", "smoke", "smoky", "hazy"}
     )
     fog_resolved = bool(
         visibility.get("fog_cleared")
@@ -9176,6 +9221,8 @@ def _visibility_flags_from_visual(visual: Any) -> Dict[str, Any]:
         or visibility.get("outside_body")
         or status == "out_of_body"
     )
+    if out_of_body:
+        fog_active = False
     if confidence and confidence < 0.35:
         fog_active = False
         fog_resolved = False
@@ -9196,6 +9243,10 @@ def _should_review_visibility_candidate(
     """Review plausible scope exits in every surgical phase, not only retrieval."""
     flags = _visibility_flags_from_visual(visual or {})
     cue = local_cue or {}
+    # These are review triggers, not scene labels: verify contradictory facts
+    # against the images instead of treating "clear" as "inside the abdomen".
+    if scene_observations_need_review(visual):
+        return True
     visual_exit_claim = flags["out_of_body"]
     candidate = bool(
         visual_exit_claim
@@ -13329,6 +13380,14 @@ async def get_frames_in_range(
         "count": len(frames_in_range),
         "frames": sorted(frames_in_range, key=lambda x: x.get("timestamp", 0))
     }
+
+
+@router.get("/history-range/{session_id}")
+async def get_history_range(session_id: str):
+    session = get_mysql_service().get_video_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    return get_frame_storage_service().available_range(session.get("storage_path"))
 
 
 @router.get("/frames-batch/{session_id}")

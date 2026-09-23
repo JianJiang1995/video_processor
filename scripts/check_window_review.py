@@ -50,6 +50,14 @@ async def main(args):
         window = subprocess.check_output([
             "xdotool", "search", "--onlyvisible", "--name", "Surg-R1 手术助手",
         ], text=True).splitlines()[0]
+        geometry = dict(line.split("=", 1) for line in subprocess.check_output(
+            ["xdotool", "getwindowgeometry", "--shell", window], text=True).splitlines() if "=" in line)
+        scale = await page.evaluate("devicePixelRatio")
+        # Electron can retain a CDP viewport larger than its native client area
+        # on HiDPI desktops. Match CSS pixels to the actual recording surface.
+        await page.set_viewport_size({"width": int(int(geometry["WIDTH"]) / scale),
+                                      "height": int(int(geometry["HEIGHT"]) / scale)})
+        await asyncio.sleep(.2)
         log = (args.output / "recorder.log").open("w")
         recorder = subprocess.Popen([
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
@@ -70,6 +78,8 @@ async def main(args):
             await modal.wait_for()
             await page.wait_for_function("document.querySelector('.review-dialog video')?.readyState >= 2")
             original = await modal.locator(".review-analysis-record p").inner_text()
+            result["phase_label"] = await modal.locator(".review-phase").inner_text()
+            assert result["phase_label"], "Missing review phase label"
             await page.screenshot(path=str(args.output / "grid_review_before.png"))
             loop_samples = []
             for _ in range(20):
@@ -99,6 +109,12 @@ async def main(args):
             rows = (await api.get(f"/api/analysis/summaries/{sid}")).json()
             saved = next(row for row in rows if row["window_id"] == updated["window_id"])
             assert saved["summary"] == updated["summary"]
+            result["displayed_summary"] = await modal.locator(".review-analysis-record p").inner_text()
+            expected_display = await page.evaluate("""async text => {
+              const { formatWindowNarrative } = await import('/src/utils/windowNarrative.js');
+              return formatWindowNarrative(text);
+            }""", updated["summary"])
+            assert result["displayed_summary"] == expected_display
 
             question = "这个片段中看到了什么？请只依据所选片段记录回答，并附上对应时间戳。"
             await modal.locator(".chat-input").fill(question)
@@ -143,18 +159,14 @@ async def main(args):
             assert (await pending.value).status == 200
             await modal.get_by_text("已通过本地模型重新分析", exact=True).wait_for()
             result["close_during_review"] = True
+            result["review_phase_label"] = await modal.locator(".review-phase").inner_text()
 
-            original_viewport = page.viewport_size
-            await page.set_viewport_size({"width": 390, "height": 844})
-            await asyncio.sleep(.5)
-            await page.screenshot(path=str(args.output / "mobile_review.png"))
-            result["mobile"] = await modal.evaluate("""el => {
-              const r=el.getBoundingClientRect(), i=el.querySelector('.chat-input').getBoundingClientRect();
-              return {overflow:el.scrollWidth>el.clientWidth+1, inputVisible:i.x>=r.x && i.right<=r.right && i.bottom<=r.bottom};
-            }""")
-            await page.set_viewport_size(original_viewport or {"width": 2048, "height": 1125})
-            assert not result["mobile"]["overflow"] and result["mobile"]["inputVisible"]
             await modal.get_by_role("button", name="关闭回看", exact=True).click()
+            result["grid_phase_label"] = await page.locator(".window-card").nth(args.window_index).locator(".card-phase").inner_text()
+            # The phase expert may finish between opening and reviewing the
+            # window. Compare both views after the update, not the old snapshot.
+            assert result["grid_phase_label"] == result["review_phase_label"]
+            await page.screenshot(path=str(args.output / "grid_after_review.png"))
             await page.locator(".overview-layer .back-btn").click()
             await asyncio.sleep(2)
             after = await main_video.evaluate("v=>({time:v.currentTime,paused:v.paused,src:v.currentSrc})")
@@ -167,6 +179,27 @@ async def main(args):
             result.update(main_before=before, main_after=after, elapsed=elapsed,
                           loop_samples=loop_samples, playback_mutations=mutations, page_errors=errors)
             await page.screenshot(path=str(args.output / "main_after_review.png"))
+            # x11grab fixes dimensions at startup. Responsive checks resize the
+            # actual Electron window, so run them after finalizing the recording.
+            if recorder.poll() is None:
+                recorder.send_signal(signal.SIGINT)
+                await asyncio.to_thread(recorder.wait, 30)
+            original_viewport = page.viewport_size or await page.evaluate(
+                '({width: innerWidth, height: innerHeight})')
+            await page.locator(".bcs-overview-btn").click()
+            await page.locator(".window-card").nth(args.window_index).click()
+            await page.set_viewport_size({"width": 390, "height": 844})
+            await asyncio.sleep(.5)
+            await page.screenshot(path=str(args.output / "mobile_review.png"))
+            result["mobile"] = await modal.evaluate("""el => {
+              const r=el.getBoundingClientRect(), i=el.querySelector('.chat-input').getBoundingClientRect();
+              return {overflow:el.scrollWidth>el.clientWidth+1, inputVisible:i.x>=r.x && i.right<=r.right && i.bottom<=r.bottom};
+            }""")
+            await page.set_viewport_size(original_viewport)
+            assert not result["mobile"]["overflow"] and result["mobile"]["inputVisible"]
+            await modal.get_by_role("button", name="关闭回看", exact=True).click()
+            await page.locator(".overview-layer .back-btn").click()
+            assert not errors, errors
             print(json.dumps({"session_id": sid, "reanalysis_seconds": result["reanalysis_seconds"],
                               "main_advanced": after["time"] - before["time"], "elapsed": elapsed,
                               "result": "PASS"}, ensure_ascii=False), flush=True)

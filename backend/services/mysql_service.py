@@ -560,7 +560,7 @@ class MySQLService:
                 session.flush()
                 return result.id
     
-    def save_window_review(self, session_id, window_id, summary, visual, metadata):
+    def save_window_review(self, session_id, window_id, summary, visual, metadata, phase=None):
         with self.get_session() as session:
             row = session.query(AnalysisResult).filter(
                 AnalysisResult.session_id == session_id,
@@ -572,7 +572,9 @@ class MySQLService:
             others = json.loads(row.others_data) if row.others_data else {}
             history = list(others.get("review_history") or [])
             history.append({"summary": row.glm_summary,
+                            "phase": row.surgical_phase,
                             "visual": others.get("visual_gpt"),
+                            "open_vlm": (others.get("experts") or {}).get("open_vlm"),
                             "previous_review": others.get("manual_review"),
                             "replaced_at": metadata["completed_at"]})
             others.update(stage=3, manual_review=metadata, review_history=history,
@@ -583,9 +585,24 @@ class MySQLService:
                                    "model": metadata["model"]}
             others["experts"] = experts
             row.glm_summary = summary
+            if phase is not None:
+                row.surgical_phase = phase
             row.others_data = json.dumps(others, ensure_ascii=False)
             session.flush()
             return others
+
+    def get_analysis_progress(self, session_id: str) -> Dict[str, Any]:
+        """A source-time cursor over saved results, without fetching result text."""
+        with self.get_session() as session:
+            rows = session.query(
+                AnalysisResult.analysis_type, func.count(AnalysisResult.id),
+                func.max(AnalysisResult.timestamp), func.max(AnalysisResult.window_start),
+            ).filter(AnalysisResult.session_id == session_id).group_by(AnalysisResult.analysis_type).all()
+            return {
+                "frames_analyzed": sum(count for kind, count, _, _ in rows if kind == "frame"),
+                "latest_timestamp": max((max(float(ts or 0), float(start or 0))
+                                         for _, _, ts, start in rows), default=0),
+            }
 
     def get_analyses(
         self,
@@ -790,7 +807,7 @@ class MySQLService:
         with self.get_session() as session:
             results = session.query(ChatHistory).filter(
                 ChatHistory.session_id == session_id
-            ).order_by(ChatHistory.created_at.desc()).limit(limit).all()
+            ).order_by(ChatHistory.created_at.desc(), ChatHistory.id.desc()).limit(limit).all()
             
             return [
                 {

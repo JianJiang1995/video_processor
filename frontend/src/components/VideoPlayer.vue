@@ -701,11 +701,12 @@ watch(() => props.isPaused, async (paused) => {
 // Time reports flow from video to UI. Only explicit commands may seek back.
 watch(() => props.currentTime, (newTime) => {
   if (!nativeMetadataReady.value) {
-    pendingInitialSeek.value = Math.max(pendingInitialSeek.value, Number(newTime || 0))
+    pendingInitialSeek.value = Math.max(0, Number(newTime || 0))
   }
 })
 
 watch(() => props.seekNonce, () => {
+  pendingInitialSeek.value = Math.max(0, Number(props.currentTime || 0))
   if (videoRef.value && nativeMetadataReady.value) {
     videoRef.value.currentTime = Math.max(0, Number(props.currentTime || 0))
   }
@@ -777,7 +778,7 @@ const onTimeUpdate = () => {
 const onLoadedMetadata = () => {
   isLoading.value = false
   if (videoRef.value) {
-    const targetTime = Math.max(pendingInitialSeek.value, Number(props.currentTime || 0))
+    const targetTime = pendingInitialSeek.value
     if (targetTime > 0.04 && Math.abs(videoRef.value.currentTime - targetTime) > 0.08) {
       videoRef.value.currentTime = targetTime
     }

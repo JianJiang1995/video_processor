@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -25,7 +26,9 @@ async def main(args):
             page.on('pageerror', lambda error: errors.append(str(error)))
             await page.reload()
             await page.get_by_text('手术室采集卡模拟源', exact=True).click()
-            await page.get_by_text('是，左三右一', exact=True).click()
+            if getattr(args, 'video', None):
+                await page.locator('#simulator-path').fill(str(args.video.resolve()))
+            await page.get_by_text('是，左三右一' if args.layout == 'quad_right' else '否，单画面', exact=True).click()
             await page.bring_to_front()
             window = subprocess.check_output(
                 ['xdotool', 'search', '--onlyvisible', '--name', 'Surg-R1 手术助手'],
@@ -58,7 +61,8 @@ async def main(args):
                     print(json.dumps(metadata, ensure_ascii=False), flush=True)
                     revisions = {}
                     last_snapshot = -60
-                    while time.monotonic() - start < duration + args.tail + 60:
+                    completed = False
+                    while time.monotonic() - start < duration + args.tail + 300:
                         elapsed = time.monotonic() - start
                         if recorder.poll() is not None:
                             raise RuntimeError(f'recorder stopped early: {recorder.returncode}')
@@ -92,12 +96,18 @@ async def main(args):
                             print(json.dumps({'elapsed':round(elapsed), 'video':ui['time'],
                                   'windows':len(rows), 'refined':sum(w['vlm_complete'] for w in telemetry['windows'])}), flush=True)
                         if ui.get('ended') and elapsed >= duration + args.tail and pending.get('settled'):
+                            completed = True
                             break
                         await asyncio.sleep(5)
                     rows = (await api.get(f'/api/analysis/summaries/{sid}')).json()
                     (args.output / 'summaries.json').write_text(json.dumps(rows, ensure_ascii=False, indent=2))
                     (args.output / 'browser_errors.json').write_text(json.dumps(errors, ensure_ascii=False, indent=2))
                     await page.screenshot(path=str(args.output / 'final.png'))
+                    check = {'ended': completed, 'windows': len(rows), 'expected_windows': math.ceil(duration / 5),
+                             'pending': pending, 'telemetry': telemetry, 'ui': ui}
+                    (args.output / 'completion.json').write_text(json.dumps(check, ensure_ascii=False, indent=2))
+                    if not completed or len(rows) != math.ceil(duration / 5):
+                        raise RuntimeError(f'Incomplete run: {check}')
                     print(f'Finished session {sid}, {len(rows)} windows', flush=True)
                 finally:
                     if recorder.poll() is None:
@@ -112,4 +122,6 @@ if __name__ == '__main__':
     parser.add_argument('--backend', default='http://127.0.0.1:8001')
     parser.add_argument('--display', default=':1')
     parser.add_argument('--tail', type=float, default=45)
+    parser.add_argument('--video', type=Path)
+    parser.add_argument('--layout', choices=['full', 'quad_right'], default='quad_right')
     asyncio.run(main(parser.parse_args()))

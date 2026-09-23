@@ -40,6 +40,8 @@
       </div>
     </div>
 
+    <ReplayImportButton @begin="cancelAutoOpen" @loaded="$emit('replay', $event)" />
+
     <!-- Recent Sessions -->
     <div class="recent-sessions" v-if="recentSessions.length > 0">
       <div class="sessions-header">
@@ -95,14 +97,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { useI18n } from '@/i18n'
+import ReplayImportButton from './ReplayImportButton.vue'
 
 const { t } = useI18n()
 
-const emit = defineEmits(['select-mode', 'resume-session'])
+const emit = defineEmits(['select-mode', 'resume-session', 'replay'])
 const autoOpenStream = import.meta.env.VITE_AUTO_OPEN_STREAM === '1'
+let autoOpenTimer = null
+const cancelAutoOpen = () => clearTimeout(autoOpenTimer)
 
 const recentSessions = ref([])
 
@@ -114,10 +119,12 @@ const isDeleting = ref(false)
 const pendingDeleteSession = ref(null)  // null = delete all, session = delete single
 
 const selectMode = (mode) => {
+  cancelAutoOpen()
   emit('select-mode', mode)
 }
 
 const resumeSession = (session) => {
+  cancelAutoOpen()
   emit('resume-session', session)
 }
 
@@ -180,12 +187,13 @@ const confirmDelete = async () => {
 
 onMounted(() => {
   loadSessions()
-  if (autoOpenStream) {
-    setTimeout(() => {
+  if (autoOpenStream && !new URLSearchParams(window.location.search).has('replaySpec')) {
+    autoOpenTimer = setTimeout(() => {
       selectMode('stream')
     }, 250)
   }
 })
+onUnmounted(cancelAutoOpen)
 </script>
 
 <style scoped>

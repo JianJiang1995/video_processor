@@ -52,9 +52,10 @@
                       {{ t(reviewState(summary).status === 'pending' ? 'review.analyzing' : 'review.reanalyze') }}
                     </button>
                   </div>
-                  <p>{{ summary.summary || t('review.noAnalysis') }}</p>
+                  <div class="review-phase">{{ windowPhaseLabel(summary, language) }}</div>
+                  <p>{{ formatWindowNarrative(summary.summary) || t('review.noAnalysis') }}</p>
                   <div v-if="reviewState(summary).error" class="review-result error" role="alert">{{ t(reviewState(summary).error) }}</div>
-                  <div v-else-if="reviewState(summary).status === 'done' || summary.others?.manual_review" class="review-result" role="status">{{ t('review.updated') }}</div>
+                  <div v-else-if="reviewState(summary).status === 'done' || summary.others?.manual_review" class="review-result" role="status">{{ t(summary.others?.manual_review?.kind === 'offline_narrative_reconciliation' ? 'review.reconciled' : 'review.updated') }}</div>
                 </article>
                 <p v-if="!selectedSummaries.length">{{ t('review.noAnalysis') }}</p>
               </div>
@@ -83,6 +84,7 @@ import VideoPlayer from './VideoPlayer.vue'
 import ChatPanel from './ChatPanel.vue'
 import { formatVideoTime } from '@/utils/chatTimestamps'
 import { useI18n } from '@/i18n'
+import { formatWindowNarrative, windowPhaseLabel } from '../utils/windowNarrative.js'
 
 const props = defineProps({
   session: Object,
@@ -94,7 +96,7 @@ const props = defineProps({
   reviewBusy: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close', 'review', 'reanalyze'])
-const { t } = useI18n()
+const { t, language } = useI18n()
 const dialog = ref(null)
 const closeButton = ref(null)
 const previousFocus = document.activeElement
@@ -173,6 +175,7 @@ onUnmounted(() => {
 .review-analysis-record { padding: 12px 0; border-bottom: 1px solid var(--border-subtle); }
 .review-analysis-record:last-child { border-bottom: 0; }
 .review-record-meta { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
+.review-phase { font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
 .review-record-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .review-reanalyze { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--border-subtle); border-radius: 4px; background: var(--bg-tertiary); color: var(--text-primary); font-size: 12px; cursor: pointer; }
 .review-reanalyze:disabled { opacity: .55; cursor: wait; }

@@ -605,7 +605,7 @@ async def get_chat_history(session_id: str, limit: int = 50):
     """Get chat history for a session from MySQL"""
     try:
         mysql = get_mysql_service()
-        history = mysql.get_conversation_history(session_id, limit)
+        history = mysql.get_chat_history(session_id, limit)
         return {
             "session_id": session_id,
             "messages": history,
@@ -688,7 +688,7 @@ async def clear_chat_history(session_id: str):
     """Clear chat history for a session"""
     try:
         mysql = get_mysql_service()
-        mysql.clear_conversation(session_id)
+        mysql.clear_chat(session_id)
         
         if session_id in _conversation_sessions:
             del _conversation_sessions[session_id]
@@ -1074,4 +1074,3 @@ async def get_glm_summaries(
     except Exception as e:
         logger.error(f"Failed to get GLM summaries: {e}")
         raise HTTPException(500, str(e))
-

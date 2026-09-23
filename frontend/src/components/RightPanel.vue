@@ -66,6 +66,7 @@
                 </span>
                 <span class="chapter-count">{{ windowLabel(ch.windows[0].window_id + 1) }}</span>
               </div>
+              <div class="chapter-phase">{{ ch.phaseLabel }}</div>
               <div class="latest-text">{{ ch.mergedSummary }}</div>
             </div>
           </div>
@@ -96,13 +97,13 @@
             @keydown.enter.prevent="seekChapter(ch)"
             @keydown.space.prevent="seekChapter(ch)"
           >
-            <!-- phase 标签已去掉：文字里本来就会提阶段，避免重复 -->
             <div class="chapter-head">
               <span class="chapter-time">
                 {{ formatTime(ch.startTime) }} – {{ formatTime(ch.endTime) }}
               </span>
               <span class="chapter-count">{{ ch.windowLabel }}</span>
             </div>
+            <div class="chapter-phase">{{ ch.phaseLabel }}</div>
             <div class="chapter-text">{{ ch.mergedSummary }}</div>
           </div>
         </div>
@@ -144,7 +145,7 @@
 </template>
 
 <script setup>
-import { preferDetailsOverPhase } from '../utils/summaryEvidence.js'
+import { formatWindowNarrative, phaseLabel as formatPhaseLabel, mergeWindowNarratives, isReviewedWindow } from '../utils/windowNarrative.js'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ChatPanel from './ChatPanel.vue'
 import { useI18n } from '@/i18n'
@@ -217,198 +218,16 @@ const formatTime = (seconds) => {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-// ---- 章节合并：相邻同 phase 的窗口合并为一段叙事，句子级去重 ----
-const PHASE_CN = {
-  Preparation: '准备阶段',
-  CalotTriangleDissection: '肝胆三角解剖',
-  ClippingCutting: '夹闭切断',
-  GallbladderDissection: '胆囊分离',
-  GallbladderPackaging: '胆囊装袋',
-  GallbladderRetraction: '标本袋牵拉取出',
-  CleaningCoagulation: '清洁凝血',
-}
+const phaseLabel = phase => formatPhaseLabel(phase, language.value)
 
-const PHASE_EN = {
-  Preparation: 'Preparation',
-  CalotTriangleDissection: 'Calot Triangle Dissection',
-  ClippingCutting: 'Clipping and Cutting',
-  GallbladderDissection: 'Gallbladder Dissection',
-  GallbladderPackaging: 'Gallbladder Packaging',
-  GallbladderRetraction: 'Specimen Bag Retraction',
-  CleaningCoagulation: 'Cleaning and Coagulation',
-}
-
-const phaseLabel = (phase) => {
-  const table = language.value === 'zh' ? PHASE_CN : PHASE_EN
-  return table[phase] || phase || t('right.unknownPhase')
-}
-
-// 字符 bigram Jaccard 相似度，用来判断新内容是否跟已有句子近似重复
-function bigrams(s) {
-  const t = String(s || '').replace(/\s+/g, '')
-  const out = new Set()
-  for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2))
-  return out
+function bigrams(text) {
+  const value = String(text || '').replace(/\s+/g, '')
+  return new Set(Array.from({ length: Math.max(0, value.length - 1) }, (_, i) => value.slice(i, i + 2)))
 }
 function jaccard(a, b) {
   if (!a.size || !b.size) return 0
-  let inter = 0
-  for (const x of a) if (b.has(x)) inter++
-  return inter / (a.size + b.size - inter)
-}
-
-function stripPhaseHeader(t) {
-  return String(t || '')
-    .replace(/^【[^】]*】\s*/, '')
-    .replace(/^\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?s?\s*[：:]\s*/i, '')
-    .replace(/【专家实时快照[^】]*】/g, '')
-    .replace(/该段为实时快照，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
-    .replace(/已基于\s*\d+\s*帧快速更新手术进程，?\s*R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
-    .replace(/R1\/Gemini\s*精修结果稍后覆盖。?/g, '')
-    .replace(/精修(?:后|结果)?(?:将|会|稍后)?覆盖。?/g, '')
-    .replace(/YOLO\s*(?:暂定)?(?:检出|检测出)/gi, '检出')
-    .replace(/暂未稳定检出器械/g, '未见明确器械')
-    .replace(/当前判断为/g, '当前处于')
-    .replace(/[，,。；;\s]*暂无明确关键操作变化[。；;\s]*/g, '。')
-    .replace(/当前处于当前阶段[，,]/g, '当前画面')
-    .replace(/(?:动作三元组提示|主要动作)[:：]\s*\[[^\n。]*。?/g, '')
-    .replace(/(?:动作三元组提示|主要动作)[:：]\s*(?:\[[^\]]+\](?:-[^；。,\s]+)*[；,，、\s]*)+。?/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-const INSTRUMENT_LIST_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械|钛夹)'
-const NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
-const PROGRESS_KEYWORDS = /(牵拉|暴露|分离|剥离|剪切|剪断|切断|夹闭|闭合|施夹|钛夹|胆囊|胆囊管|胆囊动脉|血管|管状结构|肝床|肝胆三角|三角区|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|残端|粘连|组织|出血|止血|渗血|凝血|视野|起雾|雾气|烟雾|模糊|镜头|移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外)/
-const BLEEDING_KEYWORDS = /(大量(?:活动性)?出血|活动性出血|明显出血|持续出血|喷涌出血|喷射性出血|涌血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
-const VISIBILITY_KEYWORDS = /(镜头移出体外|移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外|镜头起雾|起雾|雾气|烟雾|模糊|视野受遮挡|视野不清|scope moved outside|outside the body|trocar|extra-abdominal|fog|smoke|blur)/i
-const SAFETY_KEYWORDS = /(CVS|安全视野|关键安全视野|两条结构|胆囊管|胆囊动脉|管状结构|残端|夹闭|切断|critical view|cystic duct|cystic artery)/i
-const CVS_STATUS_RE = /(CVS|安全关键视野|关键安全视野|critical view of safety|critical view)/i
-const LOW_VALUE_VISUAL_RE = new RegExp(`^(?:当前)?(?:可见|见|视野中可见)${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*[。；;，,\\s]*$`)
-
-function splitSentences(text) {
-  return String(text || '')
-    .split(/(?<=[。；！？!?;])/)
-    .map(s => s.trim())
-    .filter(Boolean)
-}
-
-function softenInstrumentLanguage(text) {
-  let out = String(text || '')
-  const instrumentList = new RegExp(`${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*`, 'g')
-  const visualOnly = new RegExp(`(?:当前)?(?:可见|见|视野中可见)${INSTRUMENT_LIST_RE}(?:、${INSTRUMENT_LIST_RE})*[，,。；;]?`, 'g')
-  out = out.replace(/太夹前|钛夹前|太夹钳|胎夹钳/g, '钛夹钳')
-  out = out.replace(/动胆囊动脉/g, '胆囊动脉')
-  out = out.replace(/动胆囊管/g, '胆囊管')
-  out = out.replace(/(钛夹钳(?:正在)?夹闭(?:胆囊管|胆囊动脉))[，,]?\s*明显/g, '$1')
-  out = out.replace(/(当前窗口|本段|术野|画面)出现/g, '$1有')
-  out = out.replace(/出现了|出现/g, '')
-  out = out.replace(/Hem[-\s]?o[-\s]?lok|Hemolok|hemlock/gi, 'Hem-o-lok')
-  out = out.replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?对/g, '钛夹钳对')
-  out = out.replace(/(?:当前)?(?:可见|见|视野中可见)(?:钛夹钳|施夹钳|施夹器)(?:正在)?在/g, '钛夹钳在')
-  out = out.replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
-  out = out.replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
-  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$2，')
-  out = out.replace(new RegExp(`(?:当前)?(?:可见|见|视野中可见)(${NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$2，')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)处理`, 'g'), '在$1进行夹闭处理')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})在([^，。；;]*?)(?:完成|进行)?(?:夹闭|关闭|闭合)动作`, 'g'), '在$1进行夹闭处理')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})在([^，。；;]+)[，,]`, 'g'), '在$1，')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})对([^，。；;]+)[，,]`, 'g'), '对$1，')
-  out = out.replace(visualOnly, '')
-  out = out.replace(/当前处于[^，。；;]+[，,]\s*/g, '')
-  out = out.replace(/抓钳(?:持续)?牵拉/g, '牵拉')
-  out = out.replace(/夹持牵拉/g, '牵拉')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})(?:持续)?牵拉`, 'g'), '牵拉')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})(?:进行)?分离`, 'g'), '分离')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})(?:进行)?夹闭`, 'g'), '夹闭')
-  out = out.replace(/使用(?:抓钳|器械)?持续?牵拉/g, '牵拉')
-  out = out.replace(/使用电钩对组织进行点触和分离动作/g, '电钩分离组织')
-  out = out.replace(/电钩对组织进行点触和分离动作/g, '电钩分离组织')
-  out = out.replace(/使用(?:双极电凝|双极)?对组织进行点触和分离动作/g, '分离组织')
-  out = out.replace(/对组织进行尖端接触和分离/g, '分离组织')
-  out = out.replace(/尖端接触/g, '组织接触')
-  out = out.replace(/电钩正?伸入([^，。；;]+)[，,]\s*/g, '在$1，')
-  out = out.replace(/使用(?:剪刀|电剪|电钩|双极电凝)?对/g, '对')
-  out = out.replace(/使用(?:剪刀|电剪|电钩|双极电凝)?在/g, '在')
-  out = out.replace(/使用(?:冲洗器|吸引器|冲吸器)进行/g, '进行')
-  out = out.replace(/使用(?:冲洗器|吸引器|冲吸器)持续/g, '持续')
-  out = out.replace(/使用(?:钛夹钳|施夹钳|施夹器)进行/g, '使用钛夹钳进行')
-  out = out.replace(/(?:钛夹钳|施夹钳|施夹器)对/g, '钛夹钳对')
-  out = out.replace(/在([^，。；;]+)[，,]\s*进行了?(?:夹闭|关闭|闭合)动作/g, '在$1进行夹闭处理')
-  out = out.replace(/进行了?(?:夹闭|关闭|闭合)动作/g, '完成夹闭处理')
-  out = out.replace(/在([^，。；;]+)[，,]\s*(?:夹闭|关闭|闭合)了?组织/g, '在$1进行夹闭处理')
-  out = out.replace(/(?:夹闭|关闭|闭合)了?组织/g, '完成夹闭处理')
-  out = out.replace(/进行钛夹的施加并闭合/g, '进行钛夹夹闭')
-  out = out.replace(/钛夹的施加并闭合/g, '钛夹夹闭')
-  out = out.replace(new RegExp(`(?:${NON_CLIP_INSTRUMENT_RE})进入视野[，,]?\\s*`, 'g'), '')
-  out = out.replace(/(?:剪刀|电剪)进入视野[，,]?\s*/g, '')
-  out = out.replace(/(?:冲洗器|吸引器|冲吸器)进入视野[，,]?\s*/g, '')
-  out = out.replace(/视野中可见/g, '')
-  out = out.replace(new RegExp(`可见${instrumentList.source}[，,]`, 'g'), '')
-  out = out.replace(/可见/g, '')
-  out = out.replace(/\s+/g, ' ')
-  out = out.replace(/[，,]\s*[。；;]/g, '。')
-  out = out.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
-  return out.trim()
-}
-
-function focusProgressText(text, maxChars = 260, maxSentences = 2) {
-  const normalized = preferDetailsOverPhase(softenInstrumentLanguage(stripPhaseHeader(text)))
-  if (!normalized) return ''
-
-  const risk = []
-  const visibility = []
-  const safety = []
-  const actions = []
-  const seen = new Set()
-
-  for (const raw of splitSentences(normalized)) {
-    const sentence = softenInstrumentLanguage(raw).replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '')
-    if (!sentence) continue
-    if (CVS_STATUS_RE.test(sentence)) continue
-    if (LOW_VALUE_VISUAL_RE.test(sentence)) continue
-    if (!PROGRESS_KEYWORDS.test(sentence)) continue
-
-    const fp = sentenceFingerprint(sentence)
-    if (!fp || seen.has(fp)) continue
-    seen.add(fp)
-
-    if (BLEEDING_KEYWORDS.test(sentence)) {
-      risk.push(sentence)
-    } else if (VISIBILITY_KEYWORDS.test(sentence)) {
-      visibility.push(sentence)
-    } else if (SAFETY_KEYWORDS.test(sentence)) {
-      safety.push(sentence)
-    } else {
-      actions.push(sentence)
-    }
-  }
-
-  const selected = []
-  const pushFrom = (items, limit = maxSentences) => {
-    for (const s of items) {
-      if (selected.length >= limit) return
-      if (selected.some(existing => jaccard(bigrams(existing), bigrams(s)) >= 0.55)) continue
-      selected.push(s)
-      const joined = selected.map(x => /[。；！？!?;]$/.test(x) ? x : `${x}。`).join('')
-      if (joined.length >= maxChars) return
-    }
-  }
-  pushFrom(risk, Math.min(maxSentences, risk.length || maxSentences))
-  pushFrom(visibility, maxSentences)
-  pushFrom(safety, maxSentences)
-  pushFrom(actions, maxSentences)
-
-  const result = selected
-    .map(s => /[。；！？!?;]$/.test(s) ? s : `${s}。`)
-    .join('')
-    .slice(0, maxChars)
-  if (result) return result
-  const nonCvs = splitSentences(normalized)
-    .map(s => s.replace(/^[，,。；;\s]+|[，,。；;\s]+$/g, '').trim())
-    .filter(s => s && !CVS_STATUS_RE.test(s))
-    .join('')
-  return (nonCvs || normalized).slice(0, maxChars)
+  const intersection = [...a].filter(value => b.has(value)).length
+  return intersection / (a.size + b.size - intersection)
 }
 
 function hasSevereBleedingText(text) {
@@ -423,85 +242,11 @@ function hasBleedingResolvedText(text) {
 }
 
 function bleedingText(text, fallback) {
-  const cleaned = stripPhaseHeader(text)
+  const cleaned = formatWindowNarrative(text)
   return cleaned || fallback
 }
 
-// 章节文本只保留"关键节点"——窗口级 + 句子级双层去重，并对总长度设上限。
-// 目标：用户看到的叙事像手术记录，而不是同一句话的几十次复述。
-const CHAPTER_MAX_CHARS = 220
-const SIM_SKIP_THRESHOLD = 0.45   // 新窗口与已有合并文本相似度≥45% 就整窗口跳过
-const SENT_FINGERPRINT_LEN = 12    // 句子指纹长度：越短去重越狠
-const BORING_TOKENS = ['器械', '操作', '动作', '手术', '进行中', '继续', '正在']
-
-function sentenceFingerprint(s) {
-  // 去空白 + 去语气词后前 N 字
-  return s.replace(/\s+/g, '')
-          .replace(/[，,]/g, '')
-          .slice(0, SENT_FINGERPRINT_LEN)
-}
-
-function isRedundantSentence(s, existingKeys) {
-  const key = sentenceFingerprint(s)
-  if (!key) return true
-  if (existingKeys.has(key)) return true
-  // 近似变体：只改了尾部语气词/形容词 → 前 8 字一致也算重复
-  const shortKey = key.slice(0, 8)
-  for (const ek of existingKeys) {
-    if (ek.slice(0, 8) === shortKey) return true
-  }
-  return false
-}
-
-function mergeIncrementally(windows) {
-  let text = ''
-  let bigramsAcc = new Set()
-  const existingSentKeys = new Set()
-
-  for (const w of windows) {
-    const cleaned = focusProgressText(w.summary, 180, 1)
-    if (!cleaned) continue
-
-    // 首条直接进
-    if (!text) {
-      // 首条也做句子级控长
-      const sents = cleaned.split(/(?<=[。；！？!?;])/).map(s => s.trim()).filter(Boolean)
-      for (const s of sents) {
-        const key = sentenceFingerprint(s)
-        if (key && !existingSentKeys.has(key)) {
-          existingSentKeys.add(key)
-          text += s
-          if (text.length >= CHAPTER_MAX_CHARS) break
-        }
-      }
-      bigramsAcc = bigrams(text)
-      continue
-    }
-
-    // 到达长度上限后只允许明确新增信息（window_id 边界事件，如阶段转变），否则不再追加
-    if (text.length >= CHAPTER_MAX_CHARS) continue
-
-    const newBg = bigrams(cleaned)
-    const sim = jaccard(bigramsAcc, newBg)
-    if (sim >= SIM_SKIP_THRESHOLD) continue  // 整窗口相似 → 跳过
-
-    const addSents = cleaned.split(/(?<=[。；！？!?;])/).map(s => s.trim())
-      .filter(s => s && !isRedundantSentence(s, existingSentKeys))
-
-    // 只取确实带了新信息量的句子
-    for (const s of addSents) {
-      existingSentKeys.add(sentenceFingerprint(s))
-      text += s
-      if (text.length >= CHAPTER_MAX_CHARS) break
-    }
-    if (addSents.length) bigramsAcc = bigrams(text)
-  }
-  return text
-}
-
-// 章节 mergedSummary 缓存：避免每次 SSE 新增窗口时都重跑全量 Jaccard。
-// key = "phaseX-windowId"（章节起始 window 稳定不变），value = { signature, mergedSummary }
-const _chapterCache = new Map()
+// Only finalized, adjacent windows are eligible for conservative merging.
 
 const latestWindowId = computed(() => {
   return (props.summaries || []).reduce((latest, s) => {
@@ -527,8 +272,7 @@ const chapters = computed(() => {
   const currentId = activeWindowId.value
   return sorted.map((s) => {
     const phase = s.phase || 'Unknown'
-    const cleaned = stripPhaseHeader(s.summary)
-    const focused = focusProgressText(cleaned, 240, 2)
+    const cleaned = formatWindowNarrative(s.summary)
     return {
       key: `window-${s.window_id}-${s.stage || 0}`,
       phase,
@@ -537,7 +281,7 @@ const chapters = computed(() => {
       endTime: s.end_time,
       windows: [s],
       windowLabel: windowLabel(s.window_id + 1),
-      mergedSummary: focused || cleaned || t('right.emptyWindowResult'),
+      mergedSummary: cleaned || t('right.emptyWindowResult'),
       containsCurrent: s.window_id === currentId,
     }
   })
@@ -574,7 +318,7 @@ const topChapters = computed(() => {
 
 const primaryChapterLabel = computed(() => {
   if (Number(props.selectedWindowId) >= 0) return t('right.selectedWindow')
-  if (!props.isProcessing && playbackWindowId.value >= 0 && playbackWindowId.value < latestWindowId.value) {
+  if (playbackWindowId.value >= 0 && playbackWindowId.value < latestWindowId.value) {
     return t('right.currentPlaybackWindow')
   }
   return t('right.latestWindow')
@@ -594,12 +338,15 @@ const historyChapters = computed(() => {
     const sim = last ? jaccard(bigrams(last.mergedSummary), bigrams(ch.mergedSummary)) : 0
     const samePhase = last && last.phase === ch.phase
 
-    if (last && contiguous && (sim >= 0.35 || (samePhase && sim >= 0.22))) {
+    const chronological = last ? [...last.windows, ...ch.windows].sort((a, b) => a.window_id - b.window_id) : []
+    const merged = last && contiguous && samePhase && sim >= 0.65
+      && chronological.length <= 6 && chronological.every(isReviewedWindow)
+      ? mergeWindowNarratives(chronological) : null
+    if (merged) {
       last.windows = [...last.windows, ...ch.windows]
       last.startTime = Math.min(last.startTime, ch.startTime)
       last.endTime = Math.max(last.endTime, ch.endTime)
-      const chronological = [...last.windows].sort((a, b) => (a.window_id ?? 0) - (b.window_id ?? 0))
-      last.mergedSummary = mergeIncrementally(chronological)
+      last.mergedSummary = merged
       const ids = last.windows.map(w => (w.window_id ?? 0) + 1)
       last.windowLabel = ids.length > 1
         ? windowLabel(Math.min(...ids), Math.max(...ids))
@@ -1047,9 +794,10 @@ const seekChapter = (chapter) => {
   flex-wrap: wrap;
 }
 .chapter-phase {
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 4px 0 7px;
 }
 .chapter-time {
   font-size: 14px;

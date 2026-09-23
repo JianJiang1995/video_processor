@@ -12,10 +12,39 @@ from backend.routers.analysis import (
     _suppress_unsupported_tool_actions,
     _normalize_svo_wording,
     _strip_unverified_target_specific_clip_claims,
+    _should_review_visibility_candidate,
+    _visibility_flags_from_visual,
 )
 
 
 class VisualTargetEvidenceTests(unittest.TestCase):
+    def test_blur_occlusion_and_external_haze_are_not_intra_abdominal_fog(self):
+        for status in ('blurred', 'blocked'):
+            self.assertFalse(_visibility_flags_from_visual({'visibility': {
+                'status': status, 'fog': False, 'confidence': .9}})['fog_active'])
+        flags = _visibility_flags_from_visual({'visibility': {
+            'status': 'out_of_body', 'fog': True, 'confidence': .9}})
+        self.assertFalse(flags['fog_active'])
+        self.assertTrue(flags['out_of_body'])
+        self.assertTrue(_visibility_flags_from_visual({'visibility': {
+            'status': 'foggy', 'confidence': .9}})['fog_active'])
+
+    def test_scene_observations_trigger_review_without_deciding_scene(self):
+        visual = {'visibility': {'status': 'clear', 'confidence': .9},
+                  'observations': [{'instrument': '器械', 'target': '皮肤切口'}]}
+        self.assertTrue(_should_review_visibility_candidate(visual, {}))
+        self.assertEqual(visual['visibility']['status'], 'clear')
+        visual['observations'] = [{'instrument': '抓钳', 'action': '夹持标本袋'}]
+        self.assertTrue(_should_review_visibility_candidate(visual, {}))
+        visual['observations'] = [{'appearance': '透明塑料袋膜，有袋口结构'}]
+        self.assertTrue(_should_review_visibility_candidate(visual, {}))
+        visual['observations'] = [{'target': '胆囊颈部', 'action': '未见标本袋'}]
+        self.assertFalse(_should_review_visibility_candidate(visual, {}))
+        visual['observations'] = []
+        self.assertTrue(_should_review_visibility_candidate(visual, {}))
+        self.assertFalse(_should_review_visibility_candidate({'visibility': {'status': 'clear'}}, {}))
+        self.assertTrue(_should_review_visibility_candidate({'visibility': {'status': 'foggy'}}, {}))
+
     def test_static_clip_review_vetoes_new_application_not_clip_presence(self):
         review = {'success': True, 'confidence': .95, 'classification': 'clip',
                   'visible_instruments': [], 'motion': 'static',
@@ -71,6 +100,14 @@ class VisualTargetEvidenceTests(unittest.TestCase):
         visual['clip_secondary_review'].pop('visible_instruments')
         self.assertEqual(_suppress_unsupported_tool_actions(text, visual, {'yolo': {'tools': []}}), text)
 
+    def test_tool_rejection_removes_dangling_pronoun_action(self):
+        visual = {'clip_secondary_review': {'success': True, 'confidence': .95,
+                  'classification': 'no_clip', 'visible_instruments': [], 'images': 3}}
+        result = _suppress_unsupported_tool_actions(
+            '器械尖端不可辨。仅见其在组织表面移动。暴露区域为腹腔内组织。',
+            visual, {'yolo': {'tools': []}})
+        self.assertEqual(result, '暴露区域为腹腔内组织。')
+
     def test_isolated_phase_prediction_cannot_lock_irreversible_history(self):
         def row(wid, raw, confidence=.9):
             return {'window_id': wid, 'surgical_phase': 'CalotTriangleDissection',
@@ -95,6 +132,15 @@ class VisualTargetEvidenceTests(unittest.TestCase):
         self.assertEqual(validate_visibility_review(review, 3)['classification'], 'uncertain')
         review['external_frame_indices'] = [0, 2]
         self.assertEqual(validate_visibility_review(review, 3)['classification'], 'external_body')
+
+    def test_gauze_cannot_be_promoted_to_bag_by_scene_review_alone(self):
+        review = {'classification': 'specimen_bag_inside', 'confidence': .98}
+        visual = {'observations': [{'appearance': '白色网状纱布带蓝线', 'frames': [1, 2, 3]}]}
+        self.assertEqual(validate_visibility_review(review, 3, visual)['classification'], 'uncertain')
+        visual['observations'] = [{'appearance': '透明塑料袋膜，有袋口结构', 'frames': [1, 2]}]
+        self.assertEqual(validate_visibility_review(review, 3, visual)['classification'], 'specimen_bag_inside')
+        visual['observations'][0]['frames'] = [1, 1, 99]
+        self.assertEqual(validate_visibility_review(review, 3, visual)['classification'], 'uncertain')
 
     def test_negative_clauses_never_turn_into_positive_findings(self):
         text = _remove_negative_visual_checklist(

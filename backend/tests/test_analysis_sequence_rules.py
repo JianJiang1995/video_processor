@@ -1051,6 +1051,50 @@ class AnalysisSequenceRulesTest(unittest.TestCase):
         self.assertTrue(state["packaging_seen"])
         self.assertIn("GallbladderPackaging", state["reached_phases"])
 
+    def test_reviewed_bag_in_partial_recording_does_not_invent_prior_milestones(self):
+        visual = {"visibility_secondary_review": {
+            "success": True, "classification": "specimen_bag_inside", "confidence": .95}}
+        prior = _build_surgical_sequence_state([])
+        text, phase, rules = _apply_surgical_sequence_rules(
+            "抓钳夹持标本袋。", "CalotTriangleDissection", prior, visual)
+        self.assertEqual(phase, "GallbladderPackaging")
+        self.assertIn("标本袋", text)
+        state = _build_surgical_sequence_state([{
+            "window_id": 0, "phase": phase, "summary": text,
+            "others": {"visual_gpt": visual}}])
+        self.assertTrue(state["packaging_seen"])
+        self.assertFalse(state["cvs_achieved"])
+        self.assertFalse(state["clipped"])
+        self.assertFalse(state["cut"])
+        self.assertNotIn("ClippingCutting", state["reached_phases"])
+
+    def test_recording_can_start_during_dissection_without_inventing_clipping(self):
+        prior = _build_surgical_sequence_state([])
+        text, phase, _ = _apply_surgical_sequence_rules(
+            '电凝钩接触胆囊床区域组织。', 'GallbladderDissection', prior)
+        self.assertEqual(phase, 'GallbladderDissection')
+        state = _build_surgical_sequence_state([{'window_id': 0, 'phase': phase, 'summary': text}])
+        self.assertTrue(state['history_prefix_unknown'])
+        self.assertFalse(state['clipped'])
+        self.assertFalse(state['cvs_achieved'])
+        self.assertNotIn('ClippingCutting', state['reached_phases'])
+
+    def test_phase_templates_cannot_overwrite_frame_observations(self):
+        prior = _build_surgical_sequence_state([
+            {'window_id': 0, 'phase': 'GallbladderDissection', 'summary': '分离组织。'},
+            {'window_id': 1, 'phase': 'GallbladderPackaging', 'summary': '标本袋。'},
+        ])
+        text, _, _ = _apply_surgical_sequence_rules('当前观察腹腔组织。', 'GallbladderRetraction', prior,
+                                                   {'observations': []})
+        self.assertNotIn('牵拉', text)
+        self.assertNotIn('取出', text)
+        self.assertIn('观察腹腔组织', text)
+
+    def test_external_only_recording_does_not_establish_a_surgical_phase(self):
+        text, phase, _ = _apply_surgical_sequence_rules('镜头移出体外。', 'CalotTriangleDissection',
+            _build_surgical_sequence_state([]), {'visibility': {'out_of_body': True, 'confidence': .95}})
+        self.assertEqual(phase, 'Unknown')
+
     def test_visual_veto_removes_inactive_target_clip_claim(self):
         visual = {
             "clip_applier": {"visible": True, "active": False},

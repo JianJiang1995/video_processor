@@ -12,6 +12,33 @@ from backend.services.playback_proxy import preview_format
 
 
 class PlaybackAndRiskTests(unittest.TestCase):
+    def test_reviewer_alone_cannot_upgrade_grasping_to_clipping(self):
+        review = {'classification': 'clip_applier', 'tip_geometry': 'broad_parallel_jaws',
+                  'motion': 'jaw_closure_on_tissue', 'confidence': .99,
+                  'applier_active': True, 'clamped_on_tissue': True, 'images': 3}
+        primary = {'clip_applier': {'visible': False, 'active': False}}
+        experts = {'yolo': {'tools': [{'label': 'grasper', 'frames_seen': 12}]}}
+        result = validate_clip_review(review, primary, experts)
+        self.assertFalse(result['accepted'])
+        self.assertFalse(result['action_evidence_supported'])
+        self.assertFalse(result['applier_active'])
+        self.assertEqual(review['classification'], 'clip_applier')
+
+        primary['clip_applier']['visible'] = True
+        self.assertEqual(validate_clip_review(review, primary, experts)['classification'], 'clip_applier')
+        primary['clip_applier']['visible'] = False
+        experts['yolo']['tools'].append({'label': 'clipper', 'frames_seen': 3})
+        self.assertEqual(validate_clip_review(review, primary, experts)['classification'], 'clip_applier')
+
+    def test_direct_loaded_clip_evidence_can_resolve_disagreement(self):
+        review = {'classification': 'clip_applier', 'tip_geometry': 'broad_parallel_jaws',
+                  'motion': 'clip_release', 'applier_active': True,
+                  'images': 3, 'loaded_clip_visible': True, 'clip_frame_indices': [0, 2]}
+        self.assertTrue(validate_clip_review(review, {})['action_evidence_supported'])
+        for indices in ([0, 0, 20], [True, 2], [], '0,2'):
+            result = validate_clip_review({**review, 'clip_frame_indices': indices}, {})
+            self.assertFalse(result['accepted'])
+
     def test_4k50_preview_preserves_regular_cadence(self):
         self.assertEqual(preview_format({'width': 3840, 'height': 2160, 'fps': 50}),
                          {'width': 1920, 'height': 1080, 'fps': 25})
