@@ -1001,6 +1001,7 @@ class GLMClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         include_timestamps: bool = True,
+        response_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         分析带时间戳或顺序帧编号的多张图片
@@ -1052,7 +1053,10 @@ class GLMClient:
                 "temperature": temperature,
                 "max_tokens": max_tokens
             }
-            
+            if response_schema is not None:
+                payload['response_format'] = {'type': 'json_schema', 'json_schema': {
+                    'name': 'window_review', 'schema': response_schema, 'strict': True}}
+                payload['chat_template_kwargs'] = {'enable_thinking': False}
             response = await self.client.post(
                 f"{self.api_url}/chat/completions",
                 json=payload
@@ -1068,7 +1072,9 @@ class GLMClient:
                 "text": text,
                 "tokens_used": tokens,
                 "model": self.model_name,
-                "image_count": len(images)
+                "image_count": len(images),
+                "finish_reason": data['choices'][0].get('finish_reason'),
+                "usage": data.get('usage', {}),
             }
             
         except Exception as e:

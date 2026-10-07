@@ -95,15 +95,19 @@ class PlaybackAndRiskTests(unittest.TestCase):
         self.assertTrue(any(e['type'] == 'risk' for e in events))
 
     def test_capture_websocket_waits_for_consumption_and_then_sends_latest(self):
-        class State:
-            latest = (1, b'first')
-            snapshots = 0
-            def __init__(self, *args): pass
-            def start(self): pass
-            def release(self): pass
-            def snapshot(self):
-                State.snapshots += 1
-                return State.latest
+        class State(video.DisplayStreamState):
+            instance = None
+            frame_requests = 0
+            def __init__(self, *args):
+                super().__init__(*args)
+                State.instance = self
+                self.publish(b'first')
+            def start(self):
+                self.running = True
+                self.clients += 1
+            async def next_frame(self, *args):
+                State.frame_requests += 1
+                return await super().next_frame(*args)
         app = FastAPI()
         app.include_router(video.router)
         app.dependency_overrides[video.get_db] = lambda: None
@@ -111,11 +115,11 @@ class PlaybackAndRiskTests(unittest.TestCase):
                 patch.object(video, 'DisplayStreamState', State), patch.object(video, 'display_streams', {}):
             with TestClient(app) as client, client.websocket_connect('/api/video/ws-display/test?ack=true') as ws:
                 self.assertEqual(ws.receive_bytes(), b'first')
-                initial = State.snapshots
-                State.latest = (2, b'stale')
+                initial = State.frame_requests
+                State.instance.publish(b'stale')
                 time.sleep(.05)
-                self.assertEqual(State.snapshots, initial)
-                State.latest = (3, b'latest')
+                self.assertEqual(State.frame_requests, initial)
+                State.instance.publish(b'latest')
                 ws.send_text('ready')
                 self.assertEqual(ws.receive_bytes(), b'latest')
 

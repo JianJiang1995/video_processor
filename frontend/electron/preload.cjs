@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getConfig: (key) => ipcRenderer.invoke('get-config', key),
   setConfig: (key, value) => ipcRenderer.invoke('set-config', key, value),
   getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
+  getPreviewDisplay: () => ipcRenderer.invoke('get-preview-display'),
   setBackendUrl: (url) => ipcRenderer.invoke('set-backend-url', url),
   loadReplayBundle: (specPath) => ipcRenderer.invoke('load-replay-bundle', specPath),
   listAnalysisHistory: () => ipcRenderer.invoke('list-analysis-history'),

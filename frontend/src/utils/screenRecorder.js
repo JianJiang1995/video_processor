@@ -1,3 +1,5 @@
+import { DEFAULT_RECORDING_FPS, normalizeRecordingFps } from '../../electron/recordingOptions.mjs'
+
 export class ScreenRecorder {
   constructor(api, { onState = () => {}, mediaDevices = navigator.mediaDevices,
     Recorder = MediaRecorder } = {}) {
@@ -11,13 +13,14 @@ export class ScreenRecorder {
     this.generation = 0
   }
 
-  async start(sessionId, automatic = false) {
+  async start(sessionId, automatic = false, frameRate = DEFAULT_RECORDING_FPS) {
     if (this.busy || this.job) return
     this.busy = true
     const generation = ++this.generation
+    const fps = normalizeRecordingFps(frameRate)
     let job
     try {
-      job = await this.api.beginRecording({ sessionId, automatic })
+      job = { ...await this.api.beginRecording({ sessionId, automatic, fps }), automatic: Boolean(automatic), fps }
       if (generation !== this.generation) {
         await this.api.finishRecording(job.id, 'start_cancelled')
         return
@@ -28,7 +31,7 @@ export class ScreenRecorder {
       this.stopping = null
       const stream = await this.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
         chromeMediaSource: 'desktop', chromeMediaSourceId: job.sourceId,
-        maxWidth: 1920, maxHeight: 1080, maxFrameRate: 15,
+        maxWidth: 1920, maxHeight: 1080, maxFrameRate: fps,
       } } })
       if (generation !== this.generation || this.job !== job) {
         stream.getTracks().forEach(track => track.stop())

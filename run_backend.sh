@@ -94,12 +94,14 @@ echo "Docs: http://localhost:$PORT/api/docs"
 echo "Press Ctrl+C to stop"
 echo ""
 
+# JPEG preview packets are already compressed. Deflate adds CPU time and holds
+# the one-frame acknowledgement path up without helping local transport.
 if [ "${BACKEND_RELOAD:-0}" = "1" ]; then
     echo "[Mode] Uvicorn reload enabled (BACKEND_RELOAD=1)"
-    python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT --reload --timeout-graceful-shutdown 5 &
+    python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT --reload --timeout-graceful-shutdown 5 --ws-per-message-deflate false &
 else
     echo "[Mode] Uvicorn reload disabled (recommended for MJPEG/SSE long-running tests)"
-    python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT --timeout-graceful-shutdown 5 &
+    python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT --timeout-graceful-shutdown 5 --ws-per-message-deflate false &
 fi
 UVICORN_PID=$!
 wait $UVICORN_PID

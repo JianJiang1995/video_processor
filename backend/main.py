@@ -3,6 +3,7 @@ Video Stream Analyzer - FastAPI Backend
 Main application entry point
 """
 import os
+import asyncio
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -83,6 +84,8 @@ async def startup_event():
     # Initialize database
     init_db()
     logger.info("Database initialized")
+    from .services.local_preview_server import start_local_preview
+    await asyncio.to_thread(start_local_preview)
     
     # Optionally preload VLM model
     if settings.VLM_PRELOAD:
@@ -106,6 +109,8 @@ async def startup_event():
                 from .services.triplet_service import get_triplet_service
                 from .services.yolo_service import get_yolo_service
                 from .services.clip_detector_service import get_clip_detector_service
+                from .services.expert_image_preparation import expert_warmup_sizes
+                from .services.vlm_factory import load_config
                 # Ultralytics mutates CUDA_VISIBLE_DEVICES when loading a
                 # selected GPU. Initialize torch-native experts first so their
                 # physical cuda:N device handles are created before YOLO narrows
@@ -117,8 +122,8 @@ async def startup_event():
                 import numpy as np
                 # Match inference tensor shapes before accepting a live stream.
                 # Square-only detector warmup leaves rectangular kernels cold.
-                for height in (960, 720):
-                    blank = np.zeros((height, 1280, 3), dtype=np.uint8)
+                for width, height in expert_warmup_sizes(load_config()):
+                    blank = np.zeros((height, width, 3), dtype=np.uint8)
                     if p:
                         p.classify_batch([blank] * 12)
                     if t:
@@ -142,6 +147,8 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down...")
+    from .services.local_preview_server import stop_local_preview
+    await asyncio.to_thread(stop_local_preview)
     
     # Cleanup WebRTC connections
     try:
@@ -203,6 +210,7 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "video_stream_app.backend.main:app",
+        ws_per_message_deflate=False,
         host="0.0.0.0",
         port=8001,
         reload=True

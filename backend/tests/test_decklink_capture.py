@@ -1,9 +1,11 @@
 import unittest
 import threading
+from unittest.mock import patch
 
 import numpy as np
 
 from backend.services.decklink_capture import (
+    DeckLinkCapture,
     _DeckLinkSharedState,
     _ensure_gst,
     _fps_from_mode,
@@ -11,6 +13,116 @@ from backend.services.decklink_capture import (
     build_pipeline_description,
     parse_decklink_uri,
 )
+from backend.services import decklink_capture
+
+
+class DeckLinkOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        self.events = []
+        self.readers = []
+        self.registry = {}
+        self.registry_patch = patch.object(decklink_capture, "_STATES", self.registry)
+        self.gst_patch = patch.object(decklink_capture, "_ensure_gst")
+
+        def run(state):
+            self.events.append(("open", state.uri))
+            state._set_status(opened=True)
+            try:
+                while state._is_running():
+                    with state.condition:
+                        state.condition.wait(timeout=0.01)
+            finally:
+                self.events.append(("closed", state.uri))
+                state._set_status(opened=False, running=False)
+
+        self.run_patch = patch.object(_DeckLinkSharedState, "_run", run)
+        self.registry_patch.start()
+        self.gst_patch.start()
+        self.run_patch.start()
+
+    def tearDown(self):
+        for reader in self.readers:
+            reader.release()
+        for state in self.registry.values():
+            state.stop_if_idle()
+        self.run_patch.stop()
+        self.gst_patch.stop()
+        self.registry_patch.stop()
+
+    def capture(self, connection="sdi", mode="auto", device=0):
+        reader = DeckLinkCapture(build_decklink_uri(device, mode, connection))
+        self.readers.append(reader)
+        return reader
+
+    def test_identical_settings_share_pipeline_and_probe_grace(self):
+        probe = self.capture()
+        state = probe._state
+        probe.release()
+        preview = self.capture()
+        analysis = self.capture()
+        self.assertIs(preview._state, state)
+        self.assertIs(analysis._state, state)
+        self.assertEqual(state.ref_count, 2)
+        self.assertEqual(len(self.events), 1)
+
+    def test_equivalent_uris_share_pipeline(self):
+        reader = self.capture()
+        alias = DeckLinkCapture("decklink://0?connection=sdi&mode=auto")
+        self.readers.append(alias)
+        self.assertIs(reader._state, alias._state)
+
+    def test_idle_input_released_before_connector_or_mode_switch(self):
+        for connection, mode in (("hdmi", "auto"), ("sdi", "auto"), ("sdi", "1080p50")):
+            reader = self.capture(connection, mode)
+            reader.release()
+        self.assertEqual([event for event, _ in self.events], ["open", "closed", "open", "closed", "open"])
+        self.assertEqual(len(self.registry), 1)
+
+    def test_active_input_cannot_be_taken_over(self):
+        reader = self.capture()
+        with self.assertRaisesRegex(RuntimeError, "is in use"):
+            self.capture("hdmi")
+        self.assertTrue(reader.isOpened())
+        self.assertEqual(reader._state.ref_count, 1)
+        self.assertEqual(len(self.events), 1)
+
+    def test_different_cards_can_run_together(self):
+        first = self.capture()
+        second = self.capture("hdmi", device=1)
+        self.assertTrue(first.isOpened() and second.isOpened())
+        self.assertEqual(len(self.events), 2)
+
+    def test_shutdown_timeout_blocks_new_pipeline(self):
+        reader = self.capture("hdmi")
+        state = reader._state
+        reader.release()
+        with patch.object(state, "wait_for_shutdown", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "still releasing"):
+                self.capture()
+        self.assertEqual(sum(event == "open" for event, _ in self.events), 1)
+        self.assertIn(state.uri, self.registry)
+
+    def test_expired_state_is_replaced_not_restarted(self):
+        reader = self.capture()
+        state = reader._state
+        reader.release()
+        state.stop_if_idle()
+        self.assertFalse(state.start())
+        self.assertEqual(state.ref_count, 0)
+        replacement = self.capture()
+        self.assertIsNot(replacement._state, state)
+        self.assertEqual([event for event, _ in self.events], ["open", "closed", "open"])
+
+    def test_simultaneous_readers_open_hardware_only_once(self):
+        threads = [threading.Thread(target=self.capture) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(len(self.readers), 8)
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.readers[0]._state.ref_count, 8)
 
 
 class DeckLinkCaptureConfigurationTests(unittest.TestCase):

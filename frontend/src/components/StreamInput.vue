@@ -8,14 +8,16 @@
       <button 
         class="tab-btn" 
         :class="{ active: sourceType === 'stream' }"
-        @click="sourceType = 'stream'"
+        :disabled="isConnecting"
+        @click="cancelAutoConnect(); sourceType = 'stream'"
       >
         🌐 {{ t('stream.networkStream') }}
       </button>
       <button 
         class="tab-btn" 
         :class="{ active: sourceType === 'capture' }"
-        @click="sourceType = 'capture'; loadCaptureDevices()"
+        :disabled="isConnecting"
+        @click="cancelAutoConnect(); sourceType = 'capture'; loadCaptureDevices()"
       >
         📹 {{ t('stream.captureCard') }}
       </button>
@@ -30,6 +32,7 @@
           :class="{ active: inputLayout === 'full' }"
           :aria-checked="inputLayout === 'full'"
           role="radio"
+          :disabled="isConnecting"
           @click="setInputLayout('full')"
         >
           {{ t('stream.layoutSingle') }}
@@ -40,6 +43,7 @@
           :class="{ active: inputLayout === 'quad_right' }"
           :aria-checked="inputLayout === 'quad_right'"
           role="radio"
+          :disabled="isConnecting"
           @click="setInputLayout('quad_right')"
         >
           {{ t('stream.layoutQuadRight') }}
@@ -56,6 +60,7 @@
           v-model="streamUrl"
           :placeholder="t('stream.urlPlaceholder')"
           class="input"
+          :disabled="isConnecting"
           @keyup.enter="connect"
         />
         <div class="input-hint">{{ t('stream.urlHint') }}</div>
@@ -68,6 +73,7 @@
             v-for="preset in presets" 
             :key="preset.url"
             class="preset-btn"
+            :disabled="isConnecting"
             @click="selectPreset(preset)"
           >
             {{ t(preset.nameKey) }}
@@ -81,7 +87,7 @@
       <div class="capture-section">
         <div class="capture-header">
           <label>{{ t('stream.selectCaptureDevice') }}</label>
-          <button class="refresh-btn" @click="loadCaptureDevices" :disabled="isLoadingDevices">
+          <button class="refresh-btn" @click="cancelAutoConnect(); loadCaptureDevices()" :disabled="isLoadingDevices || isConnecting">
             🔄 {{ isLoadingDevices ? t('stream.scanning') : t('stream.refresh') }}
           </button>
         </div>
@@ -113,26 +119,34 @@
             <div class="device-info">
               <div class="device-name">{{ device.device_name }}</div>
               <div class="device-specs">
-                {{ device.width }}×{{ device.height }} @ {{ device.fps?.toFixed(0) || '?' }}fps
+                <template v-if="device.available === false">{{ t('stream.captureUnavailable') }}</template>
+                <template v-else-if="device.backend === 'decklink'">{{ t('stream.captureFormatPending') }}</template>
+                <template v-else-if="device.backend === 'simulator'">{{ t('stream.simulatorFormat') }}</template>
+                <template v-else>{{ device.width }}×{{ device.height }} @ {{ device.fps?.toFixed(0) || '?' }}fps</template>
               </div>
             </div>
             <div v-if="isSelectedDevice(device)" class="device-check">✓</div>
           </div>
         </div>
 
+        <div v-if="selectedDevice?.available === false" class="capture-unavailable" role="status">
+          {{ t(`stream.${selectedDevice.unavailable_reason || 'decklinkUnavailable'}`) }}
+        </div>
+
         <div v-if="selectedDevice?.backend === 'simulator'" class="input-group">
           <label for="simulator-path">{{ language === 'zh' ? '本地视频路径' : 'Local video path' }}</label>
           <input id="simulator-path" v-model="simulatorPath" class="input" type="text"
+            :disabled="isConnecting" @input="cancelAutoConnect"
             :placeholder="language === 'zh' ? '留空使用默认模拟视频' : 'Leave empty for the default video'" />
         </div>
 
         <div
-          v-if="selectedDevice?.supported_modes?.length"
+          v-if="selectedDevice?.supported_modes?.length && selectedDevice.backend !== 'simulator'"
           class="capture-settings-grid"
         >
           <div v-if="selectedDevice?.supported_connections?.length" class="input-group">
-            <label>{{ t('stream.inputConnection') }}</label>
-            <select v-model="selectedConnection" class="input">
+            <label for="capture-connection">{{ t('stream.inputConnection') }}</label>
+            <select id="capture-connection" v-model="selectedConnection" class="input" :disabled="isConnecting" @change="cancelAutoConnect">
               <option
                 v-for="connection in selectedDevice.supported_connections"
                 :key="connection"
@@ -144,8 +158,8 @@
           </div>
 
           <div class="input-group">
-            <label>{{ t('stream.inputMode') }}</label>
-            <select v-model="selectedMode" class="input">
+            <label for="capture-mode">{{ t('stream.inputMode') }}</label>
+            <select id="capture-mode" v-model="selectedMode" class="input" :disabled="isConnecting" @change="cancelAutoConnect">
               <option
                 v-for="mode in selectedDevice.supported_modes"
                 :key="mode"
@@ -157,7 +171,7 @@
           </div>
         </div>
         
-        <div class="capture-hint">
+        <div v-if="selectedDevice?.backend === 'decklink'" class="capture-hint">
           <p>💡 <strong>{{ t('stream.deployTipTitle') }}</strong></p>
           <p>{{ selectedConnection === 'sdi' ? t('stream.deployTipSdi') : t('stream.deployTipHdmi') }}</p>
           <p class="capture-warning">{{ t('stream.sxgaWarning') }}</p>
@@ -167,20 +181,20 @@
 
     <div class="stream-options">
       <label>
-        <input type="checkbox" v-model="autoAnalyze" />
+        <input type="checkbox" v-model="autoAnalyze" :disabled="isConnecting" @change="cancelAutoConnect" />
         {{ t('stream.autoAnalyze') }}
       </label>
     </div>
 
     <div class="actions">
-      <button class="btn btn-secondary" @click="$emit('back')">
+      <button class="btn btn-secondary" @click="cancelAutoConnect(); $emit('back')">
         ← {{ t('app.back') }}
       </button>
       <button 
         v-if="sourceType === 'stream'"
         class="btn btn-primary" 
         @click="connect" 
-        :disabled="!streamUrl"
+        :disabled="!streamUrl || isConnecting"
       >
         🔗 {{ t('stream.connectStream') }}
       </button>
@@ -188,7 +202,7 @@
         v-else
         class="btn btn-primary" 
         @click="connectCapture" 
-        :disabled="!selectedDevice"
+        :disabled="!selectedDevice || selectedDevice.available === false || isConnecting || isLoadingDevices"
       >
         📹 {{ t('stream.connectCapture') }}
       </button>
@@ -214,6 +228,11 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { useI18n } from '@/i18n'
 import ReplayImportButton from './ReplayImportButton.vue'
+import { captureModeDetails } from '@/utils/livePreview'
+import {
+  captureDeviceChoices, captureDeviceKey, preferredCaptureDevice, readCapturePreferences,
+  rememberCaptureSettings, restoreCaptureSettings,
+} from '@/utils/capturePreferences'
 
 const { language, t } = useI18n()
 
@@ -266,14 +285,25 @@ const selectPreset = (preset) => {
 }
 
 const setInputLayout = (layout) => {
+  cancelAutoConnect()
   inputLayout.value = layout === 'quad_right' ? 'quad_right' : 'full'
   localStorage.setItem('surgr1_input_layout', inputLayout.value)
 }
 
 const selectDevice = (device) => {
+  if (isConnecting.value) return
+  cancelAutoConnect()
+  if (isSelectedDevice(device)) return
+  restoreDevice(device)
+}
+
+const restoreDevice = (device) => {
+  const settings = restoreCaptureSettings(device, readCapturePreferences(localStorage), inputLayout.value)
   selectedDevice.value = device
-  selectedMode.value = device.default_mode || device.supported_modes?.[0] || 'auto'
-  selectedConnection.value = device.default_connection || device.supported_connections?.[0] || 'auto'
+  selectedMode.value = settings.mode
+  selectedConnection.value = settings.connection
+  inputLayout.value = settings.inputLayout
+  simulatorPath.value = settings.simulatorPath
 }
 
 const connectionLabel = (connection) => {
@@ -284,7 +314,12 @@ const connectionLabel = (connection) => {
 
 const modeLabel = (mode) => {
   if (mode === 'auto') return t('stream.modeAuto')
-  return mode
+  const details = captureModeDetails(mode)
+  if (!details) return mode
+  return t(details.scan === 'interlaced' ? 'stream.modeInterlaced' : 'stream.modeProgressive', {
+    mode, fps: details.frames, fields: details.fields,
+    resolution: ({720: '1280x720', 1080: '1920x1080', 2160: '3840x2160'})[parseInt(mode)] || mode,
+  })
 }
 
 const isSelectedDevice = (device) => {
@@ -295,16 +330,23 @@ const isSelectedDevice = (device) => {
 
 // Load available capture devices
 const loadCaptureDevices = async () => {
+  if (isLoadingDevices.value || isConnecting.value) return
   isLoadingDevices.value = true
   error.value = ''
   
   try {
     const response = await axios.get('/api/video/capture-devices', { timeout: 15000 })
-    captureDevices.value = response.data.devices || []
+    if (response.data.success === false) throw new Error(t('stream.captureScanFailed'))
+    captureDevices.value = captureDeviceChoices(response.data)
     
-    // Auto-select first device if none selected
-    if (captureDevices.value.length > 0 && !selectedDevice.value) {
-      selectDevice(captureDevices.value[0])
+    const preferences = readCapturePreferences(localStorage)
+    const existing = captureDevices.value.find(device => isSelectedDevice(device))
+    if (existing) {
+      selectedDevice.value = existing
+    } else {
+      const preferred = preferredCaptureDevice(captureDevices.value, preferences)
+      selectedDevice.value = null
+      if (preferred) restoreDevice(preferred)
     }
 
     if (
@@ -313,18 +355,24 @@ const loadCaptureDevices = async () => {
       !new URLSearchParams(window.location.search).has('replaySpec') &&
       sourceType.value === 'capture' &&
       selectedDevice.value &&
+      captureDeviceKey(selectedDevice.value) === preferences.lastDevice &&
+      restoreCaptureSettings(selectedDevice.value, preferences).configured &&
       !didAutoConnect.value &&
       sessionStorage.getItem(AUTO_CONNECT_FLAG) !== '1'
     ) {
       didAutoConnect.value = true
-      sessionStorage.setItem(AUTO_CONNECT_FLAG, '1')
       autoConnectTimer = setTimeout(() => {
-        if (!autoConnectCancelled) connectCapture()
-      }, 250)
+        if (!autoConnectCancelled) {
+          sessionStorage.setItem(AUTO_CONNECT_FLAG, '1')
+          connectCapture()
+        }
+      }, 1000)
     }
   } catch (err) {
     console.error('Failed to load capture devices:', err)
+    error.value = t('stream.captureScanFailed')
     captureDevices.value = []
+    selectedDevice.value = null
   } finally {
     isLoadingDevices.value = false
   }
@@ -350,6 +398,7 @@ onUnmounted(() => {
 
 // Cancel connection attempt
 const cancelConnect = () => {
+  cancelAutoConnect()
   if (abortController) {
     abortController.abort()
     abortController = null
@@ -360,13 +409,15 @@ const cancelConnect = () => {
 
 // Connect to network stream
 const connect = async () => {
-  if (!streamUrl.value) return
+  if (!streamUrl.value || isConnecting.value) return
+  cancelAutoConnect()
   
   if (abortController) {
     abortController.abort()
   }
   
-  abortController = new AbortController()
+  const controller = new AbortController()
+  abortController = controller
   isConnecting.value = true
   error.value = ''
   
@@ -378,11 +429,12 @@ const connect = async () => {
       auto_analyze: autoAnalyze.value,
       input_layout: inputLayout.value
     }, {
-      signal: abortController.signal,
+      signal: controller.signal,
       timeout: 30000  // 增加到 30 秒，因为视频流连接可能较慢
     })
     
     console.log('[StreamInput] Connected successfully:', response.data)
+    if (controller.signal.aborted) return
     
     emit('connect', {
       session: response.data,
@@ -408,38 +460,52 @@ const connect = async () => {
       error.value = err.response?.data?.detail || err.message || (language.value === 'zh' ? '连接失败，请检查视频流地址' : 'Connection failed. Check the stream URL.')
     }
   } finally {
-    isConnecting.value = false
-    abortController = null
+    if (abortController === controller) {
+      isConnecting.value = false
+      abortController = null
+    }
   }
 }
 
 // Connect to capture device
 const connectCapture = async () => {
-  if (!selectedDevice.value) return
+  if (!selectedDevice.value || selectedDevice.value.available === false || isConnecting.value) return
+  cancelAutoConnect()
   
   if (abortController) {
     abortController.abort()
   }
   
-  abortController = new AbortController()
+  const controller = new AbortController()
+  abortController = controller
   isConnecting.value = true
   error.value = ''
+  const device = selectedDevice.value
+  const settings = {
+    mode: selectedMode.value,
+    connection: selectedConnection.value,
+    inputLayout: inputLayout.value,
+    simulatorPath: simulatorPath.value.trim(),
+  }
   
   try {
     const response = await axios.post('/api/video/connect-capture', {
-      device_id: selectedDevice.value.device_id,
-      device_name: selectedDevice.value.device_name || '',
-      backend: selectedDevice.value.backend || 'auto',
-      mode: selectedMode.value || selectedDevice.value.default_mode || 'auto',
-      connection: selectedConnection.value || selectedDevice.value.default_connection || 'auto',
+      device_id: device.device_id,
+      device_name: device.device_name || '',
+      backend: device.backend || 'auto',
+      mode: settings.mode,
+      connection: settings.connection,
       auto_analyze: autoAnalyze.value,
-      simulator_path: simulatorPath.value.trim(),
-      input_layout: inputLayout.value
+      simulator_path: settings.simulatorPath,
+      input_layout: settings.inputLayout
     }, {
-      signal: abortController.signal,
+      signal: controller.signal,
       timeout: 25000
     })
     
+    if (controller.signal.aborted) return
+    rememberCaptureSettings(localStorage, device, settings)
+    sessionStorage.setItem(AUTO_CONNECT_FLAG, '1')
     emit('connect', {
       session: response.data,
       autoAnalyze: autoAnalyze.value
@@ -457,8 +523,10 @@ const connectCapture = async () => {
       error.value = err.response?.data?.detail || (language.value === 'zh' ? '连接失败，请检查采集卡' : 'Connection failed. Check the capture card.')
     }
   } finally {
-    isConnecting.value = false
-    abortController = null
+    if (abortController === controller) {
+      isConnecting.value = false
+      abortController = null
+    }
   }
 }
 </script>
@@ -613,6 +681,17 @@ const connectCapture = async () => {
   margin-bottom: 0.7rem;
 }
 
+.capture-unavailable {
+  margin: 0.6rem 0;
+  padding: 0.65rem 0.75rem;
+  border-left: 3px solid var(--warning, #d99d32);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .capture-header {
   display: flex;
   justify-content: space-between;
@@ -746,7 +825,7 @@ const connectCapture = async () => {
 
 .capture-settings-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(140px, 0.7fr) minmax(0, 1.8fr);
   gap: 0.65rem;
   margin-top: 0.6rem;
 }
@@ -754,6 +833,10 @@ const connectCapture = async () => {
 .capture-settings-grid .input-group {
   min-width: 0;
   margin-bottom: 0;
+}
+
+.capture-settings-grid .input-group:only-child {
+  grid-column: 1 / -1;
 }
 
 .capture-hint {

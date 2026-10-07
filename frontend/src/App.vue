@@ -48,7 +48,9 @@
 
           <div class="header-actions">
             <ScreenRecordingControl :sessionId="currentSession?.session_id"
-              :analyzing="isProcessing" :replay="replayMode" />
+              :analyzing="isProcessing" :replay="replayMode"
+              :previewRequired="Boolean(currentSession?.video_path?.startsWith('decklink://'))"
+              :previewMetrics="previewMetrics" />
             <button
               v-if="summaryReady"
               class="btn summary-ready-btn"
@@ -112,6 +114,7 @@
                 @load="handleLoad"
                 @sam3TimeUpdate="handleSam3TimeUpdate"
                 @capture-status="handleCaptureStatus"
+                @preview-metrics="handlePreviewMetrics"
                 @exitLoop="exitLoopMode"
                 @loopLoadFailed="handleLoopLoadFailed"
               />
@@ -446,6 +449,11 @@ const mode = ref('local')  // 'local' or 'stream'
 
 // State
 const currentSession = ref(null)
+const previewMetrics = ref(null)
+const handlePreviewMetrics = metrics => {
+  if (metrics.sessionId === currentSession.value?.session_id) previewMetrics.value = metrics
+}
+watch(() => currentSession.value?.session_id, () => { previewMetrics.value = null })
 const currentTime = ref(0)
 const duration = ref(0)
 const isPlaying = ref(false)
@@ -543,10 +551,12 @@ const navActiveView = ref('analysis')  // Nav rail active view
 const viewportWidth = ref(window.innerWidth)
 const viewportHeight = ref(window.innerHeight)
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
-const RIGHT_PANEL_STORAGE_KEY = 'surg_right_panel_width_v3'
-const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v5'
+const RIGHT_PANEL_STORAGE_KEY = 'surg_right_panel_width_v4'
+const BOTTOM_STRIP_STORAGE_KEY = 'surg_bottom_strip_height_v6'
 const minRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.21), 390, 450)
-const defaultRightPanelWidth = () => clamp(Math.round(viewportWidth.value * 0.24), 430, 560)
+const defaultRightPanelWidth = () => clamp(
+  clamp(Math.round(viewportWidth.value * 0.28), 480, 640), minRightPanelWidth(), maxRightPanelWidth()
+)
 const maxRightPanelWidth = () => Math.max(
   minRightPanelWidth(),
   Math.min(
@@ -554,8 +564,8 @@ const maxRightPanelWidth = () => Math.max(
     viewportWidth.value - 820
   )
 )
-const minBottomStripHeight = () => 250
-const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.29), 260, 300)
+const minBottomStripHeight = () => 280
+const defaultBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.31), 310, 350)
 const maxBottomStripHeight = () => clamp(Math.round(viewportHeight.value * 0.46), 420, 600)
 const rightPanelWidth = ref(clamp(
   Number(localStorage.getItem(RIGHT_PANEL_STORAGE_KEY)) || defaultRightPanelWidth(),
@@ -2056,7 +2066,7 @@ const EVENT_INSTRUMENT_RE = '(?:抓钳|钛夹钳|施夹钳|施夹器|剪刀|电�
 const EVENT_NON_CLIP_INSTRUMENT_RE = '(?:抓钳|剪刀|电剪|电钩|冲洗器|吸引器|冲吸器|双极电凝|双极|器械)'
 const EVENT_SIGNAL_RE = /(牵拉|暴露|分离|剥离|剪切|切断|夹闭|闭合|施夹|胆囊|胆囊管|胆囊动脉|管状结构|肝床|肝胆三角|CVS|清理|冲洗|吸引|装袋|取出|穿刺|穿入|穿孔|出血|止血|渗血|凝血|视野|起雾|雾|烟雾|模糊|镜头|体外|手术室|腹腔外|套管口|腹壁外)/
 const EVENT_RISK_RE = /(CVS未达成|安全视野|剪刀|scissors|大量(?:活动性)?出血|活动性出血|明显出血|持续出血|出血点|出血|止血|渗血|凝血|无活动性出血|未见活动性出血|bleeding|hemostasis)/i
-const FOG_ACTIVE_RE = /(镜头)?(?:起雾|雾气|烟雾|烟雾弥漫|水汽|模糊|视野不清|视野受遮挡|视野受限|fogging|foggy|fog (?:obscures|obscured|limits|blocks)|smoke|smoky|haze|hazy|blur(?:red|ry)?|obscur(?:ed|ing))/i
+const FOG_ACTIVE_RE = /(镜头)?(?:起雾|雾气|烟雾|烟雾弥漫|水汽|fogging|foggy|fog (?:obscures|obscured|limits|blocks)|smoke|smoky|haze|hazy)/i
 const FOG_RESOLVED_RE = /(雾(?:已|已经)?(?:去除|清除|消散|解除)|烟雾(?:已|已经)?(?:清除|消散)|视野(?:恢复|转为|变得)(?:清晰|可辨)|镜头(?:恢复|转为|变得)清晰|fog (?:cleared|resolved)|smoke (?:cleared|resolved)|view (?:restored|clear))/i
 const OUT_OF_BODY_RE = /(镜头|腹腔镜|视野|画面).{0,12}(?:移出体外|退出体外|离开腹腔|腹腔外|套管口|腹壁外|切换至手术室|手术室场景)|(?:体外|腹腔外|套管口|腹壁外|手术室场景|器械台|trocar|trocar outside|outside the body|outside-body|extracorporeal|operating room scene|extra-abdominal)/i
 
@@ -2218,10 +2228,10 @@ const summaryVisibilityFlags = (summary) => {
       || ['foggy', 'smoke', 'smoky', 'hazy'].includes(status)
       || (!structured && FOG_ACTIVE_RE.test(text) && !FOG_RESOLVED_RE.test(text))
     ),
-    fogResolved: trusted && (
+    fogResolved: trusted && !outOfBody && !visibility.fog && status !== 'foggy' && (
       Boolean(visibility.fog_cleared || visibility.cleared || visibility.resolved)
       || ['clear_after_fog', 'fog_cleared'].includes(status)
-      || FOG_RESOLVED_RE.test(text)
+      || (!structured && FOG_RESOLVED_RE.test(text))
     ),
     outOfBody,
     clearObserved: status === 'clear' && confidence >= .75 && !visibility.fog && !outOfBody,
@@ -2528,7 +2538,7 @@ const refreshCurrentWindowSummary = async (time) => {
 }
 
 const videoSectionMinHeight = computed(() => {
-  return Math.max(360, viewportHeight.value - bottomStripHeight.value - 190)
+  return Math.max(220, viewportHeight.value - bottomStripHeight.value - 190)
 })
 
 const startRightPanelResize = (event) => {
@@ -3435,6 +3445,18 @@ onUnmounted(() => {
 
 .app-main {
   position: relative;
+}
+
+@media (max-width: 1024px) {
+  .app-container { overflow-y: auto; }
+  .app-main-wrapper { flex: none; width: 100%; overflow: visible; }
+  .app-main { flex: none; overflow: visible; }
+  .app-main-center { flex: none; overflow: visible; }
+  .app-main :deep(.right-panel) { width: 100% !important; height: 640px; }
+  .video-section { flex: none; height: 340px; min-height: 0 !important; }
+  .right-panel-resize-handle, .layout-corner-resize-handle { display: none; }
+  .app-header { flex-wrap: wrap; gap: 6px; }
+  .header-actions { flex-wrap: wrap; }
 }
 
 .app-header {

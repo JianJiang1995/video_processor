@@ -113,7 +113,7 @@ class ClipDetectorService:
 
         detections: List[Dict] = []
         if results and len(results) > 0:
-            for box in results[0].boxes:
+            for box in results[0].boxes.cpu():
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 if not self._keep_box(x1, y1, x2, y2, w, h):
                     continue

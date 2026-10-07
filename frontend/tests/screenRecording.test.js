@@ -4,9 +4,34 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import recording from '../electron/screenRecording.cjs'
+import { normalizeRecordingFps } from '../electron/recordingOptions.mjs'
 
 const { RecordingFile, recordingAdmission } = recording
 const plenty = { diskBytes: 10 * 1024 ** 3, memoryBytes: 10 * 1024 ** 3, cpuLoad: 0.1 }
+
+test('recording fps accepts 1-60 integers and defaults invalid preferences to 40', () => {
+  for (const value of [undefined, null, '', 'abc', 0, -1, 61, 29.97, Infinity, NaN, true, {}, []]) {
+    assert.equal(normalizeRecordingFps(value), 40)
+  }
+  for (const value of [1, 15, 25, 40, 50, 60]) {
+    assert.equal(normalizeRecordingFps(value), value)
+    assert.equal(normalizeRecordingFps(String(value)), value)
+  }
+})
+
+test('file metadata preserves the requested fps across recordings, including default', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'screen-recording-fps-'))
+  try {
+    const recorder = new RecordingFile(directory, { capacity: async () => plenty, index: false })
+    for (const [fps, expected] of [[undefined, 40], [25, 25], ['50', 50], [500, 40]]) {
+      const job = await recorder.begin({ fps })
+      assert.equal(job.fps, expected)
+      const result = await recorder.finish(job.id)
+      assert.equal(result.fps, expected)
+      assert.equal(JSON.parse(await fs.readFile(`${job.path}.json`)).fps, expected)
+    }
+  } finally { await fs.rm(directory, { recursive: true, force: true }) }
+})
 
 test('auto admission protects memory and load, all recordings protect disk', () => {
   assert.equal(recordingAdmission(plenty, true), null)

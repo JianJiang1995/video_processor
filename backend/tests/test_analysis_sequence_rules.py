@@ -31,6 +31,52 @@ import numpy as np
 
 
 class AnalysisSequenceRulesTest(unittest.TestCase):
+    def test_dissection_prerequisite_matches_display_and_history_before_formal_start(self):
+        for preserve in (False, True):
+            previous = [{'window_id': 0, 'phase': 'Preparation', 'summary': '术野观察。'}]
+            prior = _build_surgical_sequence_state(previous)
+            text, phase, rules = _apply_surgical_sequence_rules(
+                '当前处于胆囊分离。电凝钩接触粘连组织。',
+                'GallbladderDissection', prior, preserve_anatomy=preserve)
+            self.assertEqual(phase, 'Preparation')
+            self.assertNotIn('当前处于胆囊分离', text)
+            self.assertIn('电凝钩接触粘连组织', text)
+            self.assertIn('dissection_requires_clipping_phase', rules)
+            replay = _build_surgical_sequence_state(previous + [
+                {'window_id': 1, 'phase': phase, 'summary': text}])
+            self.assertEqual(replay['last_phase'], phase)
+            self.assertFalse(replay['history_prefix_unknown'])
+            # Previously saved invalid forward jumps cannot alter history either.
+            legacy = _build_surgical_sequence_state(previous + [
+                {'window_id': 1, 'phase': 'GallbladderDissection', 'summary': text}])
+            self.assertEqual(legacy['last_phase'], phase)
+
+    def test_clip_then_dissection_and_partial_recordings_remain_allowed(self):
+        histories = [
+            [],
+            [{'window_id': 0, 'phase': 'GallbladderDissection', 'summary': '分离粘连组织。'}],
+            [{'window_id': 0, 'phase': 'Preparation', 'summary': '观察术野。'},
+             {'window_id': 1, 'phase': 'CalotTriangleDissection', 'summary': '解剖。'},
+             {'window_id': 2, 'phase': 'ClippingCutting', 'summary': '施夹器夹闭目标组织。'}],
+        ]
+        for previous in histories:
+            prior = _build_surgical_sequence_state(previous)
+            text, phase, rules = _apply_surgical_sequence_rules(
+                '电凝钩接触粘连组织。', 'GallbladderDissection', prior, preserve_anatomy=True)
+            self.assertEqual(phase, 'GallbladderDissection')
+            self.assertNotIn('dissection_requires_clipping_phase', rules)
+            updated = _build_surgical_sequence_state(previous + [
+                {'window_id': len(previous), 'phase': phase, 'summary': text}])
+            self.assertEqual(updated['last_phase'], phase)
+
+    def test_single_frame_grasper_and_irrigator_do_not_become_presence_facts(self):
+        for label, name in [('grasper', '抓钳'), ('irrigator', '冲洗器')]:
+            pack = {'phase': {'label': 'preparation'}, 'triplet': {},
+                    'yolo': {'tools': [{'label': label, 'frames_seen': 1}]}}
+            self.assertNotIn(name, _expert_snapshot_summary(pack, 0, 5, 12))
+            pack['yolo']['tools'][0]['frames_seen'] = 3
+            self.assertIn(name, _expert_snapshot_summary(pack, 0, 5, 12))
+
     def test_draft_does_not_assert_competing_tissues_as_three_operations(self):
         raw = {'triplet': [{'label': '[grasper]-[retract]-[gallbladder]', 'confidence': .65},
                            {'label': '[grasper]-[retract]-[liver]', 'confidence': .63},
@@ -132,6 +178,8 @@ class AnalysisSequenceRulesTest(unittest.TestCase):
                        {'label': '[clipper]-[clip]-[cystic_duct]', 'confidence': .8}]}}
         self.assertNotIn('钛夹钳夹闭', _expert_snapshot_summary(experts, 50, 55, 12))
         experts['yolo']['tools'] = [{'label': 'clipper', 'frames_seen': 12}]
+        self.assertIn('钛夹钳夹闭局部组织', _expert_snapshot_summary(experts, 50, 55, 12))
+        experts['triplet']['target'] = [{'label': 'cystic_duct', 'confidence': .95}]
         self.assertIn('钛夹钳夹闭胆囊管', _expert_snapshot_summary(experts, 50, 55, 12))
 
     def test_focused_active_applier_can_start_clipping_before_phase_model(self):
@@ -343,7 +391,9 @@ class AnalysisSequenceRulesTest(unittest.TestCase):
             visual,
         )
         self.assertEqual(phase, "GallbladderPackaging")
-        self.assertIn("将胆囊装入标本袋", summary)
+        self.assertIn("可见标本袋", summary)
+        self.assertNotIn("将胆囊装入", summary)
+        self.assertNotIn("准备取出", summary)
         self.assertIn("focused_bag_starts_packaging_phase", rules)
 
     def test_prepackaging_cleaning_does_not_claim_active_bleeding(self):
@@ -585,6 +635,7 @@ class AnalysisSequenceRulesTest(unittest.TestCase):
                 "visibility_secondary_review": {
                     "success": True,
                     "classification": "specimen_bag_inside",
+                    "image_quality": "clear",
                     "confidence": 0.99,
                 }
             },
@@ -729,7 +780,7 @@ class AnalysisSequenceRulesTest(unittest.TestCase):
         self.assertIn("双极电凝钳解剖（5:25-5:45）", report)
         self.assertIn("## 分阶段详细复盘", report)
         self.assertIn("**器械与操作区间**", report)
-        self.assertIn("累计约 0:20", report)
+        self.assertIn("对应分析窗口共 0:20", report)
         self.assertIn("双极电凝钳解剖", report)
         self.assertIn("扩大关键结构暴露", report)
         self.assertNotIn("肝胆三角或胆囊床", report)

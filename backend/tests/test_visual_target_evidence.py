@@ -1,6 +1,9 @@
 import unittest
 from backend.services.local_visual_prompt import validate_visibility_review
-from backend.services.clip_review import review_rejects_active_application
+from backend.services.clip_review import (
+    review_rejects_active_application, detector_instruments,
+    needs_tool_inventory_review, confirmed_empty_tool_inventory,
+)
 
 from backend.routers.analysis import (
     _expert_snapshot_summary,
@@ -18,6 +21,39 @@ from backend.routers.analysis import (
 
 
 class VisualTargetEvidenceTests(unittest.TestCase):
+    def test_unnamed_tool_action_still_requires_inventory_confirmation(self):
+        visual = {'observations': [{'instrument': 'unknown', 'action': '接触', 'target': '脂肪'}]}
+        experts = {'yolo': {'tools': []}}
+        self.assertTrue(needs_tool_inventory_review(visual, experts))
+        visual['clip_secondary_review'] = {'success': True, 'confidence': .95,
+            'visible_instruments': [], 'classification': 'clip', 'motion': 'static',
+            'independent_from_instrument': True, 'images': 3,
+            'image_selection': 'uniform_tool_inventory'}
+        self.assertTrue(confirmed_empty_tool_inventory(visual, experts))
+        self.assertNotIn('未知器械', _suppress_unsupported_tool_actions('未知器械接触脂肪。', visual, experts))
+        self.assertEqual(visual['observations'], [])
+        self.assertNotIn('被接触', _suppress_unsupported_tool_actions('腹腔内脂肪组织被接触。', visual, experts))
+
+    def test_weak_hit_requires_independent_full_window_review_not_automatic_veto(self):
+        experts = {'yolo': {'tools': [{'label': 'grasper', 'frames_seen': 1}]}}
+        visual = {'observations': [{'instrument': '抓钳', 'action': '牵拉'}]}
+        self.assertTrue(needs_tool_inventory_review(visual, experts))
+        self.assertFalse(confirmed_empty_tool_inventory(visual, experts))
+        visual['clip_secondary_review'] = {'success': True, 'confidence': .95,
+            'classification': 'no_clip', 'visible_instruments': [], 'images': 3,
+            'image_selection': 'uniform_tool_inventory'}
+        self.assertTrue(confirmed_empty_tool_inventory(visual, experts))
+        visual['clip_secondary_review']['visible_instruments'] = ['grasper']
+        self.assertFalse(confirmed_empty_tool_inventory(visual, experts))
+
+    def test_missing_detector_or_invalid_counts_are_not_negative_evidence(self):
+        for yolo in (None, {}, 'bad', {'tools': [{'label': 'grasper', 'frames_seen': 'bad'}]},
+                     {'tools': [{'label': 'grasper', 'frames_seen': float('nan')}]},
+                     {'tools': [{'label': 'grasper', 'frames_seen': True}]}):
+            self.assertIsNone(detector_instruments({'yolo': yolo}))
+        self.assertEqual(detector_instruments({'yolo': {'tools': [{'label': 'hook'}]}}), {'hook'})
+        self.assertEqual(detector_instruments({'yolo': {'tools': []}}), set())
+
     def test_generic_expert_tissue_is_never_upgraded_to_cystic_identity(self):
         from backend.routers.analysis import _target_hint_from_triplet, _triplet_operation_phrases
         from backend.services.expert_fusion import _triplet_target_hint, _triplet_operation_phrases as expert_phrases
@@ -121,6 +157,33 @@ class VisualTargetEvidenceTests(unittest.TestCase):
             visual, {'yolo': {'tools': []}})
         self.assertEqual(result, '暴露区域为腹腔内组织。')
 
+    def test_no_tool_review_removes_structured_action_as_well_as_summary(self):
+        from backend.services.clip_review import needs_tool_inventory_review
+        experts = {'yolo': {'tools': []}}
+        visual = {'observations': [
+            {'instrument': '抓钳', 'action': '牵拉', 'target': '脂肪'},
+            {'instrument': 'unknown', 'target': '腹膜'}],
+            'clip_secondary_review': {'success': True, 'confidence': .95,
+                'classification': 'no_clip', 'visible_instruments': [],
+                'images': 3, 'image_selection': 'uniform_tool_inventory'}}
+        self.assertTrue(needs_tool_inventory_review(visual, experts))
+        text = _suppress_unsupported_tool_actions('抓钳牵拉脂肪组织。视野内可见腹膜。', visual, experts)
+        self.assertEqual(text, '视野内可见腹膜。')
+        self.assertEqual(visual['observations'], [{'instrument': 'unknown', 'target': '腹膜'}])
+        self.assertEqual(visual['rejected_observations'][0]['rejection_reason'], 'confirmed_empty_tool_inventory')
+        self.assertFalse(needs_tool_inventory_review(visual, experts))
+
+    def test_sparse_or_clip_targeted_review_cannot_veto_whole_window_tools(self):
+        from backend.services.clip_review import confirmed_empty_tool_inventory, needs_tool_inventory_review
+        for count, selection in [(2, 'uniform_tool_inventory'), (3, 'clip_detector_frames')]:
+            visual = {'clip_secondary_review': {'success': True, 'confidence': .99,
+                'classification': 'no_clip', 'visible_instruments': [],
+                'images': count, 'image_selection': selection}}
+            self.assertFalse(confirmed_empty_tool_inventory(visual, {'yolo': {'tools': []}}))
+        visual = {'observations': [{'instrument': '抓钳'}]}
+        self.assertFalse(needs_tool_inventory_review(visual, {}))
+        self.assertFalse(needs_tool_inventory_review(visual, {'yolo': {'tools': [{'label': 'grasper'}]}}))
+
     def test_isolated_phase_prediction_cannot_lock_irreversible_history(self):
         def row(wid, raw, confidence=.9):
             return {'window_id': wid, 'surgical_phase': 'CalotTriangleDissection',
@@ -135,6 +198,42 @@ class VisualTargetEvidenceTests(unittest.TestCase):
         candidate.pop('vote_counts')
         history[1]['others']['experts']['phase']['confidence'] = .54
         self.assertEqual(_stable_expert_phase(candidate, history, 2), 'CalotTriangleDissection')
+
+    def test_startup_preparation_calot_tie_prefers_preparation_in_either_vote_order(self):
+        for labels in [('calot_triangle_dissection', 'preparation'),
+                       ('Preparation', 'CalotTriangleDissection')]:
+            candidate = {'label': 'calot_triangle_dissection', 'confidence': .619,
+                         'vote_counts': dict.fromkeys(labels, 6)}
+            original = dict(candidate)
+            self.assertEqual(_stable_expert_phase(candidate, [], 0), 'Preparation')
+            self.assertEqual(candidate, original)
+
+    def test_sustained_phase_uses_combined_votes_without_requiring_each_sixty_percent(self):
+        def vote(n):
+            return {'label': 'calot_triangle_dissection', 'confidence': .85,
+                    'vote_counts': {'calot_triangle_dissection': n, 'preparation': 12 - n}}
+        def rows(counts):
+            return [{'window_id': i, 'surgical_phase': 'Preparation',
+                     'others': {'experts': {'phase': vote(n)}}} for i, n in enumerate(counts)]
+        self.assertEqual(_stable_expert_phase(vote(11), rows([6, 11]), 2), 'CalotTriangleDissection')
+        self.assertEqual(_stable_expert_phase(vote(6), rows([6, 6]), 2), 'Preparation')
+        self.assertEqual(_stable_expert_phase(vote(12), rows([5, 12]), 2), 'Preparation')
+
+    def test_startup_tie_rule_does_not_force_clear_or_late_phases_to_preparation(self):
+        for label, counts, expected in [
+            ('calot_triangle_dissection', {'calot_triangle_dissection': 7, 'preparation': 5}, 'CalotTriangleDissection'),
+            ('gallbladder_dissection', {'gallbladder_dissection': 12}, 'GallbladderDissection'),
+            ('gallbladder_packaging', {'gallbladder_packaging': 8, 'preparation': 2, 'calot_triangle_dissection': 2}, 'GallbladderPackaging'),
+            ('Unknown', {}, 'Unknown'),
+        ]:
+            with self.subTest(label=label):
+                self.assertEqual(_stable_expert_phase({'label': label, 'vote_counts': counts}, [], 0), expected)
+
+    def test_startup_tie_rule_does_not_reset_an_established_phase(self):
+        candidate = {'label': 'calot_triangle_dissection', 'confidence': .7,
+                     'vote_counts': {'calot_triangle_dissection': 6, 'preparation': 6}}
+        history = [{'window_id': 0, 'surgical_phase': 'CalotTriangleDissection'}]
+        self.assertEqual(_stable_expert_phase(candidate, history, 1), 'CalotTriangleDissection')
 
     def test_external_scene_needs_distinct_frames_and_explicit_evidence(self):
         review = {'classification': 'external_body', 'confidence': .99,

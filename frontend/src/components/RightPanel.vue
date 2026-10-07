@@ -1,5 +1,5 @@
 <template>
-  <div class="right-panel">
+  <div class="right-panel" :style="{ '--panel-text-size': textSize + 'px' }">
     <!-- Tab bar -->
     <div class="rp-tabs">
       <button
@@ -15,6 +15,27 @@
         @click="$emit('update:activeTab', 'chat')"
       >
         <span class="rp-tab-icon">&#x1F4AC;</span> {{ t('right.chat') }}
+      </button>
+    </div>
+
+    <div class="reading-controls" role="group" :aria-label="t('right.textSize')">
+      <Type :size="17" aria-hidden="true" />
+      <label for="right-panel-text-size">{{ t('right.textSize') }}</label>
+      <button class="reading-button" :disabled="textSize <= MIN_PANEL_TEXT_SIZE"
+        :title="t('right.smallerText')" :aria-label="t('right.smallerText')" @click="textSize--">
+        <Minus :size="16" aria-hidden="true" />
+      </button>
+      <input id="right-panel-text-size" v-model.number="textSize" type="range"
+        :min="MIN_PANEL_TEXT_SIZE" :max="MAX_PANEL_TEXT_SIZE" step="1"
+        :aria-valuetext="`${textSize} px`" data-testid="right-panel-text-size" />
+      <button class="reading-button" :disabled="textSize >= MAX_PANEL_TEXT_SIZE"
+        :title="t('right.largerText')" :aria-label="t('right.largerText')" @click="textSize++">
+        <Plus :size="16" aria-hidden="true" />
+      </button>
+      <output for="right-panel-text-size" class="reading-size">{{ textSize }}px</output>
+      <button class="reading-button" :title="t('right.resetTextSize')" :aria-label="t('right.resetTextSize')"
+        @click="textSize = DEFAULT_PANEL_TEXT_SIZE">
+        <RotateCcw :size="15" aria-hidden="true" />
       </button>
     </div>
 
@@ -146,11 +167,16 @@
 
 <script setup>
 import { formatWindowNarrative, phaseLabel as formatPhaseLabel, mergeWindowNarratives, isReviewedWindow } from '../utils/windowNarrative.js'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Type, Minus, Plus, RotateCcw } from '@lucide/vue'
+import { DEFAULT_PANEL_TEXT_SIZE, MIN_PANEL_TEXT_SIZE, MAX_PANEL_TEXT_SIZE,
+  loadPanelTextSize, savePanelTextSize } from '../utils/panelTextSize.js'
 import ChatPanel from './ChatPanel.vue'
 import { useI18n } from '@/i18n'
 
 const { language, t, windowLabel } = useI18n()
+const textSize = ref(loadPanelTextSize())
+watch(textSize, value => savePanelTextSize(value))
 
 const props = defineProps({
   activeTab: { type: String, default: 'analysis' },
@@ -443,7 +469,42 @@ const seekChapter = (chapter) => {
   overflow: hidden;
   width: 420px;
   flex-shrink: 0;
+  min-width: 0;
+  --panel-chat-size: calc(var(--panel-text-size) + 4px);
+  --panel-detail-size: calc(var(--panel-text-size) - 2px);
+  --panel-meta-size: calc(var(--panel-text-size) - 4px);
 }
+
+.reading-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px;
+  min-height: 38px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.reading-controls label { white-space: nowrap; }
+.reading-controls input { flex: 1; width: 60px; min-width: 40px; accent-color: var(--accent-primary); cursor: pointer; }
+.reading-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.reading-button:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); }
+.reading-button:disabled { opacity: .35; cursor: default; }
+.reading-button:focus-visible, .reading-controls input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+.reading-size { flex: 0 0 38px; text-align: center; font-variant-numeric: tabular-nums; }
 
 .rp-tabs {
   display: flex;
@@ -635,18 +696,19 @@ const seekChapter = (chapter) => {
   display: flex;
   align-items: baseline;
   gap: 10px;
+  flex-wrap: wrap;
   margin-bottom: 14px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-subtle);
 }
 .narrative-title {
-  font-size: 18px;
+  font-size: var(--panel-text-size);
   font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: 0.3px;
+  letter-spacing: 0;
 }
 .narrative-meta {
-  font-size: 14px;
+  font-size: var(--panel-meta-size);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
 }
@@ -675,11 +737,12 @@ const seekChapter = (chapter) => {
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
+  flex-wrap: wrap;
   margin-bottom: 10px;
 }
 
 .bleeding-status-title {
-  font-size: 20px;
+  font-size: calc(var(--panel-text-size) + 2px);
   font-weight: 900;
 }
 
@@ -694,13 +757,13 @@ const seekChapter = (chapter) => {
 .bleeding-status-time {
   color: var(--text-tertiary);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: var(--panel-meta-size);
   white-space: nowrap;
 }
 
 .bleeding-status-text {
   color: var(--text-primary);
-  font-size: 17px;
+  font-size: var(--panel-text-size);
   line-height: 1.5;
 }
 
@@ -739,7 +802,7 @@ const seekChapter = (chapter) => {
   border-radius: 4px;
   background: var(--accent-primary);
   color: var(--bg-primary);
-  font-size: 14px;
+  font-size: var(--panel-meta-size);
   font-weight: 800;
 }
 
@@ -752,7 +815,7 @@ const seekChapter = (chapter) => {
 }
 
 .latest-text {
-  font-size: 18px;
+  font-size: calc(var(--panel-text-size) + 2px);
   line-height: 1.5;
   font-weight: 650;
   color: var(--text-primary);
@@ -761,13 +824,13 @@ const seekChapter = (chapter) => {
 }
 
 .latest-chapter.secondary .latest-text {
-  font-size: 16px;
+  font-size: var(--panel-text-size);
 }
 
 .history-title {
   margin: 8px 0 6px;
   color: var(--text-tertiary);
-  font-size: 15px;
+  font-size: var(--panel-detail-size);
   font-weight: 700;
 }
 
@@ -794,18 +857,18 @@ const seekChapter = (chapter) => {
   flex-wrap: wrap;
 }
 .chapter-phase {
-  font-size: 12px;
+  font-size: var(--panel-meta-size);
   font-weight: 600;
   color: var(--text-secondary);
   margin: 4px 0 7px;
 }
 .chapter-time {
-  font-size: 14px;
+  font-size: var(--panel-meta-size);
   font-family: var(--font-mono);
   color: var(--text-tertiary);
 }
 .chapter-count {
-  font-size: 13px;
+  font-size: var(--panel-meta-size);
   padding: 3px 9px;
   border-radius: 3px;
   background: var(--bg-tertiary);
@@ -813,7 +876,7 @@ const seekChapter = (chapter) => {
   font-family: var(--font-mono);
 }
 .chapter-text {
-  font-size: 15px;
+  font-size: var(--panel-text-size);
   line-height: 1.55;
   color: var(--text-primary);
   white-space: pre-wrap;
@@ -837,7 +900,7 @@ const seekChapter = (chapter) => {
   background: var(--bg-tertiary);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--panel-meta-size);
   cursor: pointer;
   text-align: center;
   transition: border-color 0.15s, color 0.15s, background-color 0.15s;
@@ -881,8 +944,8 @@ const seekChapter = (chapter) => {
 }
 
 .an-empty-icon { font-size: 40px; opacity: 0.3; }
-.an-empty-text { font-size: 23px; color: var(--text-secondary); }
-.an-empty-hint { font-size: 19px; color: var(--text-tertiary); }
+.an-empty-text { font-size: calc(var(--panel-text-size) + 2px); color: var(--text-secondary); }
+.an-empty-hint { font-size: var(--panel-detail-size); color: var(--text-tertiary); text-align: center; padding: 0 12px; }
 
 /* Chat tab */
 .tab-chat {

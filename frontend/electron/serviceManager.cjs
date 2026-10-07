@@ -77,7 +77,7 @@ function buildServiceDefinitions(resourcesPath, appConfig, isPackaged) {
       exe: resolveExe('surgr1', 'surgr1-server'),
       args: [],
       env: {
-        CUDA_VISIBLE_DEVICES: process.env.SURGR1_GPU || process.env.CUDA_VISIBLE_DEVICES || '0',
+        CUDA_VISIBLE_DEVICES: process.env.SURGR1_GPU || process.env.CUDA_VISIBLE_DEVICES || String(services.surgr1?.gpu ?? 0),
       },
       startupTimeout: 120000, // vLLM model loading takes time
       cwd: isPackaged ? path.join(resourcesPath, 'surgr1') : null,

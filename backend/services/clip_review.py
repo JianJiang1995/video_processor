@@ -1,4 +1,33 @@
 """Morphology evidence required before a visual review can assert clipping."""
+import math
+import re
+
+
+def detector_instruments(experts: dict) -> set[str] | None:
+    """Ignore known single-frame hits; missing/invalid evidence is not absence."""
+    yolo = (experts or {}).get("yolo")
+    tools = yolo.get("tools") if isinstance(yolo, dict) else None
+    if not isinstance(tools, list):
+        return None
+    labels = set()
+    aliases = {"clip_applier": "clipper", "electrocautery_hook": "hook"}
+    for tool in tools:
+        if not isinstance(tool, dict) or not isinstance(tool.get("label"), str) or not tool["label"].strip():
+            return None
+        if "frames_seen" in tool:
+            if isinstance(tool["frames_seen"], bool):
+                return None
+            try:
+                count = float(tool["frames_seen"])
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(count) or count < 0:
+                return None
+            if count < 2:
+                continue
+        label = tool["label"].strip().lower()
+        labels.add(aliases.get(label, label))
+    return labels
 
 CLIP_REVIEW_PROMPT = """观察按时间排列的同一短视频窗口全图。先检查每件器械的远端结构，
 然后判断是否有施夹动作或留置夹子。不要根据手术阶段猜测，不要把图像角落的图标、文字、水印当器械。
@@ -44,6 +73,36 @@ def reviewed_instruments(visual: dict) -> set[str] | None:
             or any(not isinstance(v, str) or v not in allowed for v in values)):
         return None
     return set(values)
+
+
+def needs_tool_inventory_review(visual: dict, experts: dict) -> bool:
+    """Resolve a primary tool claim unsupported by the window's detector."""
+    if detector_instruments(experts) != set():
+        return False
+    for observation in (visual or {}).get("observations") or []:
+        if not isinstance(observation, dict):
+            continue
+        tool = str(observation.get("instrument") or "").strip().lower()
+        if tool not in {"", "unknown", "none", "null", "无", "无器械", "未见器械", "未知"}:
+            return True
+        action = str(observation.get('action') or '')
+        if re.search(r'接触|牵拉|分离|夹持|夹闭|剪断|切断|凝血|contact|retract|dissect|grasp|coagulat', action, re.IGNORECASE):
+            return True
+    return False
+
+
+def confirmed_empty_tool_inventory(visual: dict, experts: dict) -> bool:
+    """A few clip-trigger frames cannot rule out tools elsewhere in a window."""
+    review = (visual or {}).get("clip_secondary_review") or {}
+    return bool(
+        detector_instruments(experts) == set()
+        and reviewed_instruments(visual) == set()
+        and (review.get("classification") == "no_clip" or (
+            review.get('classification') in {'clip', 'unconfirmed', 'other'}
+            and review.get('independent_from_instrument') and review.get('motion') == 'static'))
+        and int(review.get("images") or 0) >= 3
+        and review.get("image_selection") != "clip_detector_frames"
+    )
 
 
 def review_rejects_active_application(visual: dict) -> bool:

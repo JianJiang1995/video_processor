@@ -21,6 +21,18 @@
           <div class="loop-loading-text">{{ t('video.loadingPlayback') }}</div>
         </div>
         
+        <LiveCapturePreview
+          v-else-if="useRawStream"
+          :key="rawStreamUrl"
+          :url="rawStreamUrl"
+          :paused="!isPlaying || isPaused"
+          class="stream-image stream-canvas"
+          :class="{ 'hidden-by-sam3': showSam3 && sam3Frame }"
+          @frame="isLoading = false"
+          @metrics="emit('preview-metrics', { ...$event, sessionId: session.session_id })"
+          @error="handleRawPreviewError"
+          @click="togglePlay"
+        />
         <canvas
           v-else-if="useCanvasStream"
           ref="streamCanvasRef"
@@ -80,7 +92,7 @@
         />
         <!-- Pause overlay when stream is paused but no frozen frame available -->
         <div 
-          v-if="mode === 'stream' && isLiveStream && !isSimulatorStream && !isLoopPlaybackMode && isPaused && !frozenFrame"
+          v-if="mode === 'stream' && isLiveStream && !isSimulatorStream && !isLoopPlaybackMode && !useRawStream && isPaused && !frozenFrame"
           class="pause-overlay"
         >
           <div class="pause-icon">⏸</div>
@@ -231,6 +243,8 @@ import { ref, watch, onUnmounted, computed, nextTick } from 'vue'
 import { isElectron, getBackendUrl, getCachedFrame, cacheFrame, getLocalFrame } from '@/utils/electronBridge'
 import { useI18n } from '@/i18n'
 import { selectPlaybackPreview } from '@/utils/playbackSource'
+import { livePreviewUrl, isLoopbackPreview } from '@/utils/livePreview'
+import LiveCapturePreview from './LiveCapturePreview.vue'
 
 const { t } = useI18n()
 
@@ -278,7 +292,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['timeupdate', 'play', 'pause', 'ended', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning', 'capture-status', 'reviewToggle'])
+const emit = defineEmits(['timeupdate', 'play', 'pause', 'ended', 'seek', 'upload', 'load', 'sam3TimeUpdate', 'exitLoop', 'loopLoadFailed', 'loopCoverageWarning', 'capture-status', 'preview-metrics', 'reviewToggle'])
 
 const videoRef = ref(null)
 const streamImgRef = ref(null)
@@ -380,6 +394,33 @@ const useCanvasStream = computed(() => {
   return props.mode === 'stream' && isLiveStream.value && !isSimulatorStream.value && !props.loopWindow
 })
 
+const rawPreviewFailed = ref(false)
+const isolatedPreviewUrl = ref('')
+let isolatedPreviewGeneration = 0
+const useRawStream = computed(() => useCanvasStream.value && backendReady.value &&
+  isDeckLinkCapture.value && isElectron() && !rawPreviewFailed.value &&
+  isLoopbackPreview(backendUrl.value) && typeof Worker !== 'undefined' &&
+  Boolean(HTMLCanvasElement.prototype.transferControlToOffscreen))
+const rawStreamUrl = computed(() => useRawStream.value
+  ? isolatedPreviewUrl.value || livePreviewUrl(backendUrl.value, props.session.session_id, true, 'bgr24') : '')
+watch(() => [backendReady.value, props.session?.session_id], async () => {
+  const generation = ++isolatedPreviewGeneration
+  isolatedPreviewUrl.value = ''
+  if (!backendReady.value || !isElectron() || !isDeckLinkCapture.value || !isLoopbackPreview(backendUrl.value)) return
+  try {
+    const response = await fetch(`${backendUrl.value}/api/video/preview-endpoint/${props.session.session_id}`)
+    if (!response.ok) return
+    const data = await response.json()
+    if (generation === isolatedPreviewGeneration && data.url) isolatedPreviewUrl.value = data.url
+  } catch (_) { /* The acknowledged HTTP preview remains available. */ }
+})
+const handleRawPreviewError = error => {
+  console.warn('[LiveCapturePreview] Falling back to JPEG:', error)
+  rawPreviewFailed.value = true
+  emit('preview-metrics', { sessionId: props.session?.session_id, error, measuredAt: Date.now() })
+}
+watch(() => props.session?.session_id, () => { rawPreviewFailed.value = false })
+
 const captureStatus = ref(null)
 let captureStatusTimer = null
 let captureStatusRequestPending = false
@@ -407,7 +448,10 @@ const captureStatusTitle = computed(() => {
 
 const captureStatusDetail = computed(() => {
   const code = captureStatus.value?.status_code
-  if (code === 'no_signal') return t('video.captureNoSignalDetail')
+  if (code === 'no_signal') {
+    return t(captureStatus.value?.mode && captureStatus.value.mode !== 'auto'
+      ? 'video.captureManualModeNoSignal' : 'video.captureNoSignalDetail')
+  }
   if (code === 'valid_signal_black_frame') return t('video.captureBlackFrameDetail')
   if (code === 'signal_stalled') return t('video.captureStalledDetail')
   if (code === 'reconnecting') return t('video.captureReconnectingDetail')
@@ -470,7 +514,7 @@ const streamUrl = computed(() => {
   if (!props.session?.session_id) return ''
   if (!isLiveStream.value) return ''
 
-  return `${backendUrl.value}/api/video/display-mjpeg/${props.session.session_id}?fps=20&quality=68&max_width=1280`
+  return livePreviewUrl(backendUrl.value || window.location.origin, props.session.session_id)
 })
 
 const onStreamLoad = () => {
@@ -569,17 +613,11 @@ const stopCanvasStream = () => {
 const canvasStreamUrl = () => {
   if (!props.session?.session_id) return null
   const base = backendUrl.value || window.location.origin
-  const url = new URL(`/api/video/ws-display/${props.session.session_id}`, base)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  url.searchParams.set('fps', '30')
-  url.searchParams.set('quality', '78')
-  url.searchParams.set('max_width', '1280')
-  url.searchParams.set('ack', 'true')
-  return url.toString()
+  return livePreviewUrl(base, props.session.session_id, true)
 }
 
 const startCanvasStream = async () => {
-  if (!useCanvasStream.value || !props.session?.session_id || !backendUrl.value && !window.location.origin) {
+  if (useRawStream.value || !useCanvasStream.value || !props.session?.session_id || !backendUrl.value && !window.location.origin) {
     stopCanvasStream()
     return
   }
@@ -680,6 +718,10 @@ watch(
 
 // Watch for pause state changes to capture/clear frozen frame
 watch(() => props.isPaused, async (paused) => {
+  if (useRawStream.value) {
+    frozenFrame.value = null
+    return
+  }
   if (paused && props.mode === 'stream' && !isSimulatorStream.value) {
     // First try to capture current frame from canvas
     let frame = captureFrame()
@@ -715,6 +757,7 @@ watch(() => props.seekNonce, () => {
 // Watch for play/pause state
 watch(() => props.isPlaying, async (playing) => {
   await nextTick()
+  if (useRawStream.value) { stopCanvasStream(); return }
   if (useCanvasStream.value) {
     if (playing) {
       startCanvasStream()
@@ -737,7 +780,7 @@ watch(() => props.resumeNonce, () => {
 }, { flush: 'post', immediate: true })
 
 watch(
-  () => [backendUrl.value, props.session?.session_id, props.mode, props.loopWindow, useCanvasStream.value],
+  () => [backendUrl.value, props.session?.session_id, props.mode, props.loopWindow, useCanvasStream.value, useRawStream.value],
   () => {
     if (useCanvasStream.value && props.isPlaying) {
       startCanvasStream()

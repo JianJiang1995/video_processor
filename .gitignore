@@ -18,6 +18,8 @@ datasets/
 models/
 packages/
 recordings/
+backups/
+docs/clinical_summaries/
 runs/
 tmp/
 tmp_model_configs/

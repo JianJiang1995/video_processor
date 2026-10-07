@@ -5,6 +5,40 @@ from backend.services.local_visual_prompt import build_local_visual_prompt, revi
 
 
 class LocalPromptTests(unittest.TestCase):
+    def test_single_frame_and_conflicting_tool_do_not_prime_r1_or_triplet(self):
+        experts = {'yolo': {'tools': [{'label': 'grasper', 'frames_seen': 1},
+                                     {'label': 'hook', 'frames_seen': 6}]},
+                   'triplet': {'triplet': [{'label': '[grasper]-[retract]-[liver]', 'confidence': .9}],
+                               'target': [{'label': 'liver', 'confidence': .9}]},
+                   'surgr1': {'success': True, 'observations': [
+                       {'action': 'grasper retract liver'}, {'action': 'hook dissect adhesion'}]}}
+        context = json.loads(build_local_visual_prompt(experts).splitlines()[-1])
+        self.assertEqual([t['label'] for t in context['tools_candidates']], ['hook'])
+        self.assertEqual(context['operation_candidates'], [])
+        self.assertEqual(context['surgr1_observations'], [{'action': 'hook dissect adhesion'}])
+        self.assertEqual(context['tissue_candidates'][0]['label'], 'liver')
+        self.assertEqual(len(experts['surgr1']['observations']), 2)
+
+    def test_r1_partial_abstaining_and_mixed_unsupported_actions_are_not_facts(self):
+        actions = ['no_visible_instrument', 'grasper null_verb null_target',
+                   'hook unknown_action unknown_target',
+                   'hook dissect adhesion, grasper retract liver']
+        for action in actions:
+            context = json.loads(build_local_visual_prompt({
+                'yolo': {'tools': [{'label': 'hook', 'frames_seen': 8}]},
+                'surgr1': {'success': True, 'observations': [{'action': action}]}}).splitlines()[-1])
+            self.assertNotIn('surgr1_observations', context)
+
+    def test_empty_detector_does_not_prime_vlm_with_surgr1_phantom_tool(self):
+        experts = {'yolo': {'tools': []}, 'surgr1': {'success': True,
+            'observations': [{'action': 'grasper retract liver'}]}}
+        prompt = build_local_visual_prompt(experts)
+        self.assertNotIn('grasper retract liver', prompt)
+        self.assertEqual(experts['surgr1']['observations'][0]['action'], 'grasper retract liver')
+        self.assertIn('空候选也不表示没有器械', prompt)
+        experts['yolo']['tools'] = [{'label': 'grasper', 'frames_seen': 3}]
+        self.assertIn('grasper retract liver', build_local_visual_prompt(experts))
+
     def test_frame_ids_are_not_source_seconds(self):
         prompt = build_local_visual_prompt({'surgr1': {'success': True, 'observations': [
             {'timestamp': 754.2, 'action': 'hook dissect adhesion'}]}}, frame_count=4)

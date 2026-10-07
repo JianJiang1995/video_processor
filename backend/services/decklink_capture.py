@@ -2,7 +2,7 @@
 Low-latency DeckLink capture backed by one shared GStreamer pipeline per URI.
 
 Display, frame storage, and analysis readers all consume the latest frame from
-the same pipeline. This prevents several processes from opening one DeckLink
+the same pipeline. This prevents readers in this process from opening one DeckLink
 input and prevents slow consumers from building a realtime backlog.
 """
 
@@ -197,6 +197,10 @@ class _DeckLinkSharedState:
 
     def start(self):
         with self.condition:
+            # An expired/stopping state must finish releasing the hardware before
+            # a fresh state can be started, even when the URI is unchanged.
+            if not self.running and self.thread is not None:
+                return False
             self.ref_count += 1
             self.idle_deadline = 0.0
             if not self.running:
@@ -213,6 +217,7 @@ class _DeckLinkSharedState:
         with self.condition:
             while self.running and not self.opened and time.monotonic() < deadline:
                 self.condition.wait(timeout=0.05)
+        return True
 
     def release(self):
         with self.condition:
@@ -279,6 +284,23 @@ class _DeckLinkSharedState:
         thread = self.thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=max(0.0, timeout))
+        return thread is None or not thread.is_alive()
+
+    def stop_if_idle(self):
+        with self.condition:
+            if self.ref_count:
+                raise RuntimeError(
+                    f"DeckLink {self.device_number} is in use "
+                    f"({self.connection}, {self.mode}). Stop the current capture "
+                    "before changing its input or video mode."
+                )
+            self.running = False
+            self.condition.notify_all()
+        if not self.wait_for_shutdown(timeout=3.0):
+            raise RuntimeError(
+                f"DeckLink {self.device_number} is still releasing its previous input. "
+                "Wait for capture shutdown before reconnecting."
+            )
 
     def _set_status(self, **values):
         with self.condition:
@@ -357,7 +379,7 @@ class _DeckLinkSharedState:
             self.sink = self.pipeline.get_by_name("sink")
             result = self.pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
-                raise RuntimeError("GStreamer rejected the DeckLink pipeline")
+                raise RuntimeError(self._consume_bus_message() or "GStreamer rejected the DeckLink pipeline")
 
             self._set_status(opened=True, phase="waiting_signal", last_error="")
             logger.info(
@@ -460,15 +482,27 @@ class _DeckLinkSharedState:
 
 class DeckLinkCapture:
     def __init__(self, uri: str):
+        uri = build_decklink_uri(*parse_decklink_uri(uri))
         self.uri = uri
+        self._state = None
         self._last_sequence = 0
+        device_number, _, _ = parse_decklink_uri(uri)
         with _STATES_LOCK:
+            # The card is exclusive by device, not URI. Preserve the warm probe
+            # handoff for identical settings, but release idle pipelines before
+            # switching connectors/modes. Never take over an active reader.
+            for old_uri, old_state in list(_STATES.items()):
+                if old_uri != uri and old_state.device_number == device_number:
+                    old_state.stop_if_idle()
+                    del _STATES[old_uri]
             state = _STATES.get(uri)
-            if state is None or not state.running:
-                if state is not None:
-                    state.wait_for_shutdown(timeout=1.0)
-                state = _DeckLinkSharedState(uri)
-                _STATES[uri] = state
+            if state is not None and state.start():
+                self._state = state
+                return
+            if state is not None:
+                state.stop_if_idle()
+            state = _DeckLinkSharedState(uri)
+            _STATES[uri] = state
             self._state = state
             # Starting while holding the registry lock makes state creation and
             # reference acquisition atomic across display/storage/analysis.
@@ -515,6 +549,7 @@ class DeckLinkCapture:
 
 
 def get_decklink_status(uri: str):
+    uri = build_decklink_uri(*parse_decklink_uri(uri))
     with _STATES_LOCK:
         state = _STATES.get(uri)
     return state.status() if state is not None else None

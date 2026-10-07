@@ -8,14 +8,21 @@ import cv2
 from PIL import Image
 
 from .frame_storage_service import get_frame_storage_service
-from .glm_client import get_glm_client
+from .glm_client import get_glm_client, load_config
+from .analysis_image_regions import (
+    REGIONS_KEY, CROP_RIGHT_KEY, prepare_analysis_image,
+    regions_for_source, crop_right_for_source,
+)
 from .surgr1_window_review import review_surgr1_window
+from .visibility_consistency import apply_visibility_review
 from .triplet_service import get_triplet_service, LABEL_SCHEMA
 from .local_video_source import resolve_video_source, apply_input_layout, split_input_layout
 from .local_visual_prompt import (
     build_local_visual_prompt, scene_observations_need_review,
     VISIBILITY_REVIEW_PROMPT, validate_visibility_review, reviewed_scene_summary,
     normalize_local_review,
+    parse_complete_visual_response,
+    LOCAL_VISUAL_SCHEMA,
 )
 
 
@@ -25,15 +32,22 @@ def sample_indices(length, maximum=4):
     return [round(i * (length - 1) / (maximum - 1)) for i in range(maximum)]
 
 
-def fit_image(image):
+def fit_image(image, regions=None, crop_right=None):
     result = image.convert("RGB")
     result.thumbnail((640, 640), Image.Resampling.LANCZOS)
-    return result
+    if regions is not None:
+        result.info[REGIONS_KEY] = regions
+    if crop_right is not None:
+        result.info[CROP_RIGHT_KEY] = crop_right
+    return prepare_analysis_image(result)
 
 
 def load_review_frames(session, start, end):
     """Read saved, already-cropped frames or a private file decoder, never live capture."""
     storage = session.get("storage_path")
+    config = load_config()
+    regions = regions_for_source(session.get("video_path", ""), config)
+    crop_right = crop_right_for_source(session.get("video_path", ""), config)
     if storage:
         frames = get_frame_storage_service().list_frames_in_range(storage, start, end)
         frames = sorted((f for f in frames if start <= f["timestamp"] < end),
@@ -43,7 +57,7 @@ def load_review_frames(session, start, end):
             frame = frames[index]
             try:
                 with Image.open(Path(storage) / frame["path"]) as image:
-                    images.append(fit_image(image))
+                    images.append(fit_image(image, regions, crop_right))
                 times.append(frame["timestamp"])
             except (OSError, ValueError):
                 continue
@@ -72,7 +86,7 @@ def load_review_frames(session, start, end):
             if not start <= actual < end:
                 continue
             frame = apply_input_layout(frame, source.input_layout)
-            images.append(fit_image(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))))
+            images.append(fit_image(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), regions, crop_right))
             times.append(actual)
     finally:
         capture.release()
@@ -111,14 +125,18 @@ async def analyze_review(images, timestamps, experts=None, phase=None):
     response = await asyncio.wait_for(client._analyze_images_with_timestamps(
         images=images, timestamps=timestamps, question=build_local_visual_prompt(experts, phase, len(images)),
         system_prompt="仅依据本次图像重新核实，不沿用旧摘要。单帧不能确认动态动作。只输出要求的JSON。",
-        temperature=0, max_tokens=1400, include_timestamps=False,
+        temperature=0, max_tokens=2000, include_timestamps=False,
+        response_schema=LOCAL_VISUAL_SCHEMA,
     ), timeout=90)
     if not response.get("success"):
         raise RuntimeError("review_model_unavailable")
-    result = {**parse_review(response.get("text")), "model": response.get("model", client.model_name),
+    parsed = parse_complete_visual_response(response.get('text'), response.get('finish_reason'))
+    if not parsed:
+        raise ValueError('incomplete_local_visual_result')
+    result = {**parsed, "model": response.get("model", client.model_name),
               "experts": experts}
     result = normalize_local_review(result, len(images))
-    if scene_observations_need_review(result['visual']):
+    if scene_observations_need_review(result['visual'], experts.get('local_visibility'), experts):
         result = await review_scene(images, timestamps, result, client=client)
     return result
 
@@ -129,7 +147,7 @@ async def review_scene(images, timestamps, result, client=None):
     address = urlparse(client.api_url)
     if address.scheme not in {'http', 'https'} or address.hostname not in {'localhost', '127.0.0.1', '::1'}:
         raise PermissionError('review_local_only')
-    if scene_observations_need_review(result['visual']):
+    if scene_observations_need_review(result['visual'], (result.get('experts') or {}).get('local_visibility'), result.get('experts')):
         # Match the live scene verifier: one instruction followed by images.
         # The timestamped primary-analysis wrapper changes the task framing.
         content = [{'type': 'text', 'text': VISIBILITY_REVIEW_PROMPT}]
@@ -139,7 +157,7 @@ async def review_scene(images, timestamps, result, client=None):
             'model': client.model_name,
             'messages': [{'role': 'system', 'content': '只输出一个紧凑JSON对象。'},
                          {'role': 'user', 'content': content}],
-            'temperature': 0, 'max_tokens': 300, 'chat_template_kwargs': {'enable_thinking': False},
+            'temperature': 0, 'max_tokens': 512, 'chat_template_kwargs': {'enable_thinking': False},
         }), timeout=30)
         response.raise_for_status()
         raw = str(response.json()['choices'][0]['message']['content'] or '').strip()
@@ -147,6 +165,7 @@ async def review_scene(images, timestamps, result, client=None):
             raw = raw.split('\n', 1)[1].rsplit('```', 1)[0].strip()
         scene = validate_visibility_review(json.loads(raw), len(images), result['visual'])
         result['visual']['visibility_secondary_review'] = {**scene, 'success': True}
+        result['visual'] = apply_visibility_review(result['visual'], {**scene, 'success': True})
         if float(scene.get('confidence') or 0) >= .75:
             classification = scene.get('classification')
             if classification in {'external_body', 'trocar_transition'}:

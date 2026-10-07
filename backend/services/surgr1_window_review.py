@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .surgr1_client import get_surgr1_client, load_config
+from .analysis_image_regions import prepare_analysis_image
 
 QUESTION = "Given the laparoscopic cholecystectomy image <image>, describe the complete surgical action in terms of tool, action, and tissue."
 _gate = asyncio.Semaphore(1)
@@ -15,6 +16,7 @@ _gate = asyncio.Semaphore(1)
 def _write_review_image(source, path):
     image = source.convert("RGB")
     image.thumbnail((840, 840))
+    image = prepare_analysis_image(image)
     image.save(path, format="JPEG", quality=90)
 
 

@@ -62,8 +62,11 @@ class YOLOService:
         # 冷启动约 1-3s。不 warmup 时用户第一次打开视频流会卡住（黑屏 3s）。
         try:
             dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-            self.model.track(dummy, persist=False, tracker="bytetrack.yaml",
+            # Ultralytics binds persist on the first call, including warmup.
+            # Keep IDs stable so per-ID votes cannot mix unrelated detections.
+            self.model.track(dummy, persist=True, tracker="bytetrack.yaml",
                              verbose=False, conf=0.99, device=self.device)
+            self.reset_tracker()
             logger.info("[YOLO] Tracker warmed up")
         except Exception as e:
             logger.warning(f"[YOLO] Warmup noop (will cold-start on first frame): {e}")
@@ -140,7 +143,9 @@ class YOLOService:
 
         detections: List[Dict] = []
         if results and len(results) > 0:
-            boxes = results[0].boxes
+            # Transfer once before Python scalar/list conversion; avoid a GPU
+            # synchronization for each coordinate, class and tracking ID.
+            boxes = results[0].boxes.cpu()
             ids = getattr(boxes, "id", None)
             for i, box in enumerate(boxes):
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())

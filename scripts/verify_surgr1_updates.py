@@ -12,10 +12,16 @@ import subprocess
 import time
 
 import httpx
-from playwright.async_api import async_playwright
 
 STATE = "(document.querySelector('#app').__vue_app__._instance || document.querySelector('#app').__vue_app__._container._vnode.component).setupState"
 RECORDING_STATE = "document.querySelector('.screen-recording-control').__vueParentComponent.setupState"
+
+
+async def settled_snapshot(api, sid):
+    state = (await api.get(f'/api/analysis/pending-refinements/{sid}')).json()
+    # The final patch can commit between a rows poll and the pending check.
+    rows = (await api.get(f'/api/analysis/summaries/{sid}')).json() if state.get('settled') else None
+    return state, rows
 
 
 def inspect_recording(path, source_duration):
@@ -32,6 +38,8 @@ def inspect_recording(path, source_duration):
 
 
 async def run(args):
+    from playwright.async_api import async_playwright
+
     args.output.mkdir(parents=True, exist_ok=True)
     record = {'source': str(args.source.resolve()), 'passed': False,
               'checks': [], 'revisions': [], 'page_errors': []}
@@ -50,9 +58,9 @@ async def run(args):
             browser = await p.chromium.connect_over_cdp('http://127.0.0.1:9222')
             page = browser.contexts[0].pages[0]
             previous_auto = None
-            if args.app_recording:
+            if args.app_recording or args.no_recording:
                 previous_auto = await page.evaluate("window.electronAPI.getConfig('autoRecordAnalysis')")
-                await page.evaluate("window.electronAPI.setConfig('autoRecordAnalysis', true)")
+                await page.evaluate("value => window.electronAPI.setConfig('autoRecordAnalysis', value)", args.app_recording)
             page.on('pageerror', lambda error: record['page_errors'].append(str(error)))
             await page.add_init_script('''(() => {
                 if (window.__latencyInstrumented) return;
@@ -79,9 +87,11 @@ async def run(args):
             await page.goto('http://127.0.0.1:5133/')
             await page.wait_for_function(f'{STATE}.handleStreamConnect !== undefined')
             await page.bring_to_front()
-            wid = subprocess.check_output(['xdotool', 'search', '--onlyvisible', '--name', 'Surg-R1 手术助手'], text=True).splitlines()[-1]
+            wid = None
+            if not (args.app_recording or args.no_recording):
+                wid = subprocess.check_output(['xdotool', 'search', '--onlyvisible', '--name', 'Surg-R1 手术助手'], text=True).splitlines()[-1]
             with (args.output / 'recorder.log').open('w') as log:
-                recorder = None if args.app_recording else subprocess.Popen([
+                recorder = None if (args.app_recording or args.no_recording) else subprocess.Popen([
                     'ffmpeg', '-nostdin', '-y', '-hide_banner', '-loglevel', 'warning',
                     '-f', 'x11grab', '-draw_mouse', '0', '-framerate', '15', '-window_id', wid,
                     '-i', os.environ.get('DISPLAY', ':1'), '-an', '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
@@ -109,13 +119,13 @@ async def run(args):
                             key = row['window_id']
                             others = row.get('others') or {}
                             r1 = (others.get('experts') or {}).get('surgr1') or {}
-                            signature = (row.get('summary'), r1.get('status'), others.get('stage'))
+                            signature = (row.get('summary'), row.get('surgical_phase'), r1.get('status'), others.get('stage'))
                             if previous.get(key) != signature:
                                 previous[key] = signature
                                 record['revisions'].append({'elapsed': round(time.monotonic() - started, 3),
                                     'window_id': key, 'stage': others.get('stage'), 'r1_status': r1.get('status'),
-                                    'summary': row.get('summary')})
-                                if key % 12 == 0 or args.timeout <= 180:
+                                    'summary': row.get('summary'), 'phase': row.get('surgical_phase')})
+                                if key < 4 or key % 12 == 0 or args.timeout <= 180:
                                     print(record['revisions'][-1], flush=True)
                         if time.monotonic() - started >= next_snapshot:
                             receipts = await page.evaluate('window.__analysisReceipts')
@@ -126,10 +136,15 @@ async def run(args):
                                 await page.screenshot(path=str(args.output / f'at_{next_snapshot:04d}.png'))
                             next_snapshot += 30
                         if len(rows) == expected_windows:
-                            state = (await api.get(f'/api/analysis/pending-refinements/{sid}')).json()
-                            if len(rows) >= expected_windows and state.get('settled'):
+                            state, final_rows = await settled_snapshot(api, sid)
+                            if state.get('settled'):
+                                rows = final_rows
                                 break
                         await asyncio.sleep(3 if args.timeout > 180 else 1)
+                    await page.wait_for_function(f'''expected => {{const rows = {STATE}.summaries;
+                        return rows.length === expected.count && rows.every(r =>
+                            r.stage >= expected.stage && String(r.summary || '').trim());}}''',
+                        arg={'count': expected_windows, 'stage': 1 if args.r1_disabled else 2}, timeout=10000)
                     await page.screenshot(path=str(args.output / 'complete.png'))
                     ui = await page.evaluate(f'''() => {{const s = {STATE}; return {{time:s.currentTime,
                         summaries:s.summaries.map(r => ({{id:r.window_id, summary:r.summary, stage:r.stage}}))}} }}''')
@@ -137,18 +152,22 @@ async def run(args):
                     record['rows'] = rows
                     record['receipts'] = await page.evaluate('window.__analysisReceipts')
                     drafts = {r['window_id'] for r in record['revisions'] if not r['r1_status']}
-                    refined = {r['window_id'] for r in record['revisions'] if r['r1_status'] == 'completed'}
+                    refined = {r['window_id'] for r in record['receipts'] if r.get('r1_status') == 'completed'}
                     assert len(rows) == expected_windows, 'Missing or extra windows'
                     assert state.get('settled'), 'Analysis did not finish at EOF'
+                    assert all(str(row.get('summary') or '').strip() for row in rows), 'Empty final window summary'
                     for row in rows:
                         for observation in row['others']['experts'].get('surgr1', {}).get('observations', []):
                             assert row['start_time'] <= observation['timestamp'] < row['end_time'], 'R1 frame is from a different window'
                     if not args.r1_disabled:
                         assert drafts & refined, 'No real draft-to-SurgR1 update observed'
                         assert len(refined) == len(rows), 'Some SurgR1 reviews did not complete'
+                        assert all((row['others'].get('experts', {}).get('open_vlm') or {}).get('success')
+                                   and row['others'].get('stage') == 2 for row in rows), 'Incomplete visual refinement'
                     else:
                         assert not refined, 'R1 was not disabled for comparison'
                     assert len(ui['summaries']) == len(rows), 'UI did not receive all windows'
+                    assert all(str(row.get('summary') or '').strip() for row in ui['summaries']), 'Empty UI window summary'
                     assert not record['page_errors'], record['page_errors']
                     record['checks'] = ['paced_real_inference', 'ui_received_results', 'finite_eof']
                     if not args.r1_disabled:
@@ -172,9 +191,16 @@ async def run(args):
                         if result.get('path'):
                             shutil.copy2(result['path'], recording_path)
                         await page.evaluate("value => window.electronAPI.setConfig('autoRecordAnalysis', value)", previous_auto is True)
+                    elif args.no_recording:
+                        record['recording_disabled_state'] = await page.evaluate(f"{RECORDING_STATE}.status")
+                        await page.evaluate("value => window.electronAPI.setConfig('autoRecordAnalysis', value)", previous_auto is True)
                     record['analysis_passed'] = record['passed']
-                    record['recording'] = inspect_recording(recording_path, session['duration'])
-                    record['passed'] = record['analysis_passed'] and record['recording']['complete']
+                    if args.no_recording:
+                        record['recording'] = {'enabled': False}
+                        record['passed'] = record['analysis_passed'] and record['recording_disabled_state'].get('state') != 'recording'
+                    else:
+                        record['recording'] = inspect_recording(recording_path, session['duration'])
+                        record['passed'] = record['analysis_passed'] and record['recording']['complete']
                     (args.output / 'verification.json').write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({'session': sid, 'output': str(args.output), 'passed': record.get('passed')}))
 
@@ -186,5 +212,7 @@ if __name__ == '__main__':
     parser.add_argument('--timeout', type=float, default=120)
     parser.add_argument('--layout', choices=['full', 'quad_right'], default='full')
     parser.add_argument('--r1-disabled', action='store_true')
-    parser.add_argument('--app-recording', action='store_true')
+    recording = parser.add_mutually_exclusive_group()
+    recording.add_argument('--app-recording', action='store_true')
+    recording.add_argument('--no-recording', action='store_true', help='Run real analysis and screenshots without video recording')
     asyncio.run(run(parser.parse_args()))

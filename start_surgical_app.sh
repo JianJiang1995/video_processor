@@ -155,6 +155,10 @@ fi
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     echo "The SurgR1 launcher is already running."
+    if command -v xdotool >/dev/null 2>&1; then
+        xdotool search --onlyvisible --class '^video-stream-analyzer$' \
+            windowactivate 2>/dev/null || true
+    fi
     echo "Use ./start_surgical_app.sh --status to inspect it."
     exit 0
 fi

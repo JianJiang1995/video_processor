@@ -145,6 +145,7 @@ nohup python -m uvicorn backend.main:app \
   --host 0.0.0.0 \
   --port $BACKEND_PORT \
   --reload \
+  --ws-per-message-deflate false \
   > "$BACKEND_LOG" 2>&1 &
 
 BACKEND_PID=$!

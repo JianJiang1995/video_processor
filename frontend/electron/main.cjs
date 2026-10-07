@@ -52,6 +52,13 @@ function loadAppConfig() {
 
 const appConfig = loadAppConfig()
 
+// Opt-in local diagnostics without opening the DevTools UI.
+const debugPort = Number(process.env.ELECTRON_REMOTE_DEBUGGING_PORT || 0)
+if (Number.isInteger(debugPort) && debugPort >= 1024 && debugPort <= 65535) {
+  app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
+  app.commandLine.appendSwitch('remote-debugging-port', String(debugPort))
+}
+
 // ============= Display / GPU Compatibility =============
 // Keep GPU acceleration for the local desktop. Only force software rendering
 // when DISPLAY explicitly points at a remote X server or when manually disabled.
@@ -280,6 +287,11 @@ ipcMain.handle('get-config', (event, key) => {
 ipcMain.handle('set-config', (event, key, value) => {
   store.set(key, value)
   return true
+})
+
+ipcMain.handle('get-preview-display', () => {
+  const display = mainWindow ? screen.getDisplayMatching(mainWindow.getBounds()) : screen.getPrimaryDisplay()
+  return { refreshRate: display.displayFrequency, size: display.size, scaleFactor: display.scaleFactor }
 })
 
 ipcMain.handle('get-backend-url', () => {

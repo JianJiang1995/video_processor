@@ -1,5 +1,8 @@
 {
     "description": "Video Stream Analyzer Configuration",
+    "analysis_input_crop_right": {
+        "quad_right": 0.11
+    },
     "window_analysis": {
         "provider": "glm",
         "live_stage2_enabled": false,
@@ -27,7 +30,7 @@
         "surgr1": {
             "enabled": true,
             "mode": "window_refinement",
-            "gpu": 0,
+            "gpu": 1,
             "gpu_memory_utilization": 0.80,
             "max_images": 2,
             "max_tokens": 512,
@@ -151,7 +154,7 @@
             "base_url": "http://127.0.0.1:8012/v1",
             "model_name": "Qwen3-VL-8B-Instruct",
             "max_images": 3,
-            "max_tokens": 180,
+            "max_tokens": 384,
             "timeout": 60.0,
             "temperature": 0.0,
             "min_confidence": 0.75,

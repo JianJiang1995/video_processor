@@ -7,12 +7,13 @@ import time
 import logging
 import threading
 import math
+import ipaddress
 import urllib.request
 import subprocess
 import glob
 from urllib.parse import urlparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
@@ -27,6 +28,8 @@ from ..services.video_processor import VideoProcessor, ProcessingState
 from ..services.mysql_service import get_mysql_service
 from ..services.frame_storage_service import get_frame_storage_service
 from ..services.playback_proxy import request_preview
+from ..services.preview_pixels import pack_bgr_frame, pack_i420_frame
+from ..services.capture_device_info import decklink_device_profile, unavailable_decklink_profiles
 from ..services.decklink_capture import (
     DeckLinkCapture,
     build_decklink_uri,
@@ -94,21 +97,23 @@ class DisplayStreamState:
     """Shared latest-frame reader for UI playback.
 
     The UI should not queue every MJPEG frame. This reader continuously keeps
-    only the latest encoded JPEG; slow clients naturally drop old frames.
+    only the latest preview packet; slow clients naturally drop old frames.
     """
 
-    def __init__(self, session_id: str, video_path: str, fps: float, quality: int, max_width: int):
+    def __init__(self, session_id: str, video_path: str, fps: float, quality: int, max_width: int, pixel_format: str = "jpeg"):
         self.session_id = session_id
         self.video_path = video_path
-        self.fps = max(1.0, float(fps))
+        self.fps = max(0.0, float(fps))  # 0 follows the input cadence.
         self.quality = int(quality)
         self.max_width = int(max_width or 0)
+        self.pixel_format = pixel_format
         self.latest_jpeg: Optional[bytes] = None
         self.sequence = 0
         self.clients = 0
         self.running = False
         self.last_client_time = time.time()
         self.lock = threading.Lock()
+        self.listeners = {}
         self.thread: Optional[threading.Thread] = None
         self._local_file_mode = False
 
@@ -137,6 +142,10 @@ class DisplayStreamState:
         with self.lock:
             self.clients = max(0, self.clients - 1)
             self.last_client_time = time.time()
+            if self.clients == 0 and self.video_path.startswith("decklink://"):
+                # A departed preview must not keep the physical input leased
+                # while the source form switches connector or video mode.
+                self.running = False
 
     def stop(self):
         with self.lock:
@@ -145,6 +154,47 @@ class DisplayStreamState:
     def snapshot(self):
         with self.lock:
             return self.sequence, self.latest_jpeg
+
+    def subscribe(self):
+        event = asyncio.Event()
+        with self.lock:
+            self.listeners[event] = asyncio.get_running_loop()
+        return event
+
+    def unsubscribe(self, event):
+        with self.lock:
+            self.listeners.pop(event, None)
+
+    def _notify_listeners(self):
+        with self.lock:
+            listeners = tuple(self.listeners.items())
+        for event, loop in listeners:
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                self.unsubscribe(event)
+
+    def publish(self, jpeg):
+        with self.lock:
+            self.latest_jpeg = jpeg
+            self.sequence += 1
+        self._notify_listeners()
+
+    async def next_frame(self, last_sequence, event):
+        while True:
+            event.clear()
+            with self.lock:
+                if self.latest_jpeg and self.sequence != last_sequence:
+                    return self.sequence, self.latest_jpeg
+                if not self.running:
+                    raise EOFError("Preview source stopped")
+            await event.wait()
+
+    def publish_fps(self, source_fps):
+        source_fps = max(1.0, float(source_fps or 30.0))
+        if not self.fps:
+            return source_fps
+        return source_fps / max(1, math.ceil(source_fps / self.fps))
 
     def _prepare_frame(self, frame):
         if self.max_width:
@@ -158,16 +208,16 @@ class DisplayStreamState:
         cap = None
         try:
             source_path, self._local_file_mode, source_fps = self._resolve_source()
-            cap = _open_live_video_source(source_path, sample_fps=self.fps)
+            cap = _open_live_video_source(source_path, sample_fps=self.fps or None)
             if not cap.isOpened():
                 logger.error(f"[DisplayStream] Cannot open video: {source_path}")
                 return
 
             encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.quality]
-            source_fps = float(cap.get(cv2.CAP_PROP_FPS) or source_fps or self.fps)
+            source_fps = float(cap.get(cv2.CAP_PROP_FPS) or source_fps or 30.0)
             # Integer decimation gives 25fps from 50fps and 30fps from 60fps,
             # avoiding the alternating intervals of a forced 50 -> 30 cadence.
-            publish_fps = source_fps / max(1, math.ceil(source_fps / self.fps))
+            publish_fps = self.publish_fps(source_fps)
             min_interval = 1.0 / publish_fps
             last_publish = 0.0
             next_frame_time = time.perf_counter()
@@ -190,14 +240,19 @@ class DisplayStreamState:
                     if now_perf < next_frame_time:
                         time.sleep(min(0.01, next_frame_time - now_perf))
                         continue
-                elif last_publish:
+                elif last_publish and self.fps > 0:
                     current_fps = float(cap.get(cv2.CAP_PROP_FPS) or source_fps)
-                    min_interval = max(1, math.ceil(current_fps / self.fps)) / max(1.0, current_fps)
-                    wait_time = min_interval - (time.monotonic() - last_publish)
-                    if wait_time > 0:
-                        time.sleep(wait_time)
+                    if self.fps < current_fps:
+                        min_interval = 1.0 / self.publish_fps(current_fps)
+                        wait_time = min_interval - (time.monotonic() - last_publish)
+                        if wait_time > 0:
+                            time.sleep(wait_time)
 
-                ret, frame = cap.read()
+                ret, frame = (
+                    cap.read(timeout=0.25)
+                    if source_path.startswith("decklink://")
+                    else cap.read()
+                )
                 if not ret:
                     if self._local_file_mode:
                         break
@@ -206,18 +261,22 @@ class DisplayStreamState:
                     continue
 
                 last_publish = time.monotonic()
+                read_at_ms = time.time() * 1000
 
                 if self._local_file_mode:
                     next_frame_time = max(next_frame_time + min_interval, time.perf_counter())
 
                 frame = self._prepare_frame(frame)
+                if self.pixel_format in ("bgr24", "i420"):
+                    current_fps = float(cap.get(cv2.CAP_PROP_FPS) or source_fps)
+                    pack = pack_i420_frame if self.pixel_format == "i420" else pack_bgr_frame
+                    self.publish(pack(frame, self.sequence + 1, read_at_ms, current_fps))
+                    continue
                 ok, jpeg = cv2.imencode(".jpg", frame, encode_params)
                 if not ok:
                     continue
 
-                with self.lock:
-                    self.latest_jpeg = jpeg.tobytes()
-                    self.sequence += 1
+                self.publish(jpeg.tobytes())
         except Exception as e:
             logger.warning(f"[DisplayStream] Reader stopped for {self.session_id}: {e}")
         finally:
@@ -225,6 +284,7 @@ class DisplayStreamState:
                 cap.release()
             with self.lock:
                 self.running = False
+            self._notify_listeners()
             logger.info(f"[DisplayStream] Ended {self.session_id}")
 
 
@@ -318,14 +378,6 @@ def _list_capture_devices():
     """
     devices = []
 
-    decklink_modes = [
-        "auto",
-        "1080i5994", "1080i60", "1080i50",
-        "1080p5994", "1080p60", "1080p50", "1080p30", "1080p2997", "1080p25", "1080p24",
-        "720p60", "720p5994", "720p50",
-        "2160p30", "2160p2997", "2160p25", "2160p24",
-    ]
-
     try:
         decklink_nodes = sorted(glob.glob("/dev/blackmagic/io*"))
         if decklink_nodes:
@@ -339,22 +391,11 @@ def _list_capture_devices():
                 for fallback_index, device_path in enumerate(decklink_nodes):
                     suffix = device_path.rsplit("io", 1)[-1]
                     device_number = int(suffix) if suffix.isdigit() else fallback_index
-                    devices.append({
-                        "device_id": device_number,
-                        "device_name": "DeckLink Mini Recorder 4K",
-                        "device_path": device_path,
-                        "width": 1920,
-                        "height": 1080,
-                        "fps": 30.0,
-                        "backend": "decklink",
-                        "default_mode": "auto",
-                        "supported_modes": decklink_modes,
-                        "default_connection": "hdmi",
-                        "supported_connections": ["hdmi", "sdi", "auto"],
-                        "hardware_ready": True,
-                    })
+                    devices.append(decklink_device_profile(device_number, device_path))
+            else:
+                logger.warning("[Capture] DeckLink GStreamer plugin unavailable: %s", plugin.stderr)
     except Exception as e:
-        logger.debug(f"[Capture] DeckLink detection skipped: {e}")
+        logger.warning("[Capture] DeckLink detection failed: %s", e, exc_info=True)
     
     # Try to detect devices by index (works on Linux and Windows)
     for i in range(10):  # Check first 10 indices
@@ -527,7 +568,7 @@ async def list_capture_devices():
     Returns a list of detected devices with their capabilities.
     """
     loop = asyncio.get_event_loop()
-    
+    scan_timed_out = False
     try:
         devices = await asyncio.wait_for(
             loop.run_in_executor(None, _list_capture_devices),
@@ -535,10 +576,13 @@ async def list_capture_devices():
         )
     except asyncio.TimeoutError:
         devices = []
+        scan_timed_out = True
     
     return {
-        "success": True,
+        "success": not scan_timed_out,
+        "scan_error": "timeout" if scan_timed_out else None,
         "devices": devices,
+        "unavailable_devices": [] if scan_timed_out else unavailable_decklink_profiles(devices),
         "count": len(devices),
         "hint": "使用 device_id 连接采集卡，如: POST /api/video/connect-capture"
     }
@@ -1388,9 +1432,9 @@ async def mjpeg_proxy_stream(
 @router.get("/display-mjpeg/{session_id}")
 async def display_mjpeg_stream(
     session_id: str,
-    fps: float = Query(20.0, ge=1.0, le=30.0, description="Display FPS"),
-    quality: int = Query(68, ge=40, le=90, description="JPEG quality"),
-    max_width: int = Query(1280, ge=320, le=1920, description="Display max width"),
+    fps: float = Query(0.0, ge=0.0, description="Preview FPS limit; 0 follows the source"),
+    quality: int = Query(78, ge=40, le=95, description="JPEG quality"),
+    max_width: int = Query(0, ge=0, description="Preview width limit; 0 preserves source dimensions"),
     db: Session = Depends(get_db),
 ):
     """Latest-frame MJPEG stream for UI playback.
@@ -1406,7 +1450,7 @@ async def display_mjpeg_stream(
     if not video_path:
         raise HTTPException(400, "No video path for session")
 
-    key = (session_id, video_path, int(fps), int(quality), int(max_width))
+    key = (session_id, video_path, float(fps), int(quality), int(max_width))
     state = display_streams.get(key)
     if state is None or not state.running:
         state = DisplayStreamState(session_id, video_path, fps, quality, max_width)
@@ -1414,23 +1458,21 @@ async def display_mjpeg_stream(
 
     async def generate_latest_frames():
         state.start()
+        changed = state.subscribe()
         last_seq = -1
-        frame_interval = 1.0 / max(1.0, fps)
         try:
             while True:
-                seq, jpeg = state.snapshot()
-                if jpeg and seq != last_seq:
-                    last_seq = seq
-                    yield (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n"
-                        b"\r\n" + jpeg + b"\r\n"
-                    )
-                await asyncio.sleep(frame_interval)
-        except asyncio.CancelledError:
+                last_seq, jpeg = await state.next_frame(last_seq, changed)
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n"
+                    b"\r\n" + jpeg + b"\r\n"
+                )
+        except (asyncio.CancelledError, EOFError):
             pass
         finally:
+            state.unsubscribe(changed)
             state.release()
 
     return StreamingResponse(
@@ -1446,19 +1488,30 @@ async def display_mjpeg_stream(
     )
 
 
+@router.get("/preview-endpoint/{session_id}")
+def local_preview_endpoint(session_id: str, db: Session = Depends(get_db)):
+    from ..services.local_preview_server import server
+    session = get_video_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    endpoint = server.endpoint(session_id) if server and session.get('video_path', '').startswith('decklink://') else None
+    return {"url": endpoint}
+
+
 @router.websocket("/ws-display/{session_id}")
 async def websocket_display_stream(
     websocket: WebSocket,
     session_id: str,
-    fps: float = Query(18.0, ge=1.0, le=30.0),
-    quality: int = Query(64, ge=40, le=90),
-    max_width: int = Query(960, ge=320, le=1920),
+    fps: float = Query(0.0, ge=0.0),
+    quality: int = Query(78, ge=40, le=95),
+    max_width: int = Query(0, ge=0),
     ack: bool = Query(False),
+    pixel_format: Literal["jpeg", "bgr24"] = "jpeg",
     db: Session = Depends(get_db),
 ):
     """Latest-frame WebSocket display stream.
 
-    Binary JPEG preview for local capture devices. Acknowledged clients allow
+    JPEG or loopback raw-pixel preview. Acknowledged clients allow
     only one in-flight frame, including the WebSocket/TCP/browser buffers.
     """
     session = get_video_session(db, session_id)
@@ -1471,31 +1524,56 @@ async def websocket_display_stream(
         await websocket.close(code=1008, reason="No video path")
         return
 
+    if pixel_format == "bgr24":
+        try:
+            local = ipaddress.ip_address(websocket.client.host).is_loopback
+        except (ValueError, AttributeError):
+            local = False
+        if not local or not ack or not video_path.startswith("decklink://"):
+            await websocket.close(code=1008, reason="Raw preview requires acknowledged loopback DeckLink access")
+            return
+
     await websocket.accept()
 
-    key = (session_id, video_path, int(fps), int(quality), int(max_width))
+    key = (session_id, video_path, float(fps), int(quality), int(max_width))
+    if pixel_format != "jpeg":
+        key += (pixel_format,)
     state = display_streams.get(key)
     if state is None or not state.running:
         state = DisplayStreamState(session_id, video_path, fps, quality, max_width)
+        state.pixel_format = pixel_format
         display_streams[key] = state
 
     state.start()
+    changed = state.subscribe()
     last_seq = -1
-    frame_interval = 1.0 / max(1.0, fps)
+    frame_task = None
+    # Always receive disconnects, including while the card has no signal. Keep
+    # that receiver independent of frame arrival; no periodic frame polling.
+    receive_task = asyncio.create_task(websocket.receive_text())
     try:
         while True:
-            seq, jpeg = state.snapshot()
-            if jpeg and seq != last_seq:
-                last_seq = seq
-                await websocket.send_bytes(jpeg)
-                if ack:
-                    await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-            await asyncio.sleep(0.002 if ack else frame_interval)
-    except WebSocketDisconnect:
+            frame_task = asyncio.create_task(state.next_frame(last_seq, changed))
+            while not frame_task.done():
+                done, _ = await asyncio.wait((frame_task, receive_task), return_when=asyncio.FIRST_COMPLETED)
+                if receive_task in done:
+                    receive_task.result()
+                    receive_task = asyncio.create_task(websocket.receive_text())
+            last_seq, jpeg = frame_task.result()
+            await websocket.send_bytes(jpeg)
+            if ack:
+                await asyncio.wait_for(receive_task, timeout=10.0)
+                receive_task = asyncio.create_task(websocket.receive_text())
+    except (WebSocketDisconnect, EOFError):
         pass
     except Exception as e:
         logger.debug(f"[DisplayWS] Closed for {session_id}: {e}")
     finally:
+        for task in (receive_task, frame_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(task for task in (receive_task, frame_task) if task is not None), return_exceptions=True)
+        state.unsubscribe(changed)
         state.release()
 
 

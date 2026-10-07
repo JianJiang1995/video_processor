@@ -4,6 +4,7 @@ const os = require('node:os')
 const { randomUUID } = require('node:crypto')
 const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
+const recordingOptions = import('./recordingOptions.mjs')
 
 const GB = 1024 ** 3
 
@@ -32,10 +33,12 @@ class RecordingFile {
     this.opening = false
   }
 
-  async begin({ sessionId, automatic = false } = {}) {
+  async begin({ sessionId, automatic = false, fps } = {}) {
     if (this.active || this.opening) throw new Error('recording_busy')
     this.opening = true
     try {
+      const { normalizeRecordingFps } = await recordingOptions
+      const frameRate = normalizeRecordingFps(fps)
       const capacity = await this.capacity(this.directory)
       const reason = recordingAdmission(capacity, automatic)
       if (reason) throw new Error(`recording_${reason}`)
@@ -47,8 +50,8 @@ class RecordingFile {
       const file = path.join(directory, `${now.toISOString().replace(/[:.]/g, '-')}_${name}_${randomUUID().slice(0, 8)}.webm`)
       const handle = await fs.open(file, 'wx', 0o600)
       this.active = { id: randomUUID(), file, handle, startedAt: now.toISOString(),
-        sessionId: name, automatic, bytes: 0, writes: Promise.resolve(), closing: null }
-      return { id: this.active.id, path: file, startedAt: this.active.startedAt, capacity }
+        sessionId: name, automatic, fps: frameRate, bytes: 0, writes: Promise.resolve(), closing: null }
+      return { id: this.active.id, path: file, startedAt: this.active.startedAt, capacity, fps: frameRate }
     } finally { this.opening = false }
   }
 
@@ -91,7 +94,7 @@ class RecordingFile {
       }
       const result = { path: job.file, startedAt: job.startedAt, endedAt: new Date().toISOString(),
         sessionId: job.sessionId, automatic: job.automatic, bytes: job.bytes, reason, warning,
-        scope: 'application_window', audio: false, fps: 15 }
+        scope: 'application_window', audio: false, fps: job.fps }
       await fs.writeFile(`${job.file}.json`, JSON.stringify(result, null, 2), { mode: 0o600 })
       return result
     })().finally(() => { if (this.active === job) this.active = null })

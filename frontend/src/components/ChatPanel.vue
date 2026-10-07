@@ -563,22 +563,22 @@ onUnmounted(() => {
 .chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .chat-empty-icon { font-size: 48px; }
-.chat-empty-text { font-size: 22px; }
-.chat-empty-hint { font-size: 18px; }
-.chat-hint-chip { font-size: 18px; padding: 10px 18px; }
+.chat-empty-text { font-size: var(--panel-chat-size, 22px); }
+.chat-empty-hint { font-size: var(--panel-detail-size, 18px); }
+.chat-hint-chip { font-size: var(--panel-detail-size, 18px); padding: 10px 18px; }
 .chat-msg {
-  font-size: 22px;
+  font-size: var(--panel-chat-size, 22px);
   line-height: 1.7;
   padding: 14px 18px;
   max-width: 94%;
 }
-.chat-msg-time { font-size: 15px; }
+.chat-msg-time { font-size: var(--panel-meta-size, 15px); }
 .chat-msg-context,
 .chat-similar-item {
-  font-size: 18px;
+  font-size: var(--panel-detail-size, 18px);
 }
 .chat-input {
-  font-size: 22px;
+  font-size: var(--panel-chat-size, 22px);
   padding: 14px 18px;
 }
 .chat-voice-btn,

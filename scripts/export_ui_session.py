@@ -94,7 +94,7 @@ def export(args):
         'report_source': report.get('source'), 'window_count': len(summaries),
         'post_reviewed_windows': sum(bool((row.get('others') or {}).get('manual_review')) for row in summaries),
         'live_recording_includes_post_review': False,
-        'mode': 'recorded_ui_realtime_analysis_with_settled_replay_export'})
+        'mode': 'settled_ui_analysis_replay_export'})
     print(json.dumps({'output': str(out), 'windows': len(summaries),
                       'report': report.get('output_path')}, ensure_ascii=False), flush=True)
 

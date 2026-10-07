@@ -68,7 +68,7 @@ class PhaseService:
         x = self.transform(image).unsqueeze(0).to(self.device)
         with torch.no_grad():
             logits = self.model(x)
-            probs = torch.softmax(logits, dim=1)[0]
+            probs = torch.softmax(logits, dim=1)[0].cpu()
         top_idx = int(probs.argmax().item())
         top_conf = float(probs[top_idx].item())
         return {
