@@ -142,6 +142,19 @@ class ClipChatRequestTests(unittest.TestCase):
         self.assertTrue(result["success"])
         db.clear_chat.assert_called_once_with("session-a")
 
+    def test_history_cursor_retains_session_scope_and_reports_more_pages(self):
+        db = Mock()
+        db.get_chat_history.return_value = [{"id": 2, "role": "user", "content": "Earlier question"}]
+        with patch.object(voice, "get_mysql_service", return_value=db):
+            result = self.client.get("/api/voice/chat/session-a/history?limit=1&before_id=5").json()
+        db.get_chat_history.assert_called_once_with("session-a", 1, before_id=5)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["session_id"], "session-a")
+
+    def test_history_rejects_invalid_limits_and_cursors(self):
+        for query in ("limit=0", "limit=501", "before_id=0", "before_id=-1"):
+            self.assertEqual(self.client.get(f"/api/voice/chat/session-a/history?{query}").status_code, 422)
+
 
 class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -174,6 +187,22 @@ class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
         mock = guard.start()
         self.addCleanup(guard.stop)
         return mock
+
+    async def test_main_chat_followup_uses_questions_from_the_shared_session(self):
+        self.db.get_chat_history.return_value = [
+            {"id": 1, "role": "user", "content": "PREVIOUS REVIEW QUESTION"},
+            {"id": 2, "role": "assistant", "content": "OLD UNVERIFIED ANSWER"},
+            {"id": 99, "role": "user", "content": "CURRENT QUESTION"},
+        ]
+        with patch.object(self.service, "_local_summary_answer", return_value=None):
+            await self.service.handle_user_input("Can you explain further?")
+        context = self.model.chat_with_context.await_args.kwargs["surgical_context"]
+        self.assertIn("WHOLE VIDEO CONTEXT", context)
+        self.assertIn("PREVIOUS REVIEW QUESTION", context)
+        self.assertIn("not video evidence", context)
+        self.assertNotIn("OLD UNVERIFIED ANSWER", context)
+        self.assertNotIn("CURRENT QUESTION", context)
+        self.db.get_chat_history.assert_called_once_with("session-a", limit=7)
 
     async def test_model_payload_contains_full_timeline_and_selected_focus(self):
         fallback = self.forbid_global_summary()

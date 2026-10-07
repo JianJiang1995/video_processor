@@ -2,8 +2,12 @@
   <div class="chat-panel">
     <!-- Messages -->
     <div class="chat-messages" ref="messagesRef">
+      <div v-if="conversation.historyError" class="chat-history-error" role="alert">
+        <span>{{ t('chat.errorPrefix') }}: {{ conversation.historyError }}</span>
+        <button :disabled="isLoading" :title="t('video.retry')" :aria-label="t('video.retry')" @click="sessionChat.ensureHistory(sessionId)"><RotateCcw :size="16" /></button>
+      </div>
       <!-- Welcome message -->
-      <div v-if="messages.length === 0" class="chat-empty">
+      <div v-if="messages.length === 0 && !isLoading && !conversation.historyError" class="chat-empty">
         <div class="chat-empty-icon">&#x1F4AC;</div>
         <div class="chat-empty-text">{{ reviewContext ? t('review.questions') : t('chat.emptyText') }}</div>
         <div v-if="!reviewContext" class="chat-empty-hint">{{ t('chat.emptyHint') }}</div>
@@ -69,6 +73,7 @@
       <button
         class="chat-voice-btn"
         :class="{ recording: isRecording }"
+        :disabled="isLoading || !sessionId"
         @click="toggleRecording"
         :title="t('chat.voiceInput')"
       >
@@ -86,10 +91,12 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch, onUnmounted } from 'vue'
+import { computed, ref, nextTick, watch, onUnmounted } from 'vue'
 import axios from 'axios'
+import { RotateCcw } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import ChatMessageText from './ChatMessageText.vue'
+import { sessionChat } from '@/utils/sessionChat'
 
 const { t } = useI18n()
 
@@ -97,13 +104,18 @@ const props = defineProps({
   sessionId: { type: String, default: '' },
   summaries: { type: Array, default: () => [] },
   reviewContext: { type: Object, default: null },
+  visible: { type: Boolean, default: true },
 })
 
 const emit = defineEmits(['seekToWindow', 'message', 'review'])
 
-const messages = ref([])
-const inputText = ref('')
-const isLoading = ref(false)
+const conversation = computed(() => sessionChat.getSession(props.sessionId))
+const messages = computed(() => conversation.value.messages)
+const inputText = computed({
+  get: () => conversation.value.draft,
+  set: value => { conversation.value.draft = value },
+})
+const isLoading = computed(() => conversation.value.isLoading || conversation.value.isHydrating)
 const isRecording = ref(false)
 const messagesRef = ref(null)
 const inputRef = ref(null)
@@ -111,7 +123,8 @@ const inputRef = ref(null)
 // Audio recording
 let mediaRecorder = null
 let audioChunks = []
-let pendingRequest = null
+let recordingGeneration = 0
+let mounted = true
 
 const scrollToBottom = () => {
   nextTick(() => {
@@ -121,126 +134,23 @@ const scrollToBottom = () => {
   })
 }
 
-const formatTime = () => {
-  const now = new Date()
-  return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
-}
-
 const sendQuickMessage = (text) => {
+  if (isLoading.value) return
   inputText.value = text
   sendMessage()
-}
-
-const formatError = (error) => {
-  const detail = error?.response?.data?.detail ?? error?.response?.data?.error ?? error?.response?.data
-  if (Array.isArray(detail)) {
-    return detail.map(item => {
-      if (typeof item === 'string') return item
-      const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
-      const msg = item?.msg || item?.message || JSON.stringify(item)
-      return loc ? `${loc}: ${msg}` : msg
-    }).join('; ')
-  }
-  if (detail && typeof detail === 'object') {
-    return detail.message || detail.msg || detail.error || JSON.stringify(detail)
-  }
-  return detail || error?.message || t('chat.networkError')
 }
 
 const sendMessage = async () => {
   const text = inputText.value.trim()
   if (!text || !props.sessionId || isLoading.value) return
-  const controller = new AbortController()
-  pendingRequest = controller
-
-  // Add user message
-  messages.value.push({
-    role: 'user',
-    content: text,
-    time: formatTime(),
+  const sessionId = props.sessionId
+  const result = await sessionChat.send(sessionId, {
+    text, reviewContext: props.reviewContext, hasSummaries: props.summaries.length > 0, t,
   })
-  inputText.value = ''
-  isLoading.value = true
-  scrollToBottom()
-
-  try {
-    // Check if this is a similarity search request
-    const isSimilarityQuery = /similar|相似|find.*like|像.*窗口/i.test(text)
-
-    // Send to chat API
-    const response = await axios.post(`/api/voice/chat/${props.sessionId}/send`, {
-      role: 'user',
-      content: text,
-      timestamp: Date.now() / 1000,
-      ...(props.reviewContext ? { review_context: props.reviewContext } : {}),
-    }, { signal: controller.signal })
-    if (controller.signal.aborted) return
-
-    const assistantContent = response.data?.response?.content
-      || response.data?.response_text
-      || response.data?.error
-      || t('chat.noResponse')
-
-    const reply = {
-      role: 'assistant',
-      content: assistantContent,
-      time: formatTime(),
-      similarWindows: null,
-      context: props.reviewContext ? t('review.contextUsed') : (buildContext() ? t('chat.contextUsed') : null),
-    }
-
-    // If similarity-related, also run semantic search
-    if (isSimilarityQuery) {
-      try {
-        const searchRes = await axios.post('/api/analysis/search/semantic', {
-          session_id: props.sessionId,
-          query: text,
-          top_k: 5,
-        }, { signal: controller.signal })
-        if (searchRes.data?.results?.length) {
-          reply.similarWindows = searchRes.data.results
-        }
-      } catch (e) {
-        console.warn('[Chat] Semantic search failed:', e.message)
-      }
-    }
-
-    if (controller.signal.aborted) return
-    messages.value.push(reply)
-    emit('message', reply)
-
-    // Auto-play TTS if available
-    if (response.data?.response?.audio_base64) {
-      playAudio(response.data.response.audio_base64)
-    }
-  } catch (error) {
-    if (controller.signal.aborted) return
-    messages.value.push({
-      role: 'assistant',
-      content: `${t('chat.errorPrefix')}: ${formatError(error)}`,
-      time: formatTime(),
-    })
-  } finally {
-    if (pendingRequest === controller) {
-      pendingRequest = null
-      isLoading.value = false
-      scrollToBottom()
-    }
+  if (result && mounted && props.sessionId === sessionId) {
+    emit('message', result.reply)
+    if (result.audio) playAudio(result.audio)
   }
-}
-
-const buildContext = () => {
-  if (!props.summaries.length) return ''
-  return props.summaries
-    .slice(-10)
-    .map(s => `${t('chat.window')} ${s.window_id + 1} (${formatTimestamp(s.start_time)}-${formatTimestamp(s.end_time)}): ${s.summary}`)
-    .join('\n')
-}
-
-const formatTimestamp = (seconds) => {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
 }
 
 const toggleRecording = async () => {
@@ -252,8 +162,13 @@ const toggleRecording = async () => {
 }
 
 const startRecording = async () => {
+  const generation = ++recordingGeneration
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    if (!mounted || generation !== recordingGeneration) {
+      stream.getTracks().forEach(track => track.stop())
+      return
+    }
     mediaRecorder = new MediaRecorder(stream)
     audioChunks = []
 
@@ -264,7 +179,7 @@ const startRecording = async () => {
     mediaRecorder.onstop = async () => {
       const audioBlob = new Blob(audioChunks, { type: 'audio/webm' })
       stream.getTracks().forEach(t => t.stop())
-      await transcribeAudio(audioBlob)
+      await transcribeAudio(audioBlob, generation)
     }
 
     mediaRecorder.start()
@@ -281,7 +196,7 @@ const stopRecording = () => {
   isRecording.value = false
 }
 
-const transcribeAudio = async (audioBlob) => {
+const transcribeAudio = async (audioBlob, generation) => {
   try {
     const formData = new FormData()
     formData.append('audio', audioBlob, 'recording.webm')
@@ -290,7 +205,7 @@ const transcribeAudio = async (audioBlob) => {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
 
-    if (res.data?.text) {
+    if (mounted && generation === recordingGeneration && res.data?.text) {
       inputText.value = res.data.text
       // Auto-send voice input
       sendMessage()
@@ -309,21 +224,25 @@ const playAudio = (base64Audio) => {
   }
 }
 
-watch(messages, scrollToBottom, { deep: true })
-watch(() => [props.sessionId, props.reviewContext?.start_time, props.reviewContext?.end_time], () => {
-  pendingRequest?.abort()
-  pendingRequest = null
-  isLoading.value = false
-  messages.value = []
-  inputText.value = ''
-})
-onUnmounted(() => {
-  pendingRequest?.abort()
+const cancelRecording = () => {
+  recordingGeneration++
   if (mediaRecorder) {
     mediaRecorder.onstop = null
     if (mediaRecorder.state !== 'inactive') mediaRecorder.stop()
     mediaRecorder.stream.getTracks().forEach(track => track.stop())
   }
+  isRecording.value = false
+}
+watch(messages, scrollToBottom, { deep: true, immediate: true })
+watch(() => props.visible, visible => { if (visible) scrollToBottom() })
+watch(() => props.sessionId, sessionId => {
+  cancelRecording()
+  sessionChat.ensureHistory(sessionId)
+}, { immediate: true })
+watch(() => [props.reviewContext?.start_time, props.reviewContext?.end_time], cancelRecording)
+onUnmounted(() => {
+  mounted = false
+  cancelRecording()
 })
 </script>
 
@@ -347,6 +266,10 @@ onUnmounted(() => {
 .chat-messages::-webkit-scrollbar { width: 3px; }
 .chat-messages::-webkit-scrollbar-track { background: transparent; }
 .chat-messages::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+
+.chat-history-error { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.chat-history-error span { min-width: 0; }
+.chat-history-error button { display: grid; place-items: center; flex-shrink: 0; width: 30px; height: 30px; color: inherit; background: transparent; border: 1px solid var(--border-subtle); border-radius: 4px; cursor: pointer; }
 
 /* Empty state */
 .chat-empty {

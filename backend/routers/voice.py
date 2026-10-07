@@ -8,7 +8,7 @@ import math
 import time
 from typing import Optional, List, Dict
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import base64
@@ -601,15 +601,21 @@ def get_conversation_service(session_id: str) -> ConversationService:
 
 
 @router.get("/chat/{session_id}/history")
-async def get_chat_history(session_id: str, limit: int = 50):
+async def get_chat_history(
+    session_id: str, limit: int = Query(default=50, ge=1, le=500),
+    before_id: Optional[int] = Query(default=None, ge=1),
+):
     """Get chat history for a session from MySQL"""
     try:
         mysql = get_mysql_service()
-        history = mysql.get_chat_history(session_id, limit)
+        history = mysql.get_chat_history(
+            session_id, limit, **({"before_id": before_id} if before_id is not None else {}),
+        )
         return {
             "session_id": session_id,
             "messages": history,
-            "total": len(history)
+            "total": len(history),
+            "has_more": len(history) == limit,
         }
     except Exception as e:
         logger.error(f"Failed to get chat history: {e}")

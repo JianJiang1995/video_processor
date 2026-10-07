@@ -806,13 +806,17 @@ class MySQLService:
     def get_chat_history(
         self,
         session_id: str,
-        limit: int = 50
+        limit: int = 50,
+        before_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """获取对话历史"""
         with self.get_session() as session:
-            results = session.query(ChatHistory).filter(
+            query = session.query(ChatHistory).filter(
                 ChatHistory.session_id == session_id
-            ).order_by(ChatHistory.created_at.desc(), ChatHistory.id.desc()).limit(limit).all()
+            )
+            if before_id is not None:
+                query = query.filter(ChatHistory.id < before_id)
+            results = query.order_by(ChatHistory.id.desc()).limit(limit).all()
             
             return [
                 {

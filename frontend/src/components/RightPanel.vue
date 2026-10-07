@@ -157,6 +157,7 @@
       <ChatPanel
         :sessionId="sessionId"
         :summaries="summaries"
+        :visible="activeTab === 'chat'"
         @seekToWindow="(wid) => $emit('seekToWindow', wid)"
         @message="(msg) => $emit('chatMessage', msg)"
         @review="$emit('review', $event)"

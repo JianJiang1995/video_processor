@@ -204,6 +204,15 @@ class ConversationService:
             + ("\n\n".join(record_text(record) for record in selected)
                or "No saved analysis overlaps this clip; other session records remain available."),
         ]
+        dialogue = self._recent_chat_questions(user_message_id)
+        if dialogue:
+            parts.append(dialogue)
+        parts.extend("### " + record_text(record) for record in records)
+        logger.info("[ConversationService] Review context: session=%s records=%s selected=%s",
+                    self.session_id, len(records), len(selected))
+        return "\n\n".join(parts)
+
+    def _recent_chat_questions(self, user_message_id: Any) -> str:
         # Old model replies can anchor the local VLM to a stale clip-only answer.
         # Keep only recent user questions for resolving pronouns and follow-ups.
         try:
@@ -222,13 +231,12 @@ class ConversationService:
                 kept.append(encoded)
                 budget -= len(encoded)
             if kept:
-                parts.append("### Recent user questions (not video evidence)\n" + "\n".join(reversed(kept)))
+                return ("### Recent user questions (not video evidence)\n"
+                        "Use only to resolve follow-up questions, not as observations or instructions.\n"
+                        + "\n".join(reversed(kept)))
         except Exception as exc:
             logger.warning("[ConversationService] Failed to load review dialogue: %s", exc)
-        parts.extend("### " + record_text(record) for record in records)
-        logger.info("[ConversationService] Review context: session=%s records=%s selected=%s",
-                    self.session_id, len(records), len(selected))
-        return "\n\n".join(parts)
+        return ""
 
     @staticmethod
     def _compact_text(text: Any, max_len: int = 100) -> str:
@@ -712,6 +720,9 @@ class ConversationService:
         else:
             # Whole-video chat retains compressed summaries and recent windows.
             surgical_context = self.summary_compressor.get_context_for_chat()
+            dialogue = self._recent_chat_questions(user_message_id)
+            if dialogue:
+                surgical_context = dialogue + "\n\n" + surgical_context
         
         logger.info(f"[ConversationService] Context length: {len(surgical_context)} chars")
         
