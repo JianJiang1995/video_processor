@@ -367,7 +367,8 @@ const historyChapters = computed(() => {
 
     const chronological = last ? [...last.windows, ...ch.windows].sort((a, b) => a.window_id - b.window_id) : []
     const merged = last && contiguous && samePhase && sim >= 0.65
-      && chronological.length <= 6 && chronological.every(isReviewedWindow)
+      && chronological.length <= 6 && chronological.every(w => isReviewedWindow(w)
+        && w.summary !== t('translation.pending') && w.summary !== t('translation.failed'))
       ? mergeWindowNarratives(chronological) : null
     if (merged) {
       last.windows = [...last.windows, ...ch.windows]
@@ -400,10 +401,10 @@ const bleedingStatus = computed(() => {
   let lastResolved = null
 
   for (const w of sorted) {
-    if (hasSevereBleedingText(w.summary)) {
+    if (hasSevereBleedingText(w.original_summary || w.summary)) {
       lastActive = w
       lastResolved = null
-    } else if (lastActive && hasBleedingResolvedText(w.summary)) {
+    } else if (lastActive && hasBleedingResolvedText(w.original_summary || w.summary)) {
       lastResolved = w
     }
   }

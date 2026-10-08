@@ -49,7 +49,7 @@ function parseTime(text) {
 export function tokenizeChatTimestamps(value, summaries = []) {
   const text = String(value || '')
   const clock = '\\d{1,4}[:：]\\d{2}(?:[:：]\\d{2})?'
-  const pattern = new RegExp(`(?<![\\w/:：.])(${clock})(?:\\s*(?:[-–—~～至到]|to)\\s*(${clock}))?(?![\\d:：])`, 'gi')
+  const pattern = new RegExp(`(?<![\\w/.])(${clock})(?:\\s*(?:[-–—~～至到]|to)\\s*(${clock}))?(?!\\d|[:：]\\d)`, 'gi')
   const parts = []
   let offset = 0
   for (const match of text.matchAll(pattern)) {

@@ -21,7 +21,10 @@ export function windowPhaseLabel(summary, language = 'zh') {
 }
 
 const phaseHeader = /^(?:当前处于|当前为)(?:肝胆三角解剖|夹闭切断|胆囊分离|清洁凝血|胆囊取出与装袋|胆囊装袋|标本袋牵拉取出|准备)(?:阶段)?[，,。；;]\s*/
-const sentences = text => String(text || '').match(/[^。；！？!?;]+[。；！？!?;]?/g)?.map(s => s.trim()).filter(Boolean) || []
+const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' })
+const sentences = text => [...sentenceSegmenter.segment(String(text || ''))]
+  .flatMap(({ segment }) => segment.match(/[^。；！？!?;]+[。；！？!?;]?/g) || [])
+  .map(s => s.trim()).filter(Boolean)
 const fingerprint = text => text.replace(/\s+/g, '').replace(/[，,。；！？!?;.:]+$/g, '').toLowerCase()
 const joinSentences = items => items.map((text, index) => {
   if (index === items.length - 1 || /[。；！？!?;.]$/.test(text)) return text
@@ -42,7 +45,21 @@ export function formatWindowNarrative(text) {
   const withoutHeading = result.replace(phaseHeader, '')
   if (withoutHeading.trim()) result = withoutHeading
   const seen = new Set()
-  return joinSentences(sentences(result).filter(sentence => {
+  return joinSentences(sentences(result).map(sentence => {
+    // Remove only affirmative presentation boilerplate at the sentence start.
+    // Never strip "not visible", "may be", or anatomical/operative qualifiers.
+    let concise = sentence
+      .replace(/^(?:in|within) (?:the )?(?:field of view|current (?:frame|view)|image|video|frame)[,:]?\s+/i, '')
+      .replace(/^it (?:can be seen|is (?:noted|observed|seen)) that\s+/i, '')
+      .replace(/^the (?:image|video|frame) shows that\s+/i, '')
+    if (!/\b(?:no|not|neither|without|cannot|may|might|possible|possibly|uncertain|unclear|partly|partially|only)\b/i.test(concise)) {
+      concise = concise.replace(/\b(is|are) (?:seen|observed) (?=[a-z]+ing\b)/gi, '$1 ')
+        .replace(/\s+(?:is|are) (?:visible|seen|observed)(?: (?:in|within) the (?:field of view|image|frame))?(?=[.!?;]|$)/gi, '')
+        .replace(/\s+(?:is|are) visible,\s+including\b/gi, ', including')
+        .replace(/\s+(?:(?:is|are) (?:present )?)?(?:in|within) the field of view(?=[.!?;]|$)/gi, '')
+    }
+    return concise.replace(/^[a-z]/, letter => letter.toUpperCase())
+  }).filter(sentence => {
     const key = fingerprint(sentence)
     if (/^(?:当前|目前|本窗口|本段)$/.test(key)) return false
     if (seen.has(key)) return false

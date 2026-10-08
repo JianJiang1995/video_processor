@@ -2,10 +2,11 @@
   <div class="report-layer">
     <div class="report-shell">
       <header class="report-header">
+        <LanguageSwitch />
         <button class="report-back" @click="$emit('back')">{{ t('report.back') }}</button>
         <div>
           <h1>{{ t('report.title') }}</h1>
-          <p>{{ session?.video_name || session?.session_id || '' }}</p>
+          <p>{{ sessionName(session?.video_name) || session?.session_id || '' }}</p>
         </div>
         <button
           v-if="!initialReport"
@@ -48,10 +49,10 @@
             :class="[`severity-${event.severity || 'normal'}`]"
           >
             <div class="report-event-top">
-              <span>{{ event.title }}</span>
+              <span>{{ localize(event.title, 50) }}</span>
               <time>{{ formatRange(event) }}</time>
             </div>
-            <p>{{ event.summary }}</p>
+            <p>{{ localize(event.summary, 45) }}</p>
           </div>
         </aside>
       </main>
@@ -60,11 +61,13 @@
 </template>
 
 <script setup>
+import LanguageSwitch from './LanguageSwitch.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useI18n } from '@/i18n'
+import { useLocalizedText } from '../utils/localizedText.js'
 
 const props = defineProps({
   session: { type: Object, default: null },
@@ -74,14 +77,16 @@ const props = defineProps({
 
 defineEmits(['back'])
 
-const { t } = useI18n()
+const { t, sessionName } = useI18n()
+const { localize } = useLocalizedText()
 const loading = ref(false)
 const error = ref('')
 const report = ref(null)
 
 const reportEvents = computed(() => Array.isArray(report.value?.events) ? report.value.events : [])
 const renderedMarkdown = computed(() => {
-  const source = String(report.value?.markdown || '')
+  const source = String(report.value?.markdown || '').split(/\n\s*\n/)
+    .map(paragraph => localize(paragraph, 80)).join('\n\n')
   return source ? DOMPurify.sanitize(marked.parse(source, { gfm: true })) : ''
 })
 
@@ -148,7 +153,7 @@ watch(() => props.initialReport, () => loadInitialReport(), { deep: false })
 .report-layer {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: 11000;
   background: var(--bg-primary);
   color: var(--text-primary);
   display: flex;
@@ -167,7 +172,12 @@ watch(() => props.initialReport, () => loadInitialReport(), { deep: false })
   align-items: center;
   gap: 18px;
   min-height: 72px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
+
+.report-header > div:not(.language-switch) { min-width: 0; flex: 1; }
+.report-header p { overflow-wrap: anywhere; }
 
 .report-header h1 {
   margin: 0;
@@ -297,7 +307,7 @@ watch(() => props.initialReport, () => loadInitialReport(), { deep: false })
 }
 
 .report-events-panel {
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .report-events-panel .report-panel-head + * {
@@ -334,6 +344,8 @@ watch(() => props.initialReport, () => loadInitialReport(), { deep: false })
   justify-content: space-between;
   font-size: 16px;
   font-weight: 700;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
 }
 
 .report-event time {
@@ -352,6 +364,16 @@ watch(() => props.initialReport, () => loadInitialReport(), { deep: false })
 @media (max-width: 1200px) {
   .report-main {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(280px, 2fr) minmax(150px, 1fr);
   }
+}
+
+@media (max-width: 600px) {
+  .report-layer { padding: 10px; }
+  .report-header { gap: 8px; }
+  .report-header h1 { font-size: 22px; }
+  .report-header p { font-size: 14px; }
+  .report-markdown { padding: 16px; overflow-wrap: anywhere; }
+  .report-markdown :deep(h1) { font-size: 24px; }
 }
 </style>

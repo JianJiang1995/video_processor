@@ -233,7 +233,7 @@ import { ref, computed } from 'vue'
 import { useI18n } from '@/i18n'
 import { Radio, LocateFixed } from '@lucide/vue'
 
-const { t } = useI18n()
+const { t, language } = useI18n()
 
 const props = defineProps({
   currentTime: {
@@ -531,14 +531,14 @@ const formatTime = (seconds) => {
 const formatTimeOffset = (seconds) => {
   // Handle NaN or infinite values
   if (isNaN(seconds) || !isFinite(seconds)) {
-    return '<1秒'
+    return language.value === 'en' ? '<1s' : '<1秒'
   }
   const absSeconds = Math.abs(seconds)
-  if (absSeconds < 1) return '<1秒'
-  if (absSeconds < 60) return `${Math.round(absSeconds)}秒`
+  if (absSeconds < 1) return language.value === 'en' ? '<1s' : '<1秒'
+  if (absSeconds < 60) return `${Math.round(absSeconds)}${language.value === 'en' ? 's' : '秒'}`
   const mins = Math.floor(absSeconds / 60)
   const secs = Math.round(absSeconds % 60)
-  return `${mins}分${secs}秒`
+  return language.value === 'en' ? `${mins}m ${secs}s` : `${mins}分${secs}秒`
 }
 </script>
 

@@ -3,6 +3,7 @@
     <div class="review-overlay" @click.self="$emit('close')">
       <section ref="dialog" class="review-dialog" role="dialog" aria-modal="true" aria-labelledby="review-title">
         <header class="review-header">
+          <LanguageSwitch />
           <div class="review-heading">
             <h2 id="review-title">{{ t('review.title') }}</h2>
             <span class="review-range">{{ formatVideoTime(range.start_time) }} - {{ formatVideoTime(range.end_time) }}</span>
@@ -53,7 +54,7 @@
                     </button>
                   </div>
                   <div class="review-phase">{{ windowPhaseLabel(summary, language) }}</div>
-                  <p>{{ formatWindowNarrative(summary.summary) || t('review.noAnalysis') }}</p>
+                  <p>{{ formatWindowNarrative(localize(formatWindowNarrative(summary.original_summary || summary.summary), 110)) || t('review.noAnalysis') }}</p>
                   <div v-if="reviewState(summary).error" class="review-result error" role="alert">{{ t(reviewState(summary).error) }}</div>
                   <div v-else-if="reviewState(summary).status === 'done' || summary.others?.manual_review" class="review-result" role="status">{{ t(summary.others?.manual_review?.kind === 'offline_narrative_reconciliation' ? 'review.reconciled' : 'review.updated') }}</div>
                 </article>
@@ -78,6 +79,7 @@
 </template>
 
 <script setup>
+import LanguageSwitch from './LanguageSwitch.vue'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { X, Pause, Play, Repeat2, RotateCcw, RefreshCw } from '@lucide/vue'
 import VideoPlayer from './VideoPlayer.vue'
@@ -85,6 +87,7 @@ import ChatPanel from './ChatPanel.vue'
 import { formatVideoTime } from '@/utils/chatTimestamps'
 import { useI18n } from '@/i18n'
 import { formatWindowNarrative, windowPhaseLabel } from '../utils/windowNarrative.js'
+import { useLocalizedText } from '../utils/localizedText.js'
 
 const props = defineProps({
   session: Object,
@@ -97,6 +100,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['close', 'review', 'reanalyze'])
 const { t, language } = useI18n()
+const { localize } = useLocalizedText()
 const dialog = ref(null)
 const closeButton = ref(null)
 const previousFocus = document.activeElement

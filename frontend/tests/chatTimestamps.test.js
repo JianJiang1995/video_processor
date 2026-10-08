@@ -41,3 +41,10 @@ test('formats video time beyond one hour', () => {
   assert.equal(formatVideoTime(3723), '1:02:03')
   assert.equal(formatVideoTime(0), '0:00')
 })
+
+test('translated timestamps remain links beside Chinese punctuation and words', () => {
+  assert.deepEqual(links('回看：0:05和0:15。').map(p => p.reference.window_id), [1, 3])
+  assert.equal(links('记录：0:05-0:10：未见出血。')[0].reference.window_id, 1)
+  assert.equal(links('Review:0:05')[0].reference.window_id, 1)
+  assert.equal(links('https://host/?t=0:05').length, 0)
+})

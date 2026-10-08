@@ -24,7 +24,7 @@
               <span class="item-icon">📋</span>
               {{ t('frame.phase') }}
             </div>
-            <div class="item-value phase">{{ frameData.surgical_phase }}</div>
+            <div class="item-value phase">{{ phaseLabel(frameData.surgical_phase, language) }}</div>
           </div>
           
           <!-- Surgical Action -->
@@ -33,7 +33,7 @@
               <span class="item-icon">✂️</span>
               {{ t('frame.action') }}
             </div>
-            <div class="item-value action">{{ frameData.surgical_action }}</div>
+            <div class="item-value action">{{ localize(frameData.surgical_action, 100) }}</div>
           </div>
           
           <!-- Tool Localization -->
@@ -42,7 +42,7 @@
               <span class="item-icon">🎯</span>
               {{ t('frame.toolLocalization') }}
             </div>
-            <div class="item-value tools">{{ truncate(frameData.tool_localization, 150) }}</div>
+            <div class="item-value tools">{{ truncate(localize(frameData.tool_localization, 100), 150) }}</div>
           </div>
           
           <!-- Window Summary -->
@@ -51,7 +51,7 @@
               <span class="item-icon">📝</span>
               {{ t('frame.windowSummary') }}
             </div>
-            <div class="item-value summary">{{ truncate(frameData.window_summary, 200) }}</div>
+            <div class="item-value summary">{{ truncate(localize(frameData.window_summary, 100), 200) }}</div>
           </div>
           
           <!-- Loading State -->
@@ -80,8 +80,11 @@
 <script setup>
 import { computed } from 'vue'
 import { useI18n } from '@/i18n'
+import { useLocalizedText } from '../utils/localizedText.js'
+import { phaseLabel } from '../utils/windowNarrative.js'
 
-const { t } = useI18n()
+const { t, language } = useI18n()
+const { localize } = useLocalizedText()
 
 defineEmits(['close'])
 

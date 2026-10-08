@@ -17,6 +17,7 @@
         </div>
       </div>
       <div class="header-right">
+        <LanguageSwitch />
         <div v-if="isProcessing" class="processing-badge">
           <span class="processing-dot"></span>
           <span>{{ t('overview.processing') }}</span>
@@ -175,7 +176,7 @@
             >
               <div class="chat-msg-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
               <div class="chat-msg-bubble">
-                <div class="chat-msg-text"><ChatMessageText v-if="msg.role === 'assistant'" :text="msg.content" :summaries="summaries" @review="openReview" /><template v-else>{{ msg.content }}</template></div>
+                <div class="chat-msg-text"><ChatMessageText v-if="msg.role === 'assistant'" :text="localize(msg.content, 120)" :summaries="summaries" @review="openReview" /><template v-else>{{ msg.content }}</template></div>
               </div>
             </div>
             <div v-if="chatLoading" class="chat-msg assistant">
@@ -228,6 +229,8 @@
 </template>
 
 <script setup>
+import LanguageSwitch from './LanguageSwitch.vue'
+import { useLocalizedText } from '../utils/localizedText.js'
 import { formatWindowNarrative, windowPhaseLabel } from '../utils/windowNarrative.js'
 import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
@@ -239,6 +242,7 @@ import { resolveReviewRange } from '@/utils/chatTimestamps'
 import { useI18n } from '@/i18n'
 
 const { t, language } = useI18n()
+const { localize } = useLocalizedText()
 
 const props = defineProps({
   reviewJobs: { type: Object, default: () => ({}) },

@@ -29,7 +29,7 @@
         <header class="app-header">
           <div class="logo" @click="goHome">
             <div class="logo-icon">&#x1F3E5;</div>
-            <div class="logo-text">Surg-R1<span>手术助手</span></div>
+            <div class="logo-text">Surg-R1<span>{{ t('app.assistant') }}</span></div>
           </div>
 
           <div class="header-center">
@@ -42,7 +42,7 @@
               {{ t('app.session') }} {{ currentSession.session_id?.substring(0, 8) || '' }}
             </span>
             <span v-if="currentSession" class="session-name">
-              {{ currentSession.video_name }}
+              {{ sessionName(currentSession.video_name) }}
             </span>
           </div>
 
@@ -59,22 +59,7 @@
               <span aria-hidden="true">&#x1F4C4;</span>
               {{ t('app.videoSummary') }}
             </button>
-            <div class="language-switch" :aria-label="t('lang.label')">
-              <button
-                class="language-option"
-                :class="{ active: language === 'zh' }"
-                @click="setLanguage('zh')"
-              >
-                {{ t('lang.zh') }}
-              </button>
-              <button
-                class="language-option"
-                :class="{ active: language === 'en' }"
-                @click="setLanguage('en')"
-              >
-                {{ t('lang.en') }}
-              </button>
-            </div>
+            <LanguageSwitch />
             <button class="btn btn-secondary" @click="goHome">
               &#x2190; {{ t('app.back') }}
             </button>
@@ -231,7 +216,7 @@
                     `event-severity-${node.severity}`,
                     { selected: node.window_ids?.includes(selectedWindowId) }
                   ]"
-                  :title="node.summary"
+                  :title="localize(node.summary, 40)"
                   @pointerdown.stop
                   @click="handleEventNodeClick(node)"
                 >
@@ -254,8 +239,8 @@
                         <span class="event-node-kind">{{ eventNodeTypeLabel(node.type) }}</span>
                         <span class="event-node-time">{{ eventNodeTimeLabel(node) }}</span>
                       </div>
-                      <div class="event-node-title">{{ node.title }}</div>
-                      <div class="event-node-summary">{{ node.summary }}</div>
+                      <div class="event-node-title">{{ localize(node.title, 45) }}</div>
+                      <div class="event-node-summary">{{ localize(node.summary, 40) }}</div>
                       <div class="event-node-meta">
                         <span>{{ eventNodeWindowLabel(node) }}</span>
                         <span v-if="node.confidence != null">{{ t('app.eventConfidence', { value: Math.round(node.confidence * 100) }) }}</span>
@@ -418,7 +403,7 @@
 </template>
 
 <script setup>
-import { stripCvsStatusClauses } from './utils/windowNarrative.js'
+import { stripCvsStatusClauses, formatWindowNarrative } from './utils/windowNarrative.js'
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { apiUrl, isElectron, loadReplayBundle } from './utils/electronBridge.js'
@@ -438,10 +423,13 @@ import VideoReviewModal from './components/VideoReviewModal.vue'
 import ScreenRecordingControl from './components/ScreenRecordingControl.vue'
 import { resolveReviewRange } from './utils/chatTimestamps.js'
 import { useI18n } from './i18n.js'
+import LanguageSwitch from './components/LanguageSwitch.vue'
+import { useLocalizedText, clearPendingTranslations } from './utils/localizedText.js'
 import { captureLocalVideoThumbnail } from './utils/localVideoThumbnail.js'
 import { summarizeFogTimeline } from './utils/fogTimeline.js'
 
-const { language, setLanguage, t } = useI18n()
+const { language, setLanguage, t, sessionName } = useI18n()
+const { localize } = useLocalizedText()
 
 // View state
 const currentView = ref('select')  // 'select', 'stream-input', 'main', 'overview', 'report'
@@ -478,7 +466,6 @@ const reanalyzeWindow = async windowId => {
         if (index >= 0) replayAllSummaries.value[index] = cleanSummaryPayload(data)
       }
       replayReport.value = null
-      if (language.value === 'en') requestSummaryTranslation(data)
     }
     reviewJobs[key] = { status: 'done' }
   } catch (error) {
@@ -608,7 +595,6 @@ let streamTimerInterval = null
 let streamEndCheckInterval = null  // Check if stream has ended
 let lastSummaryRefreshAt = 0
 let lastSummaryRefreshWindow = -1
-const translationInFlight = new Set()
 let eventNodesTimer = null
 let eventNodesRequestSeq = 0
 let eventNodesRefreshPending = false
@@ -913,7 +899,7 @@ const upsertSummary = (payload) => {
       ...summaries.value[existingIndex],
       ...data,
       summary: data.summary || summaries.value[existingIndex].summary,
-      summary_en: data.others?.manual_review ? data.summary_en : (data.summary_en || summaries.value[existingIndex].summary_en),
+      summary_en: data.summary_en || (data.summary === previous.summary ? previous.summary_en : ''),
     }
   } else {
     const arr = summaries.value
@@ -1042,7 +1028,6 @@ const openReplayBundle = async (bundle, startAt = null) => {
   replaySummarySignature = ''
   replayEventSignature = ''
 
-  setLanguage(bundle.spec?.language || 'zh')
   mode.value = 'local'
   currentView.value = 'main'
   navActiveView.value = 'analysis'
@@ -1084,13 +1069,13 @@ const openReplayBundle = async (bundle, startAt = null) => {
 }
 
 const isSevereBleedingSummary = (summary) => {
-  const text = `${summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
+  const text = `${summary?.original_summary || summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
   if (/(无(?:明显)?出血|未见(?:明显)?出血|没有(?:明显)?出血|无活动性出血|未见活动性出血|no bleeding|without bleeding)/i.test(text)) return false
   return /(大量(?:活动性)?出血|明显(?:活动性)?出血|持续(?:活动性)?出血|喷涌出血|喷射性出血|涌血|明确出血源|影响视野的持续渗血|heavy bleeding|massive bleeding|profuse bleeding|significant bleeding)/i.test(text)
 }
 
 const isBleedingResolvedSummary = (summary) => {
-  const text = `${summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
+  const text = `${summary?.original_summary || summary?.summary || ''} ${summary?.dominant_phase || ''}`.toLowerCase()
   return /(出血(?:已经|已)?(?:停止|控制|解决)|已(?:完成)?止血|止血(?:完成|成功|有效)|凝血后(?:未见|无)活动性出血|未见活动性出血|无活动性出血|bleeding (?:stopped|controlled|resolved)|hemostasis achieved)/i.test(text)
 }
 
@@ -1111,13 +1096,18 @@ const currentSummary = computed(() => {
     || null)
 })
 
+const translationWindowId = computed(() => Math.floor(
+  (loopWindow.value ? livePlaybackTime.value : currentTime.value) / windowDuration.value))
 const localizedSummary = (summary) => {
   const s = cleanSummaryPayload(summary)
   if (!s) return s
-  if (language.value === 'en' && s.summary_en) {
-    return { ...s, summary: stripCvsStatusText(s.summary_en) || s.summary_en }
-  }
-  return { ...s, summary: stripCvsStatusText(s.summary) || s.summary }
+  // Translate exactly the narrative shown in Chinese, after shared phase/CVS
+  // formatting, so English does not repeat metadata hidden in the Chinese view.
+  const original = formatWindowNarrative(s.summary) || s.summary
+  const currentId = translationWindowId.value
+  const priority = s.window_id === currentId || s.window_id === selectedWindowId.value ? 100
+    : s.window_id === currentId - 1 ? 95 : 20 + s.window_id / 10000
+  return { ...s, original_summary: s.summary, summary: formatWindowNarrative(localize(original, priority)), summary_en: '' }
 }
 
 const localizedSummaries = computed(() => summaries.value.map(localizedSummary))
@@ -1153,6 +1143,7 @@ watch(latestAnalysisPosition, position => {
   if (followingAnalysis.value && mode.value === 'local') seekLocalView(position)
 })
 watch(() => currentSession.value?.session_id, () => {
+  clearPendingTranslations()
   timeshiftActive.value = false
   timeshiftPlaying.value = false
   followingAnalysis.value = false
@@ -2000,7 +1991,7 @@ const startAnalysis = async () => {
     
     // Show error message
     const errorMsg = error.response?.data?.detail || error.message || 'Unknown error'
-    alert(`分析启动失败: ${errorMsg}`)
+    alert(`${t('app.startFailed')}: ${errorMsg}`)
   }
 }
 
@@ -2198,10 +2189,8 @@ const cvsStatusNode = computed(() => {
     id: 'event_cvs_status',
     type: 'cvs',
     severity: achieved ? 'resolved' : 'critical',
-    title: achieved ? 'CVS已达成' : 'CVS尚未达成',
-    summary: achieved
-      ? 'CVS三要素已确认，可作为夹闭/剪断前的安全节点。'
-      : 'CVS评估中：尚未确认三要素，夹闭或剪断胆囊管和胆囊动脉前需继续核查。',
+    title: t(achieved ? 'event.cvsAchieved' : 'event.cvsPending'),
+    summary: t(achieved ? 'event.cvsAchievedDetail' : 'event.cvsPendingDetail'),
     window_ids: [...new Set(windowIds)],
     representative_window_id: representativeWindowId,
     start_time: Number(first.start_time ?? first.window_start ?? 0),
@@ -2468,48 +2457,6 @@ const handleEventNodeClick = (node) => {
   handleSeekToWindow(targetWindow)
 }
 
-const requestSummaryTranslation = async (summary) => {
-  const s = cleanSummaryPayload(summary)
-  if (!s?.summary || s.summary_en || !currentSession.value) return
-  const sid = currentSession.value.session_id
-  const key = `${sid}:${s.window_id}:en:${s.summary}`
-  if (translationInFlight.has(key)) return
-  translationInFlight.add(key)
-  try {
-    const res = await axios.post('/api/analysis/translate-summary', {
-      text: s.summary,
-      target_lang: 'en',
-    }, {
-      signal: getSessionSignal(),
-      timeout: 20000,
-    })
-    if (res.data?.text) {
-      const idx = summaries.value.findIndex(item => item.window_id === s.window_id)
-      if (currentSession.value?.session_id === sid && idx >= 0 && summaries.value[idx].summary === s.summary) {
-        summaries.value[idx] = {
-          ...summaries.value[idx],
-          summary_en: cleanUserSummaryText(res.data.text),
-        }
-      }
-    }
-  } catch (error) {
-    if (!axios.isCancel(error) && error.name !== 'AbortError') {
-      console.debug('[Translate] summary translation failed:', error.message)
-    }
-  } finally {
-    translationInFlight.delete(key)
-  }
-}
-
-const ensureEnglishSummaries = () => {
-  if (language.value !== 'en') return
-  const ordered = [
-    ...summaries.value.slice().reverse(),
-  ].filter(s => s?.summary && !s.summary_en)
-  ordered.slice(0, 24).forEach((s, index) => {
-    setTimeout(() => requestSummaryTranslation(s), index * 250)
-  })
-}
 
 const refreshCurrentWindowSummary = async (time) => {
   if (replayMode.value) return
@@ -3303,13 +3250,8 @@ watch(currentTime, (newTime) => {
   }
 })
 
-watch(
-  () => [language.value, summaries.value.length],
-  () => {
-    ensureEnglishSummaries()
-    scheduleEventNodesRefresh(language.value === 'en' ? 250 : 800)
-  }
-)
+// A language switch translates display text; it must not regenerate clinical events.
+watch(() => summaries.value.length, () => scheduleEventNodesRefresh(800))
 
 // Check all service statuses
 const checkAnalysisServices = async () => {
@@ -3368,7 +3310,7 @@ onMounted(async () => {
     await loadOfflineReplayFromQuery()
   } catch (error) {
     console.error('[Replay] Startup failed:', error)
-    replayError.value = `离线分析回放加载失败: ${error.message}`
+    replayError.value = `${t('app.replayFailed')}: ${error.message}`
   } finally {
     replayLoading.value = false
   }

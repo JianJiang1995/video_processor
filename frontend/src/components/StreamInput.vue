@@ -1,5 +1,6 @@
 <template>
   <div class="stream-input-panel">
+    <LanguageSwitch />
     <h3>📡 {{ t('stream.connectSource') }}</h3>
       <ReplayImportButton @begin="cancelAutoConnect" @loaded="$emit('replay', $event)" />
     
@@ -117,7 +118,7 @@
           >
             <div class="device-icon">📹</div>
             <div class="device-info">
-              <div class="device-name">{{ device.device_name }}</div>
+              <div class="device-name">{{ sessionName(device.device_name) }}</div>
               <div class="device-specs">
                 <template v-if="device.available === false">{{ t('stream.captureUnavailable') }}</template>
                 <template v-else-if="device.backend === 'decklink'">{{ t('stream.captureFormatPending') }}</template>
@@ -224,6 +225,7 @@
 </template>
 
 <script setup>
+import LanguageSwitch from './LanguageSwitch.vue'
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { useI18n } from '@/i18n'
@@ -234,7 +236,7 @@ import {
   rememberCaptureSettings, restoreCaptureSettings,
 } from '@/utils/capturePreferences'
 
-const { language, t } = useI18n()
+const { language, t, sessionName } = useI18n()
 
 const emit = defineEmits(['connect', 'back', 'replay'])
 

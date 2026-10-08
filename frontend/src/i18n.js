@@ -1,10 +1,21 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const STORAGE_KEY = 'surg_ui_language'
 const FALLBACK_LANG = 'zh'
 
-const messages = {
+export const messages = {
   zh: {
+    'app.assistant': '手术助手',
+    'app.captureSimulator': '手术室采集卡模拟源',
+    'app.startFailed': '分析启动失败',
+    'app.replayFailed': '离线分析回放加载失败',
+    'translation.pending': '正在翻译...',
+    'translation.failed': '翻译暂不可用',
+    'translation.retry': '重试翻译',
+    'event.cvsAchieved': 'CVS已达成',
+    'event.cvsPending': 'CVS尚未达成',
+    'event.cvsAchievedDetail': 'CVS三要素已确认，可作为夹闭、剪断前的安全节点。',
+    'event.cvsPendingDetail': 'CVS评估中：尚未确认三要素，夹闭或剪断胆囊管和胆囊动脉前需继续核查。',
     'lang.label': '语言',
     'lang.zh': '中文',
     'lang.en': 'English',
@@ -300,6 +311,17 @@ const messages = {
     'frame.empty': '暂无分析数据',
   },
   en: {
+    'app.assistant': 'Surgical Assistant',
+    'app.captureSimulator': 'Operating room simulator',
+    'app.startFailed': 'Failed to start analysis',
+    'app.replayFailed': 'Failed to open analysis replay',
+    'translation.pending': 'Translating...',
+    'translation.failed': 'Translation unavailable',
+    'translation.retry': 'Retry translation',
+    'event.cvsAchieved': 'CVS achieved',
+    'event.cvsPending': 'CVS not yet achieved',
+    'event.cvsAchievedDetail': 'All three CVS criteria have been confirmed as a safety checkpoint before clipping or division.',
+    'event.cvsPendingDetail': 'The three CVS criteria are not yet confirmed. Further assessment is required before clipping or dividing the cystic duct or cystic artery.',
     'lang.label': 'Language',
     'lang.zh': '中文',
     'lang.en': 'English',
@@ -597,8 +619,10 @@ const messages = {
 }
 
 const initialLanguage = (() => {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  return saved === 'en' || saved === 'zh' ? saved : FALLBACK_LANG
+  try {
+    const saved = globalThis.localStorage?.getItem(STORAGE_KEY)
+    return saved === 'en' || saved === 'zh' ? saved : FALLBACK_LANG
+  } catch { return FALLBACK_LANG }
 })()
 
 const language = ref(initialLanguage)
@@ -612,8 +636,14 @@ function interpolate(template, params = {}) {
 function setLanguage(nextLanguage) {
   if (nextLanguage !== 'zh' && nextLanguage !== 'en') return
   language.value = nextLanguage
-  localStorage.setItem(STORAGE_KEY, nextLanguage)
+  try { globalThis.localStorage?.setItem(STORAGE_KEY, nextLanguage) } catch { /* In-memory switching still works. */ }
 }
+
+watch(language, value => {
+  if (typeof document === 'undefined') return
+  document.documentElement.lang = value === 'en' ? 'en' : 'zh-CN'
+  document.title = `Surg-R1 ${messages[value]['app.assistant']}`
+}, { immediate: true })
 
 function t(key, params) {
   const table = messages[language.value] || messages[FALLBACK_LANG]
@@ -630,6 +660,11 @@ function windowLabel(windowId, rangeEndId = null) {
   return `${t('app.windowPrefix')} ${windowId}`
 }
 
+// Translate only the application's prefix, never the user's file name or path.
+function sessionName(value) {
+  return String(value || '').replace(/手术室采集卡模拟源|Operating room simulator/g, t('app.captureSimulator'))
+}
+
 export function useI18n() {
   return {
     language,
@@ -637,5 +672,6 @@ export function useI18n() {
     setLanguage,
     t,
     windowLabel,
+    sessionName,
   }
 }

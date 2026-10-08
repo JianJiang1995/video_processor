@@ -14,7 +14,7 @@ from playwright.async_api import async_playwright
 async def verify(args):
     root = Path(__file__).resolve().parents[1]
     args.output.mkdir(parents=True, exist_ok=True)
-    results = {"mock_chat_api": True, "real_replay_media": True, "page_errors": [], "checks": []}
+    results = {"mock_chat_api": True, "real_replay_media": True, "language": args.language, "page_errors": [], "checks": []}
     history = [
         {"id": 1, "role": "user", "content": "UI regression test: review the referenced clips."},
         {"id": 2, "role": "assistant", "content": "UI regression test references: 0:05 and 0:15."},
@@ -47,6 +47,7 @@ async def verify(args):
                     context = browser.contexts[0]
                     page = context.pages[0]
                     page.set_default_timeout(20000)
+                    await page.add_init_script(f"localStorage.setItem('surg_ui_language', {json.dumps(args.language)})")
                     page.on("pageerror", lambda error: results["page_errors"].append(str(error)))
 
                     async def chat_history(route):
@@ -96,7 +97,7 @@ async def verify(args):
                     results["checks"].append("review video decodes after timestamp navigation")
                     await page.wait_for_timeout(500)
                     await page.screenshot(path=str(args.output / "review_shared_chat.png"))
-                    await page.locator(".review-header button").click()
+                    await page.locator(".review-header .review-icon").click()
                     await count(main, 4)
                     results["checks"].append("review exchange is visible on main screen")
 
@@ -114,7 +115,7 @@ async def verify(args):
                     await count(modal, 7)
                     await modal.get_by_role("link", name="0:15", exact=True).first.click()
                     await count(modal, 7)
-                    await page.locator(".review-header button").click()
+                    await page.locator(".review-header .review-icon").click()
                     assert await main.locator(".chat-input").is_disabled()
                     gate.set()
                     await count(main, 8)
@@ -126,6 +127,13 @@ async def verify(args):
                     await page.locator(".rp-tab").nth(1).click()
                     await count(main, 8)
                     results["checks"].append("reload restores persisted conversation without duplicates")
+                    await page.get_by_role("button", name="中文", exact=True).first.click()
+                    await main.get_by_role("link", name="0:05", exact=True).first.click()
+                    await count(modal, 8)
+                    await page.locator(".review-header").get_by_role("button", name="English", exact=True).click()
+                    await count(modal, 8)
+                    assert await modal.get_by_role("link", name="0:05", exact=True).first.is_visible()
+                    results["checks"].append("language switches retain shared messages and working timestamp links")
                     assert not results["page_errors"], results["page_errors"]
                     await page.evaluate("window.close()")
             finally:
@@ -141,6 +149,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:5133")
     parser.add_argument("--port", type=int, default=9333)
+    parser.add_argument("--language", choices=("zh", "en"), default="zh")
     parser.add_argument("--spec", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("recordings/shared_chat_verification"))
     asyncio.run(verify(parser.parse_args()))

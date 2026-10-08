@@ -5,10 +5,7 @@
         <ClipboardPlus :size="26" class="home-brand-icon" />
         <h1>Surg-R1 <span>{{ language === 'zh' ? '手术助手' : 'Surgical Assistant' }}</span></h1>
       </div>
-      <div class="home-language" aria-label="Language">
-        <button :class="{ active: language === 'zh' }" @click="setLanguage('zh')">中文</button>
-        <button :class="{ active: language === 'en' }" @click="setLanguage('en')">English</button>
-      </div>
+      <LanguageSwitch />
     </div>
 
     <div class="mode-cards">
@@ -81,6 +78,7 @@ import axios from 'axios'
 import { useI18n } from '@/i18n'
 import ReplayImportButton from './ReplayImportButton.vue'
 import AnalysisHistory from './AnalysisHistory.vue'
+import LanguageSwitch from './LanguageSwitch.vue'
 
 const { t, language, setLanguage } = useI18n()
 

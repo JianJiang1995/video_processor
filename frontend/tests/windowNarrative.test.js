@@ -48,3 +48,37 @@ test('CVS status stays separate without removing an adjacent operation or risk',
   assert.equal(mergeWindowNarratives([{ summary: 'A grasper holds tissue.' }, { summary: 'Scissors approach tissue.' }]),
     'A grasper holds tissue. Scissors approach tissue.')
 })
+
+test('English narration removes camera boilerplate without changing the clinical finding', () => {
+  assert.equal(formatWindowNarrative('In the field of view, the grasper retracts the gallbladder. It can be seen that the hook dissects adhesions.'),
+    'The grasper retracts the gallbladder. The hook dissects adhesions.')
+  assert.equal(formatWindowNarrative('Within the current frame, no definite division is identified.'),
+    'No definite division is identified.')
+  assert.equal(formatWindowNarrative('The grasper is seen retracting the gallbladder.'),
+    'The grasper is retracting the gallbladder.')
+  assert.equal(formatWindowNarrative('Liver, omentum and gallbladder surface tissue are visible in the field of view.'),
+    'Liver, omentum and gallbladder surface tissue.')
+  assert.equal(formatWindowNarrative('Tissue within the abdominal cavity is visible, including liver and omentum.'),
+    'Tissue within the abdominal cavity, including liver and omentum.')
+  assert.equal(formatWindowNarrative('Lens fogging is present in the field of view. The surgical field is obstructed.'),
+    'Lens fogging. The surgical field is obstructed.')
+  assert.equal(formatWindowNarrative('Blurry pink intra-abdominal tissue in the field of view.'),
+    'Blurry pink intra-abdominal tissue.')
+  for (const text of [
+    'The cystic artery is not visible.',
+    'A grasper may be approaching the cystic duct.',
+    'It cannot be confirmed that division has occurred.',
+    'No scissors are seen approaching the duct.',
+    'The field of view is obscured by fog.',
+    'The grasper holds tissue in the hepatocystic triangle.',
+    'The instrument is partially in the field of view.',
+    'The hook moves 1.5 mm. No active bleeding is seen.',
+  ]) assert.equal(formatWindowNarrative(text), text)
+})
+
+test('English sentence deduplication preserves separate operations and risks', () => {
+  assert.equal(mergeWindowNarratives([
+    { summary: 'The grasper retracts the gallbladder. The hook dissects adhesions.' },
+    { summary: 'The hook dissects adhesions. Active bleeding is present.' },
+  ]), 'The grasper retracts the gallbladder. The hook dissects adhesions. Active bleeding is present.')
+})

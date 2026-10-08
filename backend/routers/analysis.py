@@ -134,10 +134,6 @@ def _track_glm_task(session_id: str, task: asyncio.Task) -> None:
 
     task.add_done_callback(discard)
 
-# Text-only translation cache for UI language switching.
-# Key: (target_lang, source_text)
-summary_translation_cache: dict = {}
-
 # LLM-generated key event nodes for the bottom timeline UI.
 # Key: (session_id, language, max_windows, summaries_signature)
 event_node_cache: dict = {}
@@ -9155,182 +9151,14 @@ async def get_pending_refinements(
 
 @router.post("/translate-summary")
 async def translate_summary(request: TranslateSummaryRequest):
-    """Translate one window summary for UI language switching.
-
-    This is intentionally text-only and cached in memory. It does not alter the
-    stored clinical analysis; it only provides a localized display string.
-    """
-    source = (request.text or "").strip()
-    target = (request.target_lang or "en").lower()
-    if not source:
-        return {"success": True, "text": "", "target_lang": target, "cached": False}
-    if target.startswith("zh"):
-        return {"success": True, "text": source, "target_lang": target, "cached": True}
-
-    key = (target, source)
-    if key in summary_translation_cache:
-        return {
-            "success": True,
-            "text": summary_translation_cache[key],
-            "target_lang": target,
-            "cached": True,
-        }
-
-    def local_translate_summary_en(text: str) -> str:
-        """Fast local fallback for short laparoscopic cholecystectomy UI summaries.
-
-        This is deliberately conservative: it compresses known surgical findings
-        into professional English and preserves fixed terms instead of trying to
-        be a general-purpose translator.
-        """
-        src = re.sub(r"\s+", " ", str(text or "")).strip()
-        src = re.sub(r"^【[^】]*】\s*", "", src)
-        src = re.sub(r"当前处于[^，。；;]+[，,。；;]?\s*", "", src)
-        src = re.sub(r"(?:可见|视野中可见)(?:抓钳|施夹器|施夹钳|钛夹钳|剪刀|电凝钩|电钩|冲吸器|冲洗器|吸引器|器械)(?:、(?:抓钳|施夹器|施夹钳|钛夹钳|剪刀|电凝钩|电钩|冲吸器|冲洗器|吸引器|器械))*[，,。；;]?\s*", "", src)
-
-        sentences: List[str] = []
-        lower = src.lower()
-
-        def add(sentence: str) -> None:
-            if sentence and sentence not in sentences:
-                sentences.append(sentence)
-
-        if re.search(r"hem[-\s]?o[-\s]?lok|hemolok|hemlock", lower, re.IGNORECASE):
-            add("A Hem-o-lok clip is placed on the cystic duct.")
-
-        if re.search(r"(肝胆三角|胆囊三角|calot)", src, re.IGNORECASE) and re.search(r"(游离|分离|电凝|剥离|点触)", src):
-            add("Dissection is performed in the hepatocystic triangle, separating adhesions and connective tissue around the cystic duct.")
-
-        if re.search(r"(胆囊管|胆囊动脉|管状结构)", src) and re.search(r"(夹闭|施夹|闭合)", src):
-            if "胆囊动脉" in src:
-                add("The isolated cystic artery is clipped.")
-            else:
-                add("The isolated cystic duct is clipped.")
-
-        if re.search(r"(剪刀|剪切|切断|夹断)", src) and re.search(r"(胆囊管|胆囊动脉|管状结构|组织)", src):
-            if "胆囊动脉" in src:
-                add("The clipped cystic artery is divided.")
-            else:
-                add("The clipped cystic duct is divided.")
-
-        if re.search(r"(胆囊分离|胆囊与肝床|胆囊床|肝床)", src) and re.search(r"(游离|分离|剪切|剥离|牵拉)", src):
-            add("The gallbladder is dissected from the liver bed under traction.")
-
-        if re.search(r"(冲吸器|冲洗|吸引|清理)", src):
-            add("Suction and irrigation are used to clear the operative field.")
-
-        if re.search(r"(穿刺|穿入|穿孔|钻孔)", src):
-            add("A puncture or entry maneuver is noted.")
-
-        if re.search(
-            r"(大量(?:活动性)?出血|明显(?:活动性)?出血|持续(?:活动性)?出血|"
-            r"喷涌出血|喷射性出血|涌血|明确出血源|影响视野的持续渗血)",
-            src,
-        ):
-            add("Active bleeding is noted and requires attention.")
-        elif re.search(r"(少量出血|少量渗血|渗血|局部.*出血|出血)", src):
-            add("Minor local bleeding or oozing is noted.")
-
-        if re.search(r"(止血|凝血|出血.*控制|无活动性出血|未见活动性出血)", src):
-            add("Hemostasis is achieved or no active bleeding is seen.")
-
-        if re.search(r"(牵拉|夹持)", src) and re.search(r"(胆囊|组织)", src):
-            add("Traction is maintained to expose the operative field.")
-
-        if sentences:
-            return " ".join(sentences[:3])
-
-        replacements = [
-            ("Hem-o-lok", "Hem-o-lok clip"),
-            ("Hemolok", "Hem-o-lok clip"),
-            ("胆囊管", "cystic duct"),
-            ("胆囊动脉", "cystic artery"),
-            ("肝胆三角", "hepatocystic triangle"),
-            ("Calot三角", "Calot's triangle"),
-            ("胆囊床", "gallbladder bed"),
-            ("肝床", "liver bed"),
-            ("钛夹", "titanium clip"),
-            ("施夹器", "clip applier"),
-            ("施夹钳", "clip applier"),
-            ("钛夹钳", "titanium clip applier"),
-            ("抓钳", "grasper"),
-            ("电凝钩", "electrocautery hook"),
-            ("电钩", "electrocautery hook"),
-            ("剪刀", "scissors"),
-            ("出血", "bleeding"),
-            ("止血", "hemostasis"),
-            ("夹闭切断", "clipping and division"),
-            ("胆囊分离", "gallbladder dissection"),
-        ]
-        out = src
-        for cn, en in replacements:
-            out = out.replace(cn, en)
-        return out[:260]
-
-    config = load_config()
-    translation_cfg = config.get("services", {}).get("translation", {})
-    provider = translation_cfg.get("provider", "gemini")
-    model_name = translation_cfg.get("model_name")
-    max_tokens = int(translation_cfg.get("max_tokens", 220))
-    temperature = float(translation_cfg.get("temperature", 0.0))
-
-    system_prompt = (
-        "You are a surgical UI localization assistant. Translate the Chinese "
-        "laparoscopic cholecystectomy window summary into concise professional "
-        "English. Preserve instruments, anatomy, actions, bleeding status, and "
-        "puncture/contact uncertainty. Do not add new findings. Output only the "
-        "translated sentence(s), no markdown."
-    )
-    prompt = f"Translate to English:\n{source}"
+    """Translate display text locally without rewriting clinical evidence."""
+    from ..services.ui_translation import translate_ui_text
 
     try:
-        if provider == "glm":
-            client = get_glm_client()
-            result = await client.chat(
-                message=prompt,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                disable_thinking=True,
-            )
-        else:
-            from ..services.gemini_client import GeminiClient
-            client = GeminiClient(
-                model_name=model_name,
-                thinking_level=translation_cfg.get("thinking_level", "none"),
-                max_tokens=max_tokens,
-            )
-            result = await client.chat(
-                message=prompt,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-
-        text = (result.get("text") or "").strip()
-        if not result.get("success") or not text:
-            raise RuntimeError(result.get("error") or "empty translation")
-        summary_translation_cache[key] = text
-        return {
-            "success": True,
-            "text": text,
-            "target_lang": target,
-            "cached": False,
-            "provider": provider,
-            "model": model_name or result.get("model"),
-        }
-    except Exception as exc:
-        logger.warning(f"[Translate] Failed to translate summary: {exc}")
-        fallback_text = local_translate_summary_en(source)
-        summary_translation_cache[key] = fallback_text
-        return {
-            "success": True,
-            "text": fallback_text,
-            "target_lang": target,
-            "cached": False,
-            "provider": "local_rule_fallback",
-            "error": str(exc),
-        }
+        return await translate_ui_text(request.text, request.target_lang or "en")
+    except (ValueError, asyncio.TimeoutError) as exc:
+        logger.warning("[Translate] Local translation unavailable: %s", exc)
+        raise HTTPException(503, "Local translation unavailable. Please retry.") from exc
 
 FOG_ACTIVE_RE = re.compile(
     r"(镜头)?(?:起雾|雾气|烟雾|烟雾弥漫|水汽|"

@@ -26,14 +26,14 @@
       >
         <div class="chat-msg-content"><ChatMessageText
           v-if="msg.role === 'assistant'"
-          :text="msg.content"
+          :text="localize(msg.content, 120)"
           :summaries="summaries"
           @review="$emit('review', $event)"
         /><template v-else>{{ msg.content }}</template></div>
 
         <!-- Context reference -->
         <div v-if="msg.context" class="chat-msg-context">
-          &#x1F4CB; {{ msg.context }}
+          &#x1F4CB; {{ localize(msg.context, 110) }}
         </div>
 
         <!-- Similarity results -->
@@ -97,8 +97,10 @@ import { RotateCcw } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import ChatMessageText from './ChatMessageText.vue'
 import { sessionChat } from '@/utils/sessionChat'
+import { useLocalizedText } from '../utils/localizedText.js'
 
 const { t } = useI18n()
+const { localize } = useLocalizedText()
 
 const props = defineProps({
   sessionId: { type: String, default: '' },
