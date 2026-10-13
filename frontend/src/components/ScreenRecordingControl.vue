@@ -19,7 +19,7 @@
           data-testid="screen-recording-fps" @change="saveFrameRate">
         <span>fps</span>
       </label>
-      <span class="record-format">≤ 1920 × 1080 · {{ frameRate }} fps · WebM</span>
+      <span class="record-format">≤ {{ RECORDING_MAX_WIDTH }} × {{ RECORDING_MAX_HEIGHT }} · {{ frameRate }} fps<br>MP4 (H.264) · {{ RECORDING_BITRATE / 1000000 }} Mbps</span>
     </div>
     <div v-if="message" class="record-message" :class="{ error: status.state === 'error' }" role="status">
       <span>{{ message }}</span>
@@ -34,7 +34,8 @@ import { Circle, Square, FolderOpen, Settings2, X } from '@lucide/vue'
 import { useI18n } from '../i18n.js'
 import { ScreenRecorder } from '../utils/screenRecorder.js'
 import { previewAllowsRecording } from '../utils/previewPixels.js'
-import { DEFAULT_RECORDING_FPS, MIN_RECORDING_FPS, MAX_RECORDING_FPS, normalizeRecordingFps } from '../../electron/recordingOptions.mjs'
+import { DEFAULT_RECORDING_FPS, MIN_RECORDING_FPS, MAX_RECORDING_FPS, normalizeRecordingFps,
+  RECORDING_MAX_WIDTH, RECORDING_MAX_HEIGHT, RECORDING_BITRATE } from '../../electron/recordingOptions.mjs'
 
 const props = defineProps({ sessionId: String, analyzing: Boolean, replay: Boolean, previewRequired: Boolean, previewMetrics: Object })
 const api = window.electronAPI
@@ -46,14 +47,16 @@ const labels = computed(() => language.value === 'zh' ? {
   frameRate: '录屏帧率', invalidFrameRate: '录屏帧率须为 1–60 的整数',
   saved: '录屏已保存', disk: '磁盘空间不足，未开始录屏', load: '当前负载较高，已跳过自动录屏',
   previewStop: '实时预览优先，已停止自动录屏',
-  failed: '录屏失败', warning: '录屏已保存，但索引未完成', minimized: '窗口已最小化，录屏已停止', diskStop: '磁盘空间不足，录屏已停止',
+  failed: '录屏失败', warning: '录屏文件已保留，但索引或格式检查未通过', minimized: '窗口已最小化，录屏已停止', diskStop: '磁盘空间不足，录屏已停止',
+  unsupported: '当前桌面运行环境不支持 H.264 MP4 录屏，请更新桌面应用',
 } : {
   start: 'Record', starting: 'Starting', stop: 'Stop recording', saving: 'Saving', folder: 'Open recordings',
   settings: 'Recording settings', automatic: 'Auto-record analysis when resources permit', close: 'Close',
   frameRate: 'Recording frame rate', invalidFrameRate: 'Frame rate must be an integer from 1 to 60',
   saved: 'Recording saved', disk: 'Not enough disk space to record', load: 'Auto-recording skipped: high system load',
   previewStop: 'Auto-recording stopped to prioritize live preview',
-  failed: 'Recording failed', warning: 'Recording saved without a complete index', minimized: 'Recording stopped: window minimized', diskStop: 'Recording stopped: low disk space',
+  failed: 'Recording failed', warning: 'Recording retained; indexing or format verification failed', minimized: 'Recording stopped: window minimized', diskStop: 'Recording stopped: low disk space',
+  unsupported: 'This desktop runtime cannot record H.264 MP4. Please update the desktop app.',
 })
 const autoRecord = ref(false)
 const frameRate = ref(DEFAULT_RECORDING_FPS)
@@ -80,6 +83,7 @@ const recorder = available ? new ScreenRecorder(api, { onState: value => {
   if (value.state === 'error') {
     message.value = value.error?.includes('recording_disk') ? labels.value.disk
       : value.error?.includes('recording_load') ? labels.value.load
+        : value.error?.includes('recording_mp4_unsupported') ? labels.value.unsupported
         : `${labels.value.failed}: ${value.error}`
   }
   if (value.reason === 'window_minimized') message.value = `${labels.value.minimized}: ${value.path}`

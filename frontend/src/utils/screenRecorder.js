@@ -1,4 +1,5 @@
-import { DEFAULT_RECORDING_FPS, normalizeRecordingFps } from '../../electron/recordingOptions.mjs'
+import { DEFAULT_RECORDING_FPS, normalizeRecordingFps, RECORDING_MAX_WIDTH,
+  RECORDING_MAX_HEIGHT, RECORDING_BITRATE } from '../../electron/recordingOptions.mjs'
 
 export class ScreenRecorder {
   constructor(api, { onState = () => {}, mediaDevices = navigator.mediaDevices,
@@ -20,6 +21,9 @@ export class ScreenRecorder {
     const fps = normalizeRecordingFps(frameRate)
     let job
     try {
+      const mimeType = ['video/mp4;codecs=avc1', 'video/mp4;codecs=avc1.420028']
+        .find(type => this.Recorder.isTypeSupported(type))
+      if (!mimeType) throw new Error('recording_mp4_unsupported')
       job = { ...await this.api.beginRecording({ sessionId, automatic, fps }), automatic: Boolean(automatic), fps }
       if (generation !== this.generation) {
         await this.api.finishRecording(job.id, 'start_cancelled')
@@ -31,16 +35,14 @@ export class ScreenRecorder {
       this.stopping = null
       const stream = await this.mediaDevices.getUserMedia({ audio: false, video: { mandatory: {
         chromeMediaSource: 'desktop', chromeMediaSourceId: job.sourceId,
-        maxWidth: 1920, maxHeight: 1080, maxFrameRate: fps,
+        maxWidth: RECORDING_MAX_WIDTH, maxHeight: RECORDING_MAX_HEIGHT, maxFrameRate: fps,
       } } })
       if (generation !== this.generation || this.job !== job) {
         stream.getTracks().forEach(track => track.stop())
         return
       }
       this.stream = stream
-      const mimeType = ['video/webm;codecs=vp8', 'video/webm'].find(type => this.Recorder.isTypeSupported(type))
-      if (!mimeType) throw new Error('recording_codec')
-      this.recorder = new this.Recorder(this.stream, { mimeType, videoBitsPerSecond: 4500000 })
+      this.recorder = new this.Recorder(this.stream, { mimeType, videoBitsPerSecond: RECORDING_BITRATE })
       this.recorder.ondataavailable = event => {
         if (!event.data.size) return
         this.pending += event.data.size

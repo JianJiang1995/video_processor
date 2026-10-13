@@ -58,6 +58,16 @@ async def verify(args):
     async with async_playwright() as playwright:
         browser = await playwright.chromium.connect_over_cdp(args.cdp)
         page = browser.contexts[0].pages[0]
+        if args.spec:
+            await page.wait_for_function("document.querySelector('#app')?.__vue_app__")
+            assert not await page.evaluate(f'{APP}.isProcessing'), 'Only test an idle app'
+            await page.evaluate(f'''async path => {{
+              const bundle = await window.electronAPI.loadReplayBundle(path);
+              if (!bundle.success) throw Error(bundle.error);
+              bundle.spec.auto_play = false;
+              await {APP}.openReplayBundle(bundle, 0);
+            }}''', str(args.spec.resolve()))
+            await page.wait_for_function('document.querySelector(".video-section video")?.readyState >= 2')
         await page.wait_for_selector('[data-testid=screen-recording-toggle]')
         await page.evaluate(f"{CONTROL}.recorder.stop('test_reset')")
         await page.evaluate(f"{APP}.handleSeek(0)")
@@ -67,6 +77,8 @@ async def verify(args):
         await page.get_by_test_id('screen-recording-toggle').click()
         await page.wait_for_function(f"{CONTROL}.status.state === 'recording'")
         first = await page.evaluate(f"{CONTROL}.status")
+        result['capture_settings'] = await page.evaluate(f"{CONTROL}.recorder.stream.getVideoTracks()[0].getSettings()")
+        result['window_dimensions'] = await page.evaluate('({width: outerWidth, height: outerHeight, devicePixelRatio})')
         await page.evaluate(f"{APP}.handlePlay()")
         await asyncio.sleep(3)
         window_id = first['sourceId'].split(':')[1]
@@ -91,12 +103,24 @@ async def verify(args):
         assert result['closed_recording']['reason'] == 'window_closed', result
         for key in ('resized_recording', 'closed_recording'):
             assert result[key]['bytes'] > 0 and not result[key]['warning'], result[key]
+            assert result[key]['path'].endswith('.mp4'), result[key]
             assert Path(result[key]['path']).stat().st_mode & 0o777 == 0o600
             probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
-                'format=duration:stream=width,height', '-of', 'json', result[key]['path']],
+                'format=duration,format_name:stream=codec_name,pix_fmt,width,height', '-of', 'json', result[key]['path']],
                 check=True, capture_output=True, text=True)
             result[key]['probe'] = json.loads(probe.stdout)
             assert float(result[key]['probe']['format']['duration']) >= 2
+            assert 'mp4' in result[key]['probe']['format']['format_name']
+            assert result[key]['probe']['streams'][0]['codec_name'] == 'h264'
+            assert result[key]['probe']['streams'][0]['pix_fmt'] == 'yuv420p'
+            assert result[key]['media']['width'] == result[key]['probe']['streams'][0]['width']
+            assert result[key]['media']['height'] == result[key]['probe']['streams'][0]['height']
+            assert result[key]['media']['averageFps'] > 0
+            assert result[key]['requestedEncoding']['lossless'] is False
+            subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-i', result[key]['path'],
+                            '-f', 'null', '-'], check=True, capture_output=True, timeout=60)
+            subprocess.run(['ffmpeg', '-v', 'error', '-xerror', '-ss', '2', '-i', result[key]['path'],
+                            '-frames:v', '1', '-f', 'null', '-'], check=True, capture_output=True, timeout=30)
         result['passed'] = True
     (args.output / 'recording_lifecycle.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, ensure_ascii=False))
@@ -106,6 +130,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cdp', default='http://127.0.0.1:9331')
     parser.add_argument('--display', default=':191')
+    parser.add_argument('--spec', type=Path, help='Load this local replay in the isolated test app')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)

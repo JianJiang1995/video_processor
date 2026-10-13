@@ -2,14 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ScreenRecorder } from '../src/utils/screenRecorder.js'
 
-function fixture({ appendError = false } = {}) {
+function fixture({ appendError = false, mp4Supported = true } = {}) {
   const calls = []
   const states = []
   const begins = []
   const captures = []
   const track = { stopped: false, stop() { this.stopped = true } }
   class Recorder extends EventTarget {
-    static isTypeSupported(type) { return type.includes('vp8') }
+    static isTypeSupported(type) { return mp4Supported && type.includes('avc1') }
+    constructor(stream, options) { super(); this.mimeType = options.mimeType }
     start() { this.state = 'recording' }
     stop() {
       this.state = 'inactive'
@@ -22,13 +23,13 @@ function fixture({ appendError = false } = {}) {
   const api = {
     beginRecording: async options => {
       begins.push(options)
-      return { id: 'one', path: '/local/screen.webm', sourceId: 'window:1:0' }
+      return { id: 'one', path: '/local/screen.mp4', sourceId: 'window:1:0' }
     },
     appendRecording: async (id, buffer) => {
       calls.push(['append', id, new TextDecoder().decode(buffer)])
       if (appendError) throw new Error('disk_failed')
     },
-    finishRecording: async (id, reason) => { calls.push(['finish', id, reason]); return { path: '/local/screen.webm' } },
+    finishRecording: async (id, reason) => { calls.push(['finish', id, reason]); return { path: '/local/screen.mp4' } },
   }
   const mediaDevices = { getUserMedia: async constraints => {
     captures.push(constraints)
@@ -136,4 +137,20 @@ test('closing during file creation cancels a late begin response', async () => {
   assert.equal(recorder.job, null)
   assert.ok(!states.some(s => s.state === 'recording'))
   assert.equal(calls.filter(c => c[0] === 'finish').length, 1)
+})
+
+test('records H.264 in an MP4 container', async () => {
+  const { recorder, states } = fixture()
+  await recorder.start('session')
+  assert.equal(recorder.recorder.mimeType, 'video/mp4;codecs=avc1')
+  await recorder.stop()
+  assert.match(states.at(-1).path, /\.mp4$/)
+})
+
+test('unsupported MP4 is reported before opening a file or capturing', async () => {
+  const { recorder, states, begins, captures } = fixture({ mp4Supported: false })
+  await recorder.start('session')
+  assert.equal(states.at(-1).error, 'recording_mp4_unsupported')
+  assert.equal(begins.length, 0)
+  assert.equal(captures.length, 0)
 })

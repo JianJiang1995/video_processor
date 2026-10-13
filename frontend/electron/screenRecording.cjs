@@ -24,6 +24,21 @@ function recordingAdmission(capacity, automatic) {
   return null
 }
 
+function recordingMediaInfo(probe) {
+  const stream = probe.streams?.find(item => item.codec_type === 'video')
+  if (!stream || stream.codec_name !== 'h264' ||
+    !probe.format?.format_name?.split(',').includes('mp4') || !(stream.width > 0 && stream.height > 0)) {
+    throw new Error('recording_invalid_mp4')
+  }
+  const [numerator, denominator] = String(stream.avg_frame_rate || '').split('/').map(Number)
+  const fps = Number.isFinite(numerator) && Number.isFinite(denominator) && numerator > 0 && denominator > 0
+    ? numerator / denominator : null
+  const positive = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null
+  return { width: stream.width, height: stream.height, averageFps: fps,
+    videoBitrate: positive(stream.bit_rate), durationSeconds: positive(probe.format.duration),
+    codec: stream.codec_name, pixelFormat: stream.pix_fmt || null, container: 'mp4' }
+}
+
 class RecordingFile {
   constructor(directory, { capacity = recordingCapacity, index = true } = {}) {
     this.directory = directory
@@ -47,7 +62,7 @@ class RecordingFile {
       const directory = path.join(this.directory, day)
       await fs.mkdir(directory, { recursive: true })
       const name = String(sessionId || 'session').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
-      const file = path.join(directory, `${now.toISOString().replace(/[:.]/g, '-')}_${name}_${randomUUID().slice(0, 8)}.webm`)
+      const file = path.join(directory, `${now.toISOString().replace(/[:.]/g, '-')}_${name}_${randomUUID().slice(0, 8)}.mp4`)
       const handle = await fs.open(file, 'wx', 0o600)
       this.active = { id: randomUUID(), file, handle, startedAt: now.toISOString(),
         sessionId: name, automatic, fps: frameRate, bytes: 0, writes: Promise.resolve(), closing: null }
@@ -80,12 +95,14 @@ class RecordingFile {
       try { await job.handle.sync() } catch (error) { warning = error.message }
       await job.handle.close()
       // Reindex without re-encoding so players can seek and show duration.
-      const indexed = job.file.replace(/\.webm$/, '.indexed.webm')
+      const indexed = job.file.replace(/\.mp4$/, '.indexed.mp4')
       if (this.index && job.bytes > 0) {
         try {
+          // Pre-create privately: FFmpeg must not expose frames while remuxing.
+          const output = await fs.open(indexed, 'wx', 0o600)
+          await output.close()
           await promisify(execFile)('ffmpeg', ['-nostdin', '-y', '-v', 'error', '-i', job.file,
-            '-map', '0:v:0', '-c', 'copy', indexed], { timeout: 120000 })
-          await fs.chmod(indexed, 0o600)
+            '-map', '0:v:0', '-c', 'copy', '-movflags', '+faststart', indexed], { timeout: 120000 })
           await fs.rename(indexed, job.file)
         } catch (error) {
           warning ||= `index: ${error.message}`
@@ -93,8 +110,21 @@ class RecordingFile {
         }
       }
       const result = { path: job.file, startedAt: job.startedAt, endedAt: new Date().toISOString(),
-        sessionId: job.sessionId, automatic: job.automatic, bytes: job.bytes, reason, warning,
-        scope: 'application_window', audio: false, fps: job.fps }
+        sessionId: job.sessionId, automatic: job.automatic, bytes: (await fs.stat(job.file)).size,
+        inputBytes: job.bytes, reason, warning,
+        scope: 'application_window', audio: false, fps: job.fps, format: 'mp4', codec: 'h264' }
+      const { RECORDING_MAX_WIDTH, RECORDING_MAX_HEIGHT, RECORDING_BITRATE } = await recordingOptions
+      result.requestedEncoding = { maxWidth: RECORDING_MAX_WIDTH, maxHeight: RECORDING_MAX_HEIGHT,
+        fps: job.fps, videoBitrate: RECORDING_BITRATE, lossless: false }
+      result.media = null
+      if (this.index && result.bytes > 0) {
+        try {
+          const { stdout } = await promisify(execFile)('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'format=format_name,duration:stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,bit_rate',
+            '-of', 'json', job.file], { timeout: 15000 })
+          result.media = recordingMediaInfo(JSON.parse(stdout))
+        } catch (error) { result.warning ||= `validation: ${error.message}` }
+      }
       await fs.writeFile(`${job.file}.json`, JSON.stringify(result, null, 2), { mode: 0o600 })
       return result
     })().finally(() => { if (this.active === job) this.active = null })
@@ -102,4 +132,4 @@ class RecordingFile {
   }
 }
 
-module.exports = { RecordingFile, recordingCapacity, recordingAdmission }
+module.exports = { RecordingFile, recordingCapacity, recordingAdmission, recordingMediaInfo }
