@@ -49,6 +49,7 @@ const labels = computed(() => language.value === 'zh' ? {
   previewStop: '实时预览优先，已停止自动录屏',
   failed: '录屏失败', warning: '录屏文件已保留，但索引或格式检查未通过', minimized: '窗口已最小化，录屏已停止', diskStop: '磁盘空间不足，录屏已停止',
   unsupported: '当前桌面运行环境不支持 H.264 MP4 录屏，请更新桌面应用',
+  empty: '未录到有效画面，请重新录制',
 } : {
   start: 'Record', starting: 'Starting', stop: 'Stop recording', saving: 'Saving', folder: 'Open recordings',
   settings: 'Recording settings', automatic: 'Auto-record analysis when resources permit', close: 'Close',
@@ -57,6 +58,7 @@ const labels = computed(() => language.value === 'zh' ? {
   previewStop: 'Auto-recording stopped to prioritize live preview',
   failed: 'Recording failed', warning: 'Recording retained; indexing or format verification failed', minimized: 'Recording stopped: window minimized', diskStop: 'Recording stopped: low disk space',
   unsupported: 'This desktop runtime cannot record H.264 MP4. Please update the desktop app.',
+  empty: 'No video frames were recorded. Please start a new recording.',
 })
 const autoRecord = ref(false)
 const frameRate = ref(DEFAULT_RECORDING_FPS)
@@ -84,11 +86,14 @@ const recorder = available ? new ScreenRecorder(api, { onState: value => {
     message.value = value.error?.includes('recording_disk') ? labels.value.disk
       : value.error?.includes('recording_load') ? labels.value.load
         : value.error?.includes('recording_mp4_unsupported') ? labels.value.unsupported
+          : value.error?.includes('recording_empty') ? labels.value.empty
         : `${labels.value.failed}: ${value.error}`
   }
-  if (value.reason === 'window_minimized') message.value = `${labels.value.minimized}: ${value.path}`
-  if (value.reason?.startsWith('disk_')) message.value = `${labels.value.diskStop}: ${value.path}`
-  if (value.reason === 'preview_overload') message.value = `${labels.value.previewStop}: ${value.path}`
+  if (value.state === 'saved' && !value.warning) {
+    if (value.reason === 'window_minimized') message.value = `${labels.value.minimized}: ${value.path}`
+    if (value.reason?.startsWith('disk_')) message.value = `${labels.value.diskStop}: ${value.path}`
+    if (value.reason === 'preview_overload') message.value = `${labels.value.previewStop}: ${value.path}`
+  }
 } }) : null
 let stopTimer
 let clockTimer

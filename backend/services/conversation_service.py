@@ -144,7 +144,7 @@ class ConversationService:
     def _review_system_prompt(self, review_context: Dict[str, Any]) -> str:
         scope = self._review_scope(review_context)
         window = review_context.get("window_id")
-        label = f" Requested window_id: {window}." if window is not None else ""
+        label = f" Selected display window: {window + 1}." if window is not None else ""
         return (
             f"You are answering video review questions with whole-session evidence. Selected range: {scope}."
             f"{label} The selected clip is a focus, NOT a restriction on accessible evidence. "
@@ -160,6 +160,8 @@ class ConversationService:
             "only to resolve follow-ups, never as video evidence. Old assistant answers are excluded "
             "because they may be wrong or based on narrower evidence. "
             "Cite the record timestamps as m:ss or m:ss-m:ss so they can be opened for review. "
+            "Preserve the supplied one-based display window numbers and exact time ranges; "
+            "never calculate timestamps from window numbers or shift the supplied times. "
             "Records may only partially overlap the selected range: preserve their full "
             "timestamps and do not assume an event occurred inside the overlap. "
             "Do not infer events, counts, anatomy, safety, or absence of events from missing "

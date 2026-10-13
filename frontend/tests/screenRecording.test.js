@@ -82,6 +82,20 @@ test('auto admission protects memory and load, all recordings protect disk', () 
   assert.equal(recordingAdmission({ ...plenty, diskBytes: 1 }, false), 'disk')
 })
 
+test('a cancelled capture with no chunks is never reported as a valid saved video', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'screen-recording-empty-'))
+  try {
+    const recorder = new RecordingFile(directory, { capacity: async () => plenty })
+    const job = await recorder.begin()
+    const result = await recorder.finish(job.id, 'start_cancelled')
+    assert.equal(result.bytes, 0)
+    assert.equal(result.media, null)
+    assert.equal(result.warning, 'recording_empty')
+    assert.equal(JSON.parse(await fs.readFile(`${job.path}.json`)).warning, 'recording_empty')
+    assert.equal(recorder.active, null)
+  } finally { await fs.rm(directory, { recursive: true, force: true }) }
+})
+
 test('chunks are serialized, isolated to the active recording, and drained on finish', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'screen-recording-'))
   try {

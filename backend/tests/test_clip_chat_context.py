@@ -226,7 +226,7 @@ class ClipChatContextTests(unittest.IsolatedAsyncioTestCase):
         prompt = messages[0]["content"]
         context = messages[-1]["content"]
         self.assertEqual(messages[0]["role"], "system")
-        for fragment in ("1:10-1:25", "70.25-85.5s", "window_id: 3",
+        for fragment in ("1:10-1:25", "70.25-85.5s", "Selected display window: 4",
                          "whole-session evidence", "not newly viewed frames",
                          "Cite the record timestamps", "partially overlap",
                          "Do not infer", "insufficient evidence", "search ALL",

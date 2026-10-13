@@ -115,6 +115,7 @@
               <ControlBar
                 :currentTime="timeshiftActive ? timeshiftTime : currentTime"
                 :duration="duration"
+                :sourceFps="currentSession?.fps || 0"
                 :isPlaying="timeshiftActive ? timeshiftPlaying : isPlaying"
                 :seekStart="timelineStart" :seekEnd="timelineEnd"
                 :isReviewing="timeshiftActive" :returnLabel="returnPositionLabel"

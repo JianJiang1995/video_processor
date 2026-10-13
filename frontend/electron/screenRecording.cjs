@@ -117,6 +117,7 @@ class RecordingFile {
       result.requestedEncoding = { maxWidth: RECORDING_MAX_WIDTH, maxHeight: RECORDING_MAX_HEIGHT,
         fps: job.fps, videoBitrate: RECORDING_BITRATE, lossless: false }
       result.media = null
+      if (result.bytes === 0) result.warning = 'recording_empty'
       if (this.index && result.bytes > 0) {
         try {
           const { stdout } = await promisify(execFile)('ffprobe', ['-v', 'error', '-select_streams', 'v:0',

@@ -78,6 +78,25 @@ test('stop flushes the final encoder chunk before closing, can record again', as
   assert.equal(calls.filter(c => c[0] === 'finish').length, 2)
 })
 
+test('stop releases window capture before slow file finalization completes', async () => {
+  const { recorder, api, track, calls, states } = fixture()
+  let finish
+  api.finishRecording = async () => {
+    assert.equal(track.stopped, true, 'capture must not continue during indexing')
+    await new Promise(resolve => { finish = resolve })
+    return { path: '/local/screen.mp4' }
+  }
+  await recorder.start('session')
+  const stopping = recorder.stop()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(track.stopped, true)
+  assert.equal(states.at(-1).state, 'saving')
+  assert.equal(calls[0][2], 'final')
+  finish()
+  await stopping
+  assert.equal(states.at(-1).state, 'saved')
+})
+
 test('capture failure finalizes the opened file and reports an error', async () => {
   const { recorder, calls, states, mediaDevices } = fixture()
   mediaDevices.getUserMedia = async () => { throw new Error('capture_failed') }
@@ -153,4 +172,15 @@ test('unsupported MP4 is reported before opening a file or capturing', async () 
   assert.equal(states.at(-1).error, 'recording_mp4_unsupported')
   assert.equal(begins.length, 0)
   assert.equal(captures.length, 0)
+})
+
+test('empty capture is an error, not a saved MP4 success', async () => {
+  const { recorder, api, states, track } = fixture()
+  api.finishRecording = async () => ({ path: '/local/screen.mp4', bytes: 0, warning: 'recording_empty' })
+  await recorder.start('session')
+  await recorder.stop()
+  assert.equal(states.at(-1).state, 'error')
+  assert.equal(states.at(-1).error, 'recording_empty')
+  assert.equal(track.stopped, true)
+  assert.equal(recorder.job, null)
 })

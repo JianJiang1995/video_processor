@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import math
+import re
 import shutil
 from pathlib import Path
 
@@ -42,6 +43,7 @@ async def verify(args):
             await page.wait_for_function(f"document.querySelector('{VIDEO}')?.currentTime > 10")
             await page.get_by_test_id('screen-recording-toggle').click()
             await page.wait_for_function(f"{REC}.status.state === 'recording'")
+            await page.evaluate(f"window.__workflowRecordingTrack = {REC}.recorder.stream.getVideoTracks()[0]")
 
             async def video_time():
                 return await page.locator(VIDEO).first.evaluate('v => v.currentTime')
@@ -105,16 +107,55 @@ async def verify(args):
 
             for _ in range(150):
                 state = (await api.get(f'/api/analysis/pending-refinements/{sid}')).json()
-                if state.get('settled') and await page.locator(VIDEO).first.evaluate('v => v.ended'):
+                at_eof = await page.evaluate(f"{APP}.streamEnded || document.querySelector('{VIDEO}')?.ended")
+                if state.get('settled') and at_eof:
                     break
                 await asyncio.sleep(1)
-            assert state.get('settled'), 'Analysis did not settle'
+            assert state.get('settled') and at_eof, 'Analysis/video did not reach EOF'
+            result['eof_video'] = await page.locator(VIDEO).first.evaluate('v => ({time:v.currentTime,duration:v.duration,paused:v.paused,ended:v.ended})')
+            assert result['eof_video']['paused'] and abs(result['eof_video']['duration'] - result['eof_video']['time']) < .5, 'EOF stopped the video before its final frames'
+            assert await page.evaluate("document.querySelector('.controls-bar').__vueParentComponent.setupState.currentWindowId") == expected_windows - 1, 'EOF displays a phantom analysis window'
             rows = (await api.get(f'/api/analysis/summaries/{sid}')).json()
             assert len(rows) == expected_windows and all(r['others']['stage'] == 2 for r in rows)
             result['window_count'] = len(rows)
             await asyncio.sleep(3)
             assert len((await api.get(f'/api/analysis/summaries/{sid}')).json()) == len(rows)
             result['checks'].append('EOF stops analysis; all windows receive final updates')
+
+            count = await main.locator('.chat-msg-content:not(.typing)').count()
+            await main.locator('.chat-input').fill('Shared grid draft')
+            await page.evaluate(f'{APP}.enterOverview()')
+            await page.locator('.chat-toggle-btn').click()
+            grid = page.locator('.overview-container .chat-panel')
+            assert await grid.locator('.chat-msg-text:not(.typing-indicator)').count() == count
+            assert await grid.locator('.chat-input').input_value() == 'Shared grid draft'
+            grid_question = '最后两个分析窗口分别描述了什么操作？请给出对应时间戳，不要推断未记录的操作。'
+            await grid.locator('.chat-input').fill(grid_question)
+            await grid.locator('.chat-send-btn').click()
+            await page.locator('.overview-header .back-btn').click()
+            await page.wait_for_function("!document.querySelector('.right-panel .chat-panel .chat-input').disabled", timeout=180000)
+            assert await main.locator('.chat-msg-content:not(.typing)').count() == count + 2
+            grid_answer = await main.locator('.chat-msg.assistant .chat-msg-content:not(.typing)').last.inner_text()
+            assert grid_answer.strip() and not grid_answer.startswith(('错误', 'Error')), grid_answer
+            result['grid_qa'] = {'question': grid_question, 'answer': grid_answer}
+            normalized = grid_answer.replace('：', ':')
+            for row in sorted(rows, key=lambda row: row['start_time'])[-2:]:
+                start = f"{int(row['start_time']) // 60}:{int(row['start_time']) % 60:02d}"
+                end = f"{int(row['end_time']) // 60}:{int(row['end_time']) % 60:02d}"
+                assert re.search(rf'{re.escape(start)}\s*[-–—至到]\s*{re.escape(end)}', normalized), 'Answer shifted a saved timestamp'
+                assert re.search(rf'(?:窗口|Window)\s*#?\s*{row["window_id"] + 1}\b', normalized, re.I), 'Answer used a different window number than UI'
+            result['checks'].append('Q&A cites the actual final two windows and their stored timestamps')
+            await page.evaluate(f'{APP}.enterOverview()')
+            await page.locator('.chat-toggle-btn').click()
+            assert await grid.locator('.chat-msg-text:not(.typing-indicator)').count() == count + 2
+            await page.screenshot(path=str(args.output / 'grid_chat.png'))
+            await grid.locator('.chat-msg.assistant .chat-msg-text').last.get_by_role('link').first.click()
+            await page.wait_for_function("document.querySelector('.review-player video')?.readyState >= 2")
+            assert await modal.locator('.chat-msg-content:not(.typing)').count() == count + 2
+            await page.screenshot(path=str(args.output / 'grid_timestamp_review.png'))
+            await page.locator('.review-header .review-icon').click()
+            await page.locator('.overview-header .back-btn').click()
+            result['checks'].append('real grid Q&A survives return; timestamp opens playback with shared messages')
             assert not result['page_errors'], result['page_errors']
             result['passed'] = True
         except Exception as error:
@@ -124,6 +165,7 @@ async def verify(args):
         finally:
             await page.evaluate(f"{REC}.recorder.stop('workflow_verification')")
             result['recording'] = await page.evaluate(f'{REC}.status')
+            result['capture_track_released'] = await page.evaluate("window.__workflowRecordingTrack?.readyState === 'ended'")
             if result['recording'].get('path'):
                 source = Path(result['recording']['path'])
                 target = args.output / ('workflow' + source.suffix)

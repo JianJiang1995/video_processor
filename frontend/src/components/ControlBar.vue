@@ -232,6 +232,7 @@
 import { ref, computed } from 'vue'
 import { useI18n } from '@/i18n'
 import { Radio, LocateFixed } from '@lucide/vue'
+import { countFiniteWindows } from '@/utils/videoWindows'
 
 const { t, language } = useI18n()
 
@@ -245,6 +246,7 @@ const props = defineProps({
     default: 0
   },
   isPlaying: Boolean,
+  sourceFps: { type: Number, default: 0 },
   isReviewing: Boolean,
   seekStart: { type: Number, default: 0 },
   seekEnd: { type: Number, default: 0 },
@@ -374,8 +376,7 @@ const progressPercent = computed(() => {
 const windowCount = computed(() => {
   if (props.isLive) return 0
   // Ensure duration is positive to avoid negative window count
-  const safeDuration = Math.max(0, props.duration || 0)
-  return Math.max(0, Math.ceil(safeDuration / props.windowDuration))
+  return countFiniteWindows(props.duration, props.windowDuration, props.sourceFps)
 })
 
 const currentWindowId = computed(() => {
@@ -384,7 +385,7 @@ const currentWindowId = computed(() => {
   // do not render fixed progress segments. The capture-card simulator is a
   // finite live source, though, so derive a separate display bound from its
   // duration and any summaries already received.
-  const durationWindowCount = Math.ceil(Math.max(0, props.duration || 0) / props.windowDuration)
+  const durationWindowCount = countFiniteWindows(props.duration, props.windowDuration, props.sourceFps)
   const summaryWindowCount = props.summaries.reduce(
     (count, summary) => Math.max(count, Number(summary?.window_id ?? -1) + 1),
     0

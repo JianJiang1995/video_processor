@@ -201,7 +201,7 @@ class SummaryCompressor:
         """格式化窗口总结为压缩输入"""
         parts = []
         for w in windows:
-            window_id = w.get("window_id", "?")
+            window_id = int(w['window_id']) + 1 if w.get('window_id') is not None else '?'
             time_start = w.get("window_start", 0)
             time_end = w.get("window_end", 0)
             summary = w.get("glm_summary", "")
@@ -254,7 +254,9 @@ class SummaryCompressor:
             return compressed_context
         
         # 添加未压缩的窗口
-        recent_parts = ["\n## 最近的手术记录\n"]
+        recent_parts = ["\n## 最近的手术记录\n",
+                        "窗口编号与界面一致，从 1 开始。引用时间必须使用各记录的原始区间，"
+                        "不能由窗口编号换算时间、平移时间或推断尚未分析的区间。\n"]
         for w in uncompressed_windows:
             time_range = ""
             if w.get("window_start") is not None and w.get("window_end") is not None:
@@ -262,7 +264,7 @@ class SummaryCompressor:
                 e_min, e_sec = divmod(int(w['window_end']), 60)
                 time_range = f" ({s_min}:{s_sec:02d} - {e_min}:{e_sec:02d})"
             
-            recent_parts.append(f"### 窗口 {w['window_id']}{time_range}")
+            recent_parts.append(f"### 窗口 {int(w['window_id']) + 1}{time_range}")
             if w.get("surgical_phase"):
                 recent_parts.append(f"阶段: {w['surgical_phase']}")
             if w.get("glm_summary"):

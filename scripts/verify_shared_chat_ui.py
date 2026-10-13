@@ -134,6 +134,32 @@ async def verify(args):
                     await count(modal, 8)
                     assert await modal.get_by_role("link", name="0:05", exact=True).first.is_visible()
                     results["checks"].append("language switches retain shared messages and working timestamp links")
+                    await page.locator('.review-header .review-icon').click()
+                    await main.locator('.chat-input').fill('Draft shared with grid')
+                    await page.evaluate("document.querySelector('#app').__vue_app__._container._vnode.component.setupState.enterOverview()")
+                    await page.locator('.chat-toggle-btn').click()
+                    grid = page.locator('.overview-container .chat-panel')
+                    await page.wait_for_function("document.querySelectorAll('.overview-container .chat-msg-text').length === 8")
+                    assert await grid.locator('.chat-input').input_value() == 'Draft shared with grid'
+                    gate.clear()
+                    await grid.locator('.chat-input').fill('UI regression pending grid question')
+                    await grid.locator('.chat-send-btn').click()
+                    await page.wait_for_function("document.querySelectorAll('.overview-container .chat-msg-text').length === 10")
+                    # One of those ten entries is the pending-answer indicator.
+                    await grid.get_by_role('link', name='0:05', exact=True).first.click()
+                    await count(modal, 9)
+                    await modal.get_by_role('link', name='0:15', exact=True).first.click()
+                    await count(modal, 9)
+                    await page.locator('.review-header .review-icon').click()
+                    await page.locator('.overview-header .back-btn').click()
+                    gate.set()
+                    await count(main, 10)
+                    assert 'review_context' not in sent[-1]
+                    await page.screenshot(path=str(args.output / 'grid_reply_on_main.png'))
+                    await page.reload()
+                    await page.locator('.rp-tab').nth(1).click()
+                    await count(main, 10)
+                    results['checks'].append('grid shares history/draft; pending grid reply survives timestamp changes, return, and reload')
                     assert not results["page_errors"], results["page_errors"]
                     await page.evaluate("window.close()")
             finally:

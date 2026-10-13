@@ -60,11 +60,17 @@ export class ScreenRecorder {
       this.recorder.start(1000)
       this.onState({ state: 'recording', ...job })
     } catch (error) {
-      this.stream?.getTracks().forEach(track => track.stop())
+      this.releaseStream()
       if (job && this.job === job) await this.api.finishRecording(job.id, 'start_failed').catch(() => {})
       this.job = null
       if (generation === this.generation) this.onState({ state: 'error', error: error.message })
     } finally { this.busy = false }
+  }
+
+  releaseStream() {
+    const stream = this.stream
+    this.stream = null
+    stream?.getTracks().forEach(track => { track.onended = null; track.stop() })
   }
 
   async stop(reason = 'user') {
@@ -81,12 +87,15 @@ export class ScreenRecorder {
             this.recorder.stop()
           })
         }
+        // The final encoder chunk has arrived; capture is not needed for disk I/O.
+        this.releaseStream()
         await this.writes
         const result = await this.api.finishRecording(job.id, reason)
+        if (result.warning === 'recording_empty') this.failure ||= 'recording_empty'
         this.onState({ state: this.failure ? 'error' : 'saved', ...result, error: this.failure })
       } catch (error) { this.onState({ state: 'error', path: job.path, error: error.message }) }
       finally {
-        this.stream?.getTracks().forEach(track => track.stop())
+        this.releaseStream()
         this.job = null
         this.recorder = null
         this.stopping = null

@@ -141,3 +141,24 @@ test('structured API errors never render as object Object', () => {
   assert.equal(chatErrorText({ response: { data: { detail: [{ loc: ['body', 'content'], msg: 'Invalid' }] } } }), 'body.content: Invalid')
   assert.equal(chatErrorText({ response: { data: { detail: { message: 'Unavailable' } } } }), 'Unavailable')
 })
+
+test('structured failure bodies in successful HTTP responses remain readable', async () => {
+  const store = createSessionChatStore({ api: {
+    get: emptyHistory,
+    post: async () => ({ data: { success: false, error: { message: 'Model unavailable' } } }),
+  } })
+  await store.send('a', question)
+  assert.match(store.getSession('a').messages.at(-1).content, /Model unavailable/)
+  assert.doesNotMatch(store.getSession('a').messages.at(-1).content, /\[object Object\]/)
+  assert.equal(store.getSession('a').isLoading, false)
+})
+
+test('structured history failure retains the draft and can be retried', async () => {
+  const store = createSessionChatStore({ api: {
+    get: async () => ({ data: { error: [{ loc: ['session'], msg: 'Unavailable' }] } }),
+  } })
+  store.getSession('a').draft = 'Keep this question'
+  assert.equal(await store.ensureHistory('a'), false)
+  assert.equal(store.getSession('a').historyError, 'session: Unavailable')
+  assert.equal(store.getSession('a').draft, 'Keep this question')
+})

@@ -1,20 +1,24 @@
 import { reactive } from 'vue'
 import axios from 'axios'
 
-export function chatErrorText(error) {
-  const detail = error?.response?.data?.detail ?? error?.response?.data?.error ?? error?.response?.data
+function errorDetailText(detail) {
   if (Array.isArray(detail)) {
     return detail.map(item => {
       if (typeof item === 'string') return item
       const loc = Array.isArray(item?.loc) ? item.loc.join('.') : ''
-      const msg = item?.msg || item?.message || JSON.stringify(item)
+      const msg = errorDetailText(item)
       return loc ? `${loc}: ${msg}` : msg
     }).join('; ')
   }
   if (detail && typeof detail === 'object') {
-    return String(detail.message || detail.msg || detail.error || JSON.stringify(detail))
+    return errorDetailText(detail.message || detail.msg || detail.error || detail.detail || JSON.stringify(detail))
   }
-  return String(detail || error?.message || '')
+  return String(detail ?? '')
+}
+
+export function chatErrorText(error) {
+  return errorDetailText(error?.response?.data?.detail ?? error?.response?.data?.error ??
+    error?.response?.data ?? error?.message ?? '')
 }
 
 function messageTime(value) {
@@ -52,7 +56,7 @@ export function createSessionChatStore({ api = axios, now = Date.now } = {}) {
           const { data } = await api.get(`${endpoint(sessionId)}/history`, {
             params: { limit: 200, ...(beforeId ? { before_id: beforeId } : {}) }, timeout: 15000,
           })
-          if (data.error) throw new Error(data.error)
+          if (data.error) throw new Error(chatErrorText({ response: { data } }))
           if (!Array.isArray(data.messages)) throw new Error('Invalid chat history response')
           messages = [...data.messages, ...messages]
           if (!data.has_more) break
@@ -93,7 +97,7 @@ export function createSessionChatStore({ api = axios, now = Date.now } = {}) {
         role: 'user', content: text, timestamp: now() / 1000,
         ...(focus ? { review_context: focus } : {}),
       }, { timeout: 180000 })
-      if (data.success === false) throw new Error(data.error || t('chat.noResponse'))
+      if (data.success === false) throw new Error(data.error ? chatErrorText({ response: { data } }) : t('chat.noResponse'))
       const reply = {
         role: 'assistant', content: data.response?.content || data.response_text || t('chat.noResponse'),
         time: messageTime(now()), context, reviewContext: focus, similarWindows: null,

@@ -159,7 +159,12 @@
           </div>
 
           <div class="chat-messages" ref="chatMessagesRef">
-            <div v-if="chatMessages.length === 0" class="chat-empty">
+            <div v-if="conversation.historyError" class="chat-history-error" role="alert">
+              <span>{{ t('chat.errorPrefix') }}: {{ conversation.historyError }}</span>
+              <button :disabled="chatLoading" :title="t('video.retry')" :aria-label="t('video.retry')"
+                @click="sessionChat.ensureHistory(chatSessionId)"><RotateCcw :size="16" /></button>
+            </div>
+            <div v-if="chatMessages.length === 0 && !chatLoading && !conversation.historyError" class="chat-empty">
               <div class="chat-empty-icon">💬</div>
               <div class="chat-empty-text">{{ t('overview.chatEmpty') }}</div>
               <div class="chat-empty-hints">
@@ -196,12 +201,12 @@
               class="chat-input"
               :placeholder="t('overview.chatPlaceholder')"
               @keyup.enter="sendChat()"
-              :disabled="chatLoading"
+              :disabled="chatLoading || !chatSessionId"
             />
             <button
               class="chat-send-btn"
               @click="sendChat()"
-              :disabled="!chatInput.trim() || chatLoading"
+              :disabled="!chatInput.trim() || chatLoading || !chatSessionId"
             >
               <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
                 <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/>
@@ -234,10 +239,12 @@ import { useLocalizedText } from '../utils/localizedText.js'
 import { formatWindowNarrative, windowPhaseLabel } from '../utils/windowNarrative.js'
 import { ref, computed, reactive, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import { RotateCcw } from '@lucide/vue'
 import { apiUrl } from '@/utils/electronBridge'
 import { captureLocalVideoThumbnail } from '@/utils/localVideoThumbnail'
 import VideoReviewModal from './VideoReviewModal.vue'
 import ChatMessageText from './ChatMessageText.vue'
+import { sessionChat } from '@/utils/sessionChat'
 import { resolveReviewRange } from '@/utils/chatTimestamps'
 import { useI18n } from '@/i18n'
 
@@ -274,10 +281,18 @@ const searchFocused = ref(false)
 
 // Chat
 const showChat = ref(false)
-const chatInput = ref('')
-const chatMessages = ref([])
-const chatLoading = ref(false)
+const chatSessionId = computed(() => props.session?.session_id || '')
+const conversation = computed(() => sessionChat.getSession(chatSessionId.value))
+const chatInput = computed({
+  get: () => conversation.value.draft,
+  set: value => { conversation.value.draft = value },
+})
+const chatMessages = computed(() => conversation.value.messages)
+const chatLoading = computed(() => conversation.value.isLoading || conversation.value.isHydrating)
 const chatMessagesRef = ref(null)
+watch(chatSessionId, id => { void sessionChat.ensureHistory(id) }, { immediate: true })
+watch(chatMessages, scrollChatBottom, { deep: true })
+watch(showChat, visible => { if (visible) void scrollChatBottom() })
 const gridAreaRef = ref(null)
 const CHAT_PANEL_STORAGE_KEY = 'surg_overview_chat_width_v1'
 const defaultChatPanelWidth = () => Math.min(520, Math.max(380, Math.round(window.innerWidth * 0.23)))
@@ -395,49 +410,12 @@ function durationPercent(s) {
   return Math.min(100, (dur / maxWindowDuration.value) * 100)
 }
 
-// Smart chat
-function buildContext() {
-  return props.summaries.map(s =>
-    `[窗口${s.window_id} ${formatTime(s.start_time)}-${formatTime(s.end_time)}] ${displaySummary(s)}`
-  ).join('\n')
-}
-
 async function sendChat(preset) {
   const text = preset || chatInput.value.trim()
-  if (!text || chatLoading.value) return
-
-  chatInput.value = ''
-  chatMessages.value.push({ role: 'user', content: text })
-  await scrollChatBottom()
-
-  chatLoading.value = true
-  try {
-    const response = await axios.post(`/api/voice/chat/${props.session?.session_id || 'default'}/send`, {
-      role: 'user',
-      content: text,
-      timestamp: Date.now() / 1000
-    })
-
-    if (response.data.success && response.data.response) {
-      chatMessages.value.push({
-        role: 'assistant',
-        content: response.data.response.content
-      })
-    } else {
-      chatMessages.value.push({
-        role: 'assistant',
-        content: response.data.error || t('overview.chatFallback')
-      })
-    }
-  } catch (e) {
-    chatMessages.value.push({
-      role: 'assistant',
-      content: t('overview.networkError')
-    })
-  } finally {
-    chatLoading.value = false
-    await scrollChatBottom()
-  }
+  if (!text || chatLoading.value || !chatSessionId.value) return
+  await sessionChat.send(chatSessionId.value, {
+    text, hasSummaries: props.summaries.length > 0, t,
+  })
 }
 
 async function scrollChatBottom() {
@@ -1119,6 +1097,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 0.6rem;
 }
+
+.chat-history-error { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.chat-history-error button { display: grid; place-items: center; flex-shrink: 0; width: 30px; height: 30px; border: 1px solid var(--border-subtle); border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
 
 .chat-empty {
   flex: 1;
