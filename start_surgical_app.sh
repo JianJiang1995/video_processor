@@ -277,7 +277,20 @@ if [ ! -x "$PYTHON_BIN" ]; then
 fi
 
 SURGR1_ENABLED="$($PYTHON_BIN -c 'import json,sys; c=json.load(open(sys.argv[1]))["services"]["surgr1"]; print(int(c.get("enabled",False)))' "$ROOT_DIR/config.json")"
-SURGR1_GPU="${SURGR1_GPU:-$($PYTHON_BIN -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["surgr1"].get("gpu",0))' "$ROOT_DIR/config.json")}"
+PREFERRED_SURGR1_GPU="$($PYTHON_BIN -c 'import json,sys; print(json.load(open(sys.argv[1]))["services"]["surgr1"].get("gpu",0))' "$ROOT_DIR/config.json")"
+# Only select placement for a cold start; never relocate an already-running model.
+if ! http_ready "$VLM_URL/models" && ! http_ready "$SURGR1_URL/health"; then
+    GPU_SELECTION="$($PYTHON_BIN "$ROOT_DIR/scripts/select_model_gpus.py" --preferred-r1 "$PREFERRED_SURGR1_GPU" --r1-enabled "$SURGR1_ENABLED")"
+    read -r VLM_GPU SURGR1_GPU <<<"$GPU_SELECTION"
+    echo "[GPU] VLM=$VLM_GPU, SurgR1=$SURGR1_GPU (avoid the active display for VLM; explicit overrides take precedence)"
+elif ! http_ready "$VLM_URL/models"; then
+    # A surviving R1 may have been auto-placed away from its configured GPU.
+    # Pick by current free memory instead of excluding that stale preference.
+    VLM_GPU="${VLM_GPU:-$(best_free_gpu)}"
+elif [ "$SURGR1_ENABLED" = "1" ] && ! http_ready "$SURGR1_URL/health"; then
+    SURGR1_GPU="${SURGR1_GPU:-$(best_free_gpu)}"
+fi
+SURGR1_GPU="${SURGR1_GPU:-$PREFERRED_SURGR1_GPU}"
 
 if http_ready "$VLM_URL/models"; then
     echo "[READY] Reusing Qwen3-VL at $VLM_URL"

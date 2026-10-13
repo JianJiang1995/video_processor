@@ -16,6 +16,55 @@ import httpx
 STATE = "(document.querySelector('#app').__vue_app__._instance || document.querySelector('#app').__vue_app__._container._vnode.component).setupState"
 RECORDING_STATE = "document.querySelector('.screen-recording-control').__vueParentComponent.setupState"
 
+PLAYBACK_PROBE = r'''() => {
+    const video = document.querySelector('.primary-video-player video');
+    if (!video?.requestVideoFrameCallback) throw Error('Frame callbacks unavailable');
+    const state = window.__recordingPlaybackProbe = {
+        samples: [], waiting: [], longTasks: [], first: null, last: null,
+        baselineQuality: video.getVideoPlaybackQuality(), width: video.videoWidth, height: video.videoHeight,
+    };
+    const eligible = () => !video.paused && !video.seeking && video.currentTime >= 3 &&
+        video.currentTime < video.duration - .5;
+    let previous = null;
+    const callback = (now, meta) => {
+        if (eligible()) {
+            const sample = {wall: now, media: meta.mediaTime, presented: meta.presentedFrames};
+            state.first ||= sample;
+            state.last = sample;
+            if (previous) state.samples.push({gap: now - previous.wall,
+                mediaGap: (meta.mediaTime - previous.media) * 1000,
+                frames: meta.presentedFrames - previous.presented});
+            previous = sample;
+        } else previous = null;
+        if (!state.stopped) video.requestVideoFrameCallback(callback);
+    };
+    video.requestVideoFrameCallback(callback);
+    for (const event of ['waiting', 'stalled']) video.addEventListener(event, () => {
+        if (eligible()) state.waiting.push({event, time: video.currentTime});
+    });
+    const observer = new PerformanceObserver(list => {
+        if (eligible()) state.longTasks.push(...list.getEntries().map(e => e.duration));
+    });
+    observer.observe({entryTypes: ['longtask']});
+    state.finish = () => {
+        state.stopped = true;
+        observer.disconnect();
+        const quality = video.getVideoPlaybackQuality();
+        const gaps = state.samples.map(s => s.gap).sort((a,b) => a-b);
+        const elapsed = (state.last?.wall - state.first?.wall) / 1000;
+        return {width:state.width, height:state.height, warmup_excluded_seconds:3,
+            measured_seconds:elapsed,
+            presented_fps:elapsed > 0 ? (state.last.presented-state.first.presented)/elapsed : null,
+            callback_fps:elapsed > 0 ? state.samples.length/elapsed : null,
+            p95_gap_ms:gaps.length ? gaps[Math.floor((gaps.length-1)*.95)] : null,
+            max_gap_ms:gaps.at(-1), gaps_over_200_ms:gaps.filter(g=>g>200).length,
+            dropped_frames:quality.droppedVideoFrames-state.baselineQuality.droppedVideoFrames,
+            total_video_frames:quality.totalVideoFrames-state.baselineQuality.totalVideoFrames,
+            waiting:state.waiting, long_tasks:state.longTasks,
+            long_task_max_ms:Math.max(0,...state.longTasks)};
+    };
+}'''
+
 
 async def settled_snapshot(api, sid):
     state = (await api.get(f'/api/analysis/pending-refinements/{sid}')).json()
@@ -52,7 +101,9 @@ async def run(args):
         sid = response.json()['session_id']
         session = (await api.get(f'/api/video/session/{sid}')).json()
         assert session['video_path'].startswith('simulator://file/'), 'Paced source lost during persistence'
-        expected_windows = math.ceil(session['duration'] / 5)
+        # Container duration can extend a fraction of a frame beyond the last
+        # window boundary. Do not invent an extra window from that rounding.
+        expected_windows = max(1, math.ceil((session['duration'] - .5 / max(1, session['fps'])) / 5))
         record['session_id'] = sid
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp('http://127.0.0.1:9222')
@@ -106,6 +157,8 @@ async def run(args):
                     if args.app_recording:
                         await page.wait_for_function(f"{RECORDING_STATE}.status.state === 'recording'", timeout=15000)
                         record['app_recording_started'] = await page.evaluate(f"{RECORDING_STATE}.status")
+                    if args.measure_playback:
+                        await page.evaluate(PLAYBACK_PROBE)
                     previous = {}
                     state = {}
                     rows = []
@@ -178,6 +231,8 @@ async def run(args):
                     raise
                 finally:
                     record['wall_seconds'] = round(time.monotonic() - started, 3)
+                    if args.measure_playback:
+                        record['playback'] = await page.evaluate('window.__recordingPlaybackProbe?.finish()')
                     recording_path = args.output / 'window_updates.mp4'
                     if recorder:
                         if recorder.poll() is None:
@@ -187,13 +242,18 @@ async def run(args):
                         await page.evaluate(f"{RECORDING_STATE}.recorder.stop('verification_complete')")
                         result = await page.evaluate(f"{RECORDING_STATE}.status")
                         record['app_recording_finished'] = result
-                        recording_path = args.output / 'window_updates.webm'
+                        recording_path = args.output / ('window_updates' + Path(result.get('path') or 'recording.mp4').suffix)
                         if result.get('path'):
                             shutil.copy2(result['path'], recording_path)
+                            sidecar = Path(result['path'] + '.json')
+                            if sidecar.exists():
+                                shutil.copy2(sidecar, str(recording_path) + '.json')
                         await page.evaluate("value => window.electronAPI.setConfig('autoRecordAnalysis', value)", previous_auto is True)
+                        await page.evaluate(f"value => {{ {RECORDING_STATE}.autoRecord = value }}", previous_auto is True)
                     elif args.no_recording:
                         record['recording_disabled_state'] = await page.evaluate(f"{RECORDING_STATE}.status")
                         await page.evaluate("value => window.electronAPI.setConfig('autoRecordAnalysis', value)", previous_auto is True)
+                        await page.evaluate(f"value => {{ {RECORDING_STATE}.autoRecord = value }}", previous_auto is True)
                     record['analysis_passed'] = record['passed']
                     if args.no_recording:
                         record['recording'] = {'enabled': False}
@@ -212,6 +272,7 @@ if __name__ == '__main__':
     parser.add_argument('--timeout', type=float, default=120)
     parser.add_argument('--layout', choices=['full', 'quad_right'], default='full')
     parser.add_argument('--r1-disabled', action='store_true')
+    parser.add_argument('--measure-playback', action='store_true', help='Measure actual video presentation gaps during inference')
     recording = parser.add_mutually_exclusive_group()
     recording.add_argument('--app-recording', action='store_true')
     recording.add_argument('--no-recording', action='store_true', help='Run real analysis and screenshots without video recording')
