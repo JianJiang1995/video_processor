@@ -46,12 +46,15 @@ class AnalysisImageRegionTests(unittest.TestCase):
         self.assertEqual(regions_for_source('decklink://0', CONFIG), [])
         self.assertEqual(regions_for_source('decklink://0?input_layout=quad_right', {}), [])
 
-    def test_actual_configuration_enables_only_the_cropped_device_profile(self):
+    def test_actual_configuration_excludes_icons_in_both_input_layouts(self):
         config = json.loads((Path(__file__).resolve().parents[2] / 'config.json').read_text())
-        self.assertEqual(crop_right_for_source('device://0?input_layout=quad_right', config), .11)
-        self.assertEqual(regions_for_source('device://0?input_layout=quad_right', config), [])
-        self.assertEqual(crop_right_for_source('/normal/video.mp4', config), 0)
-        self.assertEqual(regions_for_source('/normal/video.mp4', config), [])
+        for source in ('decklink://0?mode=1080p50&connection=sdi',
+                       'device://0?input_layout=full',
+                       'simulator://file/tmp/test.mp4', '/normal/video.mp4',
+                       'device://0?input_layout=quad_right'):
+            with self.subTest(source=source):
+                self.assertEqual(crop_right_for_source(source, config), .11)
+                self.assertEqual(regions_for_source(source, config), [])
 
     def test_invalid_or_out_of_range_regions_cannot_blank_the_image(self):
         invalid = [None, [0, 0, 0, 1], [-1, 0, 1, 1], [0, 0, 2, 1],
@@ -117,7 +120,7 @@ class AnalysisImageRegionTests(unittest.TestCase):
 
 
 class AnalysisInputCropTests(unittest.TestCase):
-    CONFIG = {'analysis_input_crop_right': {'quad_right': .11}}
+    CONFIG = {'analysis_input_crop_right': {'full': .11, 'quad_right': .11}}
 
     def source(self):
         image = Image.new('RGB', (2880, 2160), (190, 130, 110))
@@ -135,9 +138,36 @@ class AnalysisInputCropTests(unittest.TestCase):
                        'simulator://file/tmp/test.mp4?input_layout=quad_right',
                        '/tmp/other.mp4?input_layout=quad_right'):
             self.assertEqual(crop_right_for_source(source, self.CONFIG), .11)
-        self.assertEqual(crop_right_for_source('decklink://0', self.CONFIG), 0)
-        self.assertEqual(crop_right_for_source('/normal.mp4', self.CONFIG), 0)
+        self.assertEqual(crop_right_for_source('decklink://0', self.CONFIG), .11)
+        self.assertEqual(crop_right_for_source('/normal.mp4', self.CONFIG), .11)
         self.assertEqual(crop_right_for_source('decklink://0?input_layout=quad_right', {}), 0)
+        self.assertEqual(crop_right_for_source('decklink://0', {}), 0)
+
+    def test_full_hd_models_remove_icons_once_without_changing_preview_or_time(self):
+        source = Image.new('RGB', (1920, 1080), (190, 130, 110))
+        source.paste((0, 255, 0), (1840, 0, 1920, 80))
+        source.paste((0, 255, 0), (1840, 996, 1920, 1080))
+        original = source.tobytes()
+        source.info.update({CROP_RIGHT_KEY: crop_right_for_source(
+            'decklink://0?mode=1080p50&connection=sdi', self.CONFIG),
+            'source_timestamp': 17.26})
+        expert = prepare_expert_frame(source)
+        self.assertEqual(expert.shape, (720, 1139, 3))
+        self.assert_icons_removed(Image.fromarray(expert[:, :, ::-1]))
+        for image in (_fit_image_for_vlm(source, 640), fit_image(source)):
+            self.assertEqual(image.size, (569, 360))
+            self.assert_icons_removed(image)
+            self.assertEqual(image.info['source_timestamp'], 17.26)
+            self.assertEqual(prepare_analysis_image(image).size, image.size)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'r1.jpg'
+            _write_review_image(source, path)
+            with Image.open(path) as result:
+                self.assertEqual(result.width, 747)
+                self.assertTrue(np.all(np.asarray(result)[:, :, 1] < 160))
+        self.assertEqual(source.size, (1920, 1080))
+        self.assertEqual(source.tobytes(), original)
+        self.assertEqual(source.info['source_timestamp'], 17.26)
 
     def test_invalid_settings_cannot_remove_most_of_the_field(self):
         for value in (None, 'bad', [], {}, -1, .9, float('nan'), float('inf')):
@@ -204,14 +234,17 @@ class AnalysisInputCropTests(unittest.TestCase):
             self.source().save(Path(directory) / 'frame.jpg')
             storage = Mock()
             storage.list_frames_in_range.return_value = [{'path': 'frame.jpg', 'timestamp': 17.26}]
-            with patch('backend.services.window_reanalysis.get_frame_storage_service', return_value=storage), \
-                 patch('backend.services.window_reanalysis.load_config', return_value=self.CONFIG):
-                images, times = load_review_frames({'storage_path': directory,
-                    'video_path': 'decklink://0?input_layout=quad_right'}, 15, 20)
-            self.assertEqual(images[0].size, (569, 480))
-            self.assertEqual(prepare_analysis_image(images[0]).size, (569, 480))
-            self.assertTrue(np.all(np.asarray(images[0])[:, :, 1] < 160))
-            self.assertEqual(times, [17.26])
+            for source in ('decklink://0?input_layout=quad_right',
+                           'decklink://0?mode=1080p50&connection=sdi'):
+                with self.subTest(source=source), \
+                     patch('backend.services.window_reanalysis.get_frame_storage_service', return_value=storage), \
+                     patch('backend.services.window_reanalysis.load_config', return_value=self.CONFIG):
+                    images, times = load_review_frames({'storage_path': directory,
+                        'video_path': source}, 15, 20)
+                self.assertEqual(images[0].size, (569, 480))
+                self.assertEqual(prepare_analysis_image(images[0]).size, (569, 480))
+                self.assertTrue(np.all(np.asarray(images[0])[:, :, 1] < 160))
+                self.assertEqual(times, [17.26])
 
     def test_history_private_file_decoder_applies_layout_then_model_crop(self):
         from unittest.mock import Mock

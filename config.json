@@ -1,6 +1,7 @@
 {
     "description": "Video Stream Analyzer Configuration",
     "analysis_input_crop_right": {
+        "full": 0.11,
         "quad_right": 0.11
     },
     "window_analysis": {

@@ -138,12 +138,18 @@ class ReviewFrameTests(unittest.TestCase):
             storage.list_frames_in_range.return_value = [
                 {"timestamp": t, "path": "frame.jpg"} for t in (4.9, 5, 6, 7, 8, 9, 10)
             ]
-            with patch.object(service, "get_frame_storage_service", return_value=storage), \
-                 patch.object(service, "resolve_video_source") as resolve:
-                images, times = service.load_review_frames({"storage_path": folder}, 5, 10)
-            self.assertEqual(times, [5, 6, 8, 9])
-            self.assertTrue(all(image.size == (640, 320) for image in images))
-            resolve.assert_not_called()
+            for crop, width in ((0, 640), (.11, 569)):
+                with self.subTest(crop=crop), \
+                     patch.object(service, "get_frame_storage_service", return_value=storage), \
+                     patch.object(service, "load_config", return_value={
+                         'analysis_input_crop_right': {'full': crop}}), \
+                     patch.object(service, "resolve_video_source") as resolve:
+                    images, times = service.load_review_frames({"storage_path": folder,
+                        "video_path": "decklink://0?connection=sdi"}, 5, 10)
+                self.assertEqual(times, [5, 6, 8, 9])
+                self.assertTrue(all(image.size == (width, 320) for image in images))
+                self.assertTrue(all(service.fit_image(image).size == (width, 320) for image in images))
+                resolve.assert_not_called()
 
     def test_missing_capture_frames_does_not_reopen_capture_device(self):
         source = Mock(source="decklink://0", input_layout="full")
