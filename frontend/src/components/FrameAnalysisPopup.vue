@@ -357,4 +357,3 @@ const truncate = (text, length) => {
 }
 </style>
 
-
