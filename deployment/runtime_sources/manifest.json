@@ -1,0 +1,39 @@
+{
+  "snapshot_date": "2026-10-14",
+  "purpose": "Byte-identical backup of external source dependencies; restore locations before deploying a new machine. Active runtime imports are unchanged.",
+  "files": [
+    {
+      "path": "SurgR1_api/main.py",
+      "source": "/home/user/proj/video_processor/SurgR1_api/main.py",
+      "restore_to": "../SurgR1_api/main.py",
+      "sha256": "b27802ba87f5013253f04fdbcdbeadc725e34f7655a7fa31dd8eb1ba9f97b469"
+    },
+    {
+      "path": "SurgR1_api/config.json",
+      "source": "/home/user/proj/video_processor/SurgR1_api/config.json",
+      "restore_to": "../SurgR1_api/config.json",
+      "sha256": "3e496246d833a309801b32c8d1fb05563f5d931e377a000306b77acf54050f10"
+    },
+    {
+      "path": "surg_agent/triplet_expert/eval_lam_on_our_val.py",
+      "source": "/home/user/proj/surg_agent/triplet_expert/eval_lam_on_our_val.py",
+      "restore_to": "$SURG_AGENT_ROOT/triplet_expert/eval_lam_on_our_val.py",
+      "sha256": "4c576931c0c15341364357eef07ae4e6eee8614e00eb00262f45974b6ebff603"
+    }
+  ],
+  "observed_python_packages_not_a_portable_lockfile": {
+    "torch": "2.11.0+cu128",
+    "torchvision": "0.26.0+cu128",
+    "vllm": "0.22.0",
+    "transformers": "5.10.1",
+    "ultralytics": "8.4.60",
+    "scikit-learn": "1.7.2",
+    "opencv-python": "4.13.0.92",
+    "Pillow": "12.2.0",
+    "numpy": "2.2.6",
+    "fastapi": "0.136.3",
+    "uvicorn": "0.48.0",
+    "pymysql": "1.2.0"
+  },
+  "excluded": ["model_weights", "patient_videos", "analysis_database", "secrets", "python_virtualenv", "system_drivers"]
+}

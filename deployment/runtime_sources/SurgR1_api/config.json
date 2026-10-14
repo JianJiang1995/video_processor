@@ -1,0 +1,31 @@
+{
+    "description": "SurgR1 API Configuration - Surgical Image Analysis Service",
+    "model": {
+        "path": "/home/user/proj/Laparo/last_cot_qwen2.5/round36_cholec/v0-20251116-000731/checkpoint-12042-merged",
+        "max_model_len": 4096,
+        "gpu_memory_utilization": 0.9,
+        "tensor_parallel_size": 1,
+        "max_num_seqs": 8,
+        "trust_remote_code": true,
+        "max_pixels": 1003520,
+        "min_pixels": 200704,
+        "comment": "Qwen2.5-VL model with surgical CoT fine-tuning. max_pixels=1003520(≈1M), min_pixels=256*28*28=200704"
+    },
+    "inference": {
+        "temperature": 0.1,
+        "max_tokens": 1024,
+        "top_p": 0.95,
+        "comment": "Low temperature for more deterministic surgical analysis"
+    },
+    "server": {
+        "host": "0.0.0.0",
+        "port": 9003,
+        "comment": "API server configuration (避免与stream_simulator 9001冲突)"
+    },
+    "questions": {
+        "surgical_phase": "Given the laparoscopic cholecystectomy image <image>, which surgical phase is being performed?",
+        "surgical_action": "Given the laparoscopic cholecystectomy image <image>, describe the complete surgical action in terms of tool, action, and tissue.",
+        "tool_localization": "Given the laparoscopic cholecystectomy image <image>, locate all the tools in the format of bbox (x1,y1), (x2,y2).",
+        "comment": "Three standard questions matching training format"
+    }
+}
